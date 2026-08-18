@@ -14,15 +14,15 @@ Build full-stack Node.js applications with one CLI and one configuration file. B
 - Python FastAPI AI server with OpenAI-compatible chat, embeddings, Ollama, and SSE streaming
 - Admin console with configuration, environment, process, monitoring, database, AI, and cluster management
 - Master/slave cluster mesh with load balancing, node agents, request allocation, health checks, and upload path pinning
-- Tailwind CSS + `@bhooai/nexus-postcss` preset with PostCSS pipeline, design tokens, and dark theme baseline for every scaffolded frontend
+- Tailwind CSS + `@bhooai/nexus-postcss` preset with PostCSS pipeline, design tokens, light/dark theme, and CSS playground
 
 ## Requirements
 
-- Node.js `>=20.10`
+- Node.js `>=22`
 - npm, included with Node.js
-- MongoDB 7 or newer, running locally or reachable through `MONGODB_URI`
-- Redis 7 or newer, running locally or reachable through `REDIS_URL`
-- Python 3.10 or newer for the optional AI server
+- MongoDB 6 or newer, running locally or reachable through `MONGODB_URI`
+- Redis 6 or newer, running locally or reachable through `REDIS_URL`
+- Python 3.13 or newer for the optional AI server
 - A virtual environment is recommended for Python dependencies
 
 The Python service dependencies are listed in [`apps/ai-server/requirements.txt`](apps/ai-server/requirements.txt): FastAPI, Uvicorn, HTTPX, pytest, and pytest-asyncio.
@@ -201,6 +201,50 @@ NEXUS_AUTH_JWT_SECRET=replace-with-a-long-random-secret
 
 Common port overrides include `NEXUS_SERVER_PORT`, `NEXUS_FRONTEND_PORT`, `NEXUS_ADMIN_PORT`, `NEXUS_CLUSTER_LBPORT`, `NEXUS_CLUSTER_NODEAGENTPORT`, and `AI_PORT`.
 
+## CSS Pipeline
+
+Every scaffolded frontend and admin app ships with Tailwind CSS and the framework-owned `@bhooai/nexus-postcss` preset. The preset loads six PostCSS plugins in one curated pipeline:
+
+1. `postcss-import` — `@import` resolution
+2. `postcss-nested` (or `postcss-nesting` with `nestingMode: 'modern'`) — CSS nesting
+3. `tailwindcss` — base/components/utilities + content scanning
+4. `postcss-preset-env` (stage 2) — future CSS features today
+5. `autoprefixer` — vendor prefixes
+6. `cssnano` — minification (production only)
+
+### PostCSS preset options
+
+```js
+import { createPreset } from '@bhooai/nexus-postcss';
+import forms from '@tailwindcss/forms';
+import typography from '@tailwindcss/typography';
+
+export default createPreset({
+  tailwindPlugins: [forms, typography],  // Tailwind plugins
+  nestingMode: 'modern',                 // spec-compliant CSS nesting
+  logical: true,                          // RTL/LTR direction-aware CSS
+  sourcemap: true,                        // inline source maps
+  engine: 'lightningcss',                // ~100x faster (experimental)
+});
+```
+
+### Design tokens
+
+Two token stylesheets ship with the preset:
+
+- `@bhooai/nexus-postcss/theme.css` — 22 `--nexus-*` dark theme tokens + 15 `--admin-*` aliases
+- `@bhooai/nexus-postcss/theme-light-dark.css` — dual-theme variant using CSS `light-dark()` for automatic light/dark switching
+
+```css
+@import '@bhooai/nexus-postcss/theme.css';
+
+:root {
+  --nexus-accent: #ff6b6b;  /* retheme any token */
+}
+```
+
+See the [PostCSS API reference](docs/api/postcss.html) and the [Frontend Styling guide](docs/guides/guide-frontend-styling.html) for full documentation, including a live CSS playground.
+
 ## Uninstall
 
 Preview changes:
@@ -233,7 +277,7 @@ Uninstall does not remove the framework package, MongoDB's `nexus_projects` data
 ## Project Layout
 
 ```text
-packages/       Framework packages (@bhooai/nexus-*)
+packages/       17 framework packages (@bhooai/nexus-*)
 apps/backend/   Node.js backend
 apps/frontend/  React + Vite frontend
 apps/admin/     React + Vite admin host
@@ -242,8 +286,30 @@ bin/            CLI entry point
 contracts/      Node-to-Python API contracts
 plugins/        Project plugins
 tests/          Cross-service tests
-docs/           Architecture, improvements, and screenshots
+docs/           Architecture, guides, API reference, and screenshots
 ```
+
+### Framework packages
+
+| Package | Description |
+| --- | --- |
+| `@bhooai/nexus-core` | HTTP server, trie router, config stack, DI container |
+| `@bhooai/nexus-auth` | CSRF, CORS, security headers, rate limit, JWT, OAuth2, sessions, RBAC |
+| `@bhooai/nexus-data` | Custom ODM on the native mongodb driver |
+| `@bhooai/nexus-graphql` | Federation, supergraph, subscriptions — no Apollo |
+| `@bhooai/nexus-realtime` | WebSocket rooms, WebRTC signaling, mediasoup SFU |
+| `@bhooai/nexus-payments` | Razorpay, PayPal, PayU, Skrill, Payoneer + webhooks |
+| `@bhooai/nexus-email` | SMTP, templates, Redis-backed outbound queue |
+| `@bhooai/nexus-crypto` | RSA/ECDSA keys, X.509 certs, CSRs, HTTPS/mTLS |
+| `@bhooai/nexus-cache` | Redis cache-aside, rate limiter, pub/sub |
+| `@bhooai/nexus-ads` | Google Ads client with GAQL query builder |
+| `@bhooai/nexus-plugins` | In-process + sandboxed worker-thread plugins |
+| `@bhooai/nexus-ai-client` | Node client for the Python AI server — SSE, retries, timeouts |
+| `@bhooai/nexus-cluster` | Node agent, mesh registry, load balancer, autoscaler |
+| `@bhooai/nexus-telemetry` | Structured logger, metrics, trace/request-ID propagation |
+| `@bhooai/nexus-safe-goto` | Safe external-link dialog — anti tab-nabbing/phishing |
+| `@bhooai/nexus-postcss` | PostCSS preset — Tailwind, nesting, preset-env, autoprefixer, cssnano |
+| `@bhooai/nexus-cli` | init wizard, doctor, dev supervisor |
 
 ## Testing
 
@@ -274,15 +340,17 @@ Development endpoints are frontend `http://localhost:3000`, admin `http://localh
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture and data flow
-- [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) — improvement history
+- [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) — improvement history and next steps
 - [`docs/troubleshooting.html`](docs/troubleshooting.html) — common errors and fixes
+- [`docs/api/postcss.html`](docs/api/postcss.html) — PostCSS preset API reference + CSS playground
+- [`docs/guides/guide-frontend-styling.html`](docs/guides/guide-frontend-styling.html) — frontend styling guide with live preview
 - [`docs/screenshots/README.md`](docs/screenshots/README.md) — screenshot catalog
 - [`apps/ai-server/README.md`](apps/ai-server/README.md) — Python AI service
 - Package documentation under `packages/nexus-*/README.md`
 
 ## Design Principles
 
-BhooAI Nexus avoids Apollo, Express, and Mongoose where direct control is required. The HTTP server, trie router, ODM, federation layer, and plugin sandbox are implemented in the workspace. Established libraries are used for standards and infrastructure, including GraphQL.js, MongoDB, Redis, WebSockets, Nodemailer, Jose, and mediasoup.
+BhooAI Nexus avoids Apollo, Express, and Mongoose where direct control is required. The HTTP server, trie router, ODM, federation layer, plugin sandbox, and PostCSS preset are implemented in the workspace. Established libraries are used for standards and infrastructure, including GraphQL.js, MongoDB, Redis, WebSockets, Nodemailer, Jose, mediasoup, Tailwind CSS, and Lightning CSS.
 
 ## License
 
