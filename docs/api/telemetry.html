@@ -1,0 +1,264 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Telemetry API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-telemetry</span> Telemetry API
+    <span class="sub">Structured logging, metrics, and request/trace-id propagation.</span></h1>
+
+  <p>The observability backbone. A dependency-free structured logger with JSON/pretty output, redaction,
+     and a rotating file transport; a minimal counters &amp; histograms registry with both JSON and
+     Prometheus exposition; and a small <code>AsyncLocalStorage</code>-based trace context for
+     propagating request/trace ids across async boundaries.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>logger (types)</td><td><code>LogLevel</code>, <code>LEVEL_ORDER</code>, <code>LogRecord</code>, <code>LoggerOptions</code></td></tr>
+      <tr><td>logger (class/factory)</td><td><code>Logger</code>, <code>createLogger</code></td></tr>
+      <tr><td>metrics</td><td><code>MetricsRegistry</code></td></tr>
+      <tr><td>trace</td><td><code>TraceContext</code>, <code>withTrace</code>, <code>currentTrace</code>, <code>newRequestId</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Logger — types</h2>
+
+  <h3 id="LogLevel">LogLevel &amp; LEVEL_ORDER</h3>
+  <pre><code><span class="kw">type</span> LogLevel = <span class="str">'trace'</span> | <span class="str">'debug'</span> | <span class="str">'info'</span> | <span class="str">'warn'</span> | <span class="str">'error'</span> | <span class="str">'fatal'</span>;
+<span class="kw">const</span> LEVEL_ORDER: Record&lt;LogLevel, <span class="kw">number</span>&gt; = {
+  trace: <span class="num">10</span>, debug: <span class="num">20</span>, info: <span class="num">30</span>, warn: <span class="num">40</span>, error: <span class="num">50</span>, fatal: <span class="num">60</span>,
+};</code></pre>
+  <p>Six severity levels, ordered low → high. A record at level <code>L</code> is emitted only when
+     <code>LEVEL_ORDER[L] &gt;= LEVEL_ORDER[configuredLevel]</code>; everything below the configured
+     level is dropped. <code>trace</code> is the noisiest, <code>fatal</code> the most severe.</p>
+
+  <h3 id="LogRecord">LogRecord</h3>
+  <pre><code><span class="kw">interface</span> LogRecord {
+  level: LogLevel;
+  time: <span class="kw">number</span>;      <span class="com">// Date.now() epoch ms</span>
+  msg: <span class="kw">string</span>;
+  [key: <span class="kw">string</span>]: <span class="kw">unknown</span>;   <span class="com">// bindings + per-call data</span>
+}</code></pre>
+  <p>The internal shape of every emitted record. Bindings (from the constructor or <code>child()</code>)
+     and the per-call <code>data</code> object are spread into the record alongside <code>level</code>,
+     <code>time</code>, and <code>msg</code>.</p>
+
+  <h3 id="LoggerOptions">LoggerOptions</h3>
+  <pre><code><span class="kw">interface</span> LoggerOptions {
+  level?: LogLevel;
+  format?: <span class="str">'json'</span> | <span class="str">'pretty'</span>;
+  console?: <span class="kw">boolean</span>;
+  file?: { dir: <span class="kw">string</span>; maxFileSize: <span class="kw">number</span>; maxFiles: <span class="kw">number</span> };
+  redact?: <span class="kw">string</span>[];
+  bindings?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;;
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>level</code></td><td><code>LogLevel</code></td><td><code>'info'</code></td><td>Minimum level emitted (see <a href="#LogLevel">LogLevel</a>).</td></tr>
+      <tr><td><code>format</code></td><td><code>'json' | 'pretty'</code></td><td><code>'pretty'</code></td><td><code>'json'</code> emits one <code>JSON.stringify</code>ed record per line; <code>'pretty'</code> colorizes the level tag and appends the payload as JSON.</td></tr>
+      <tr><td><code>console</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Write to stdout (<code>trace</code>–<code>warn</code>) or stderr (<code>error</code>/<code>fatal</code>) in addition to the file transport.</td></tr>
+      <tr><td><code>file</code></td><td><code>{ dir, maxFileSize, maxFiles }</code></td><td>— (off)</td><td>Rotating file transport. Omit to disable. <code>dir</code> is created if missing; the active log is <code>&lt;dir&gt;/nexus.log</code> (appended to).</td></tr>
+      <tr><td><code>file.dir</code></td><td><code>string</code></td><td>—</td><td>Log directory (created with <code>mkdirSync(..., { recursive: true })</code>).</td></tr>
+      <tr><td><code>file.maxFileSize</code></td><td><code>number</code></td><td>—</td><td>Bytes before rotation. When the running <code>nexus.log</code> reaches this size it is rotated.</td></tr>
+      <tr><td><code>file.maxFiles</code></td><td><code>number</code></td><td>—</td><td>Rotated files to keep. On rotation, <code>nexus.&lt;i-1&gt;.log</code> is renamed to <code>nexus.&lt;i&gt;.log</code> for <code>i = maxFiles-1 … 1</code>, then the active file becomes <code>nexus.0.log</code> and a fresh <code>nexus.log</code> is opened.</td></tr>
+      <tr><td><code>redact</code></td><td><code>string[]</code></td><td><code>[]</code></td><td>Field names to replace with <code>'[REDACTED]'</code>. Matched by <strong>exact, case-sensitive key</strong> (<code>key in record</code>) — not substring, not case-insensitive.</td></tr>
+      <tr><td><code>bindings</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td><code>{}</code></td><td>Default fields merged into every record (e.g. <code>{ service: 'api' }</code>). Child loggers inherit and extend these.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="label">File transport</span>
+    When <code>file</code> is set, the logger appends to <code>&lt;dir&gt;/nexus.log</code> and tracks the
+    byte count; once it reaches <code>maxFileSize</code> the file is rotated through
+    <code>nexus.0.log … nexus.&lt;maxFiles-1&gt;.log</code>. Stream errors clear the stream (logging
+    continues to console only) rather than crashing the process.
+  </div>
+
+  <h2>Logger — class &amp; factory</h2>
+
+  <h3 id="Logger">Logger</h3>
+  <pre><code><span class="kw">class</span> Logger {
+  constructor(opts: LoggerOptions = {});
+  child(bindings: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): Logger;
+  setLevel(level: LogLevel): <span class="kw">void</span>;
+  log(level: LogLevel, msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  trace(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  debug(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  info(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  warn(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  error(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  fatal(msg: <span class="kw">string</span>, data?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">void</span>;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Inbuilt structured logger. Six level methods (<code>trace</code> … <code>fatal</code>) are thin
+     wrappers over the generic <code>log(level, msg, data?)</code>. The record carries
+     <code>{ level, time, msg, ...bindings, ...data }</code>; redaction runs before formatting; output
+     goes to console and (optionally) the rotating file transport.</p>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>new Logger(opts?)</code></td><td>Construct from <a href="#LoggerOptions">LoggerOptions</a>. Opens the file stream up front when <code>file</code> is set. All options default sanely (see the table).</td></tr>
+      <tr><td><code>child(bindings)</code></td><td>Returns a new <code>Logger</code> that inherits <code>level</code>, <code>format</code>, <code>console</code>, <code>file</code>, and <code>redact</code>, merging <code>bindings</code> over the parent's bindings. Per-request loggers are built this way.</td></tr>
+      <tr><td><code>setLevel(level)</code></td><td>Change the minimum level at runtime (mutates the logger in place; child loggers keep their own copy).</td></tr>
+      <tr><td><code>log(level, msg, data?)</code></td><td>Generic emit. Builds the <code>LogRecord</code>, redacts, formats, and writes. The six level methods just forward to this.</td></tr>
+      <tr><td><code>trace/debug/info/warn/error/fatal(msg, data?)</code></td><td>Convenience wrappers — <code>this.log('trace', msg, data)</code>, etc.</td></tr>
+      <tr><td><code>close()</code></td><td>Flush the file transport (<code>stream.end(...)</code>) and resolve. No-op (resolves immediately) when there is no file stream. Call on graceful shutdown so buffered writes land.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">import</span> { Logger } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+
+<span class="kw">const</span> log = <span class="kw">new</span> Logger({
+  level: <span class="str">'info'</span>,                  <span class="com">// trace|debug|info|warn|error|fatal</span>
+  format: <span class="str">'pretty'</span>,             <span class="com">// 'json' | 'pretty'</span>
+  console: <span class="kw">true</span>,
+  file: { dir: <span class="str">'logs'</span>, maxFileSize: <span class="num">10485760</span>, maxFiles: <span class="num">7</span> },
+  redact: [<span class="str">'password'</span>, <span class="str">'secret'</span>, <span class="str">'authorization'</span>],
+  bindings: { service: <span class="str">'api'</span> },
+});
+
+log.info(<span class="str">'listening'</span>, { port: <span class="num">4000</span> });
+log.warn(<span class="str">'bad origin'</span>, { origin: req.headers.origin });
+log.error(<span class="str">'boom'</span>, err);
+log.fatal(<span class="str">'cannot boot'</span>, { cause });
+
+<span class="kw">const</span> reqLog = log.child({ requestId: reqId }); <span class="com">// inherits + merges fields</span>
+reqLog.debug(<span class="str">'hit'</span>, { route });
+
+log.setLevel(<span class="str">'debug'</span>);                       <span class="com">// runtime change</span>
+<span class="kw">await</span> log.close();                       <span class="com">// flush file transport on shutdown</span></code></pre>
+  <div class="callout warn">
+    <span class="label">Redaction is exact</span>
+     Redaction matches <strong>exact, case-sensitive</strong> field names (<code>key in record</code>).
+     A field named <code>Password</code> is <em>not</em> redacted by <code>redact: ['password']</code>.
+     Nested fields are not traversed — redact top-level keys only.
+  </div>
+
+  <h3 id="createLogger">createLogger(opts?)</h3>
+  <pre><code><span class="kw">function</span> createLogger(opts?: LoggerOptions): Logger</code></pre>
+  <p>A file-less logger factory for tests and library contexts. Equivalent to
+     <code>new Logger({ console: false, ...opts })</code> — i.e. it forces <code>console: false</code>
+     unless <code>opts</code> overrides it, and never opens a file stream on its own. Use this in
+     packages/tests where you want a silent or opt-in logger without touching the filesystem.</p>
+  <pre><code><span class="kw">import</span> { createLogger } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+<span class="kw">const</span> log = createLogger();        <span class="com">// silent by default (console off, no file)</span>
+<span class="kw">const</span> loud = createLogger({ console: <span class="kw">true</span>, level: <span class="str">'debug'</span> });</code></pre>
+
+  <h2 id="MetricsRegistry">MetricsRegistry</h2>
+  <pre><code><span class="kw">import</span> { MetricsRegistry } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+<span class="kw">class</span> MetricsRegistry {
+  counter(name: <span class="kw">string</span>, help = <span class="str">''</span>): CounterState;
+  histogram(name: <span class="kw">string</span>, buckets: <span class="kw">number</span>[] = [<span class="num">0.005</span>, <span class="num">0.01</span>, <span class="num">0.05</span>, <span class="num">0.1</span>, <span class="num">0.5</span>, <span class="num">1</span>, <span class="num">5</span>, <span class="num">10</span>], help = <span class="str">''</span>): HistogramState;
+  inc(name: <span class="kw">string</span>, value = <span class="num">1</span>, labels: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt; = {}): <span class="kw">void</span>;
+  observe(name: <span class="kw">string</span>, value: <span class="kw">number</span>, labels: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt; = {}): <span class="kw">void</span>;
+  toJSON(): Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;;
+  toPrometheus(): <span class="kw">string</span>;
+  reset(): <span class="kw">void</span>;
+}</code></pre>
+  <p>Minimal counters &amp; histograms with label support. Labels are sorted by key and encoded into the
+     Prometheus-style <code>{k="v",...}</code> suffix, so the same label set in any order maps to one
+     series. Counters store a <code>Map&lt;labelKey, number&gt;</code>; histograms store per-bucket
+     cumulative counts (incremented for every bucket whose <code>le</code> the observation satisfies),
+     plus a sum and total per label set.</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>counter(name, help='')</code></td><td>Register (or fetch) a counter and return its state. Does <strong>not</strong> increment — use <code>inc()</code> for that.</td></tr>
+      <tr><td><code>histogram(name, buckets=[…], help='')</code></td><td>Register (or fetch) a histogram and return its state. Only <strong>registers</strong> the histogram and its bucket boundaries — it does <strong>not</strong> record a value. Use <code>observe()</code> to record. Default buckets: <code>[0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]</code>.</td></tr>
+      <tr><td><code>inc(name, value=1, labels={})</code></td><td>Increment the counter <code>name</code> by <code>value</code> (default <code>1</code>) for the given label set. Auto-registers the counter if not yet seen.</td></tr>
+      <tr><td><code>observe(name, value, labels={})</code></td><td>Record <code>value</code> into histogram <code>name</code> for the given label set. For each bucket <code>le</code>, the cumulative count is incremented when <code>value &lt;= le</code>; <code>sum</code> and <code>total</code> are updated. Auto-registers the histogram (with default buckets) if not yet seen.</td></tr>
+      <tr><td><code>toJSON()</code></td><td>JSON snapshot for an admin <code>/metrics</code> endpoint. Counters: <code>{ type, help, values }</code>; histograms: <code>{ type, help, buckets, counts, sums, totals }</code>.</td></tr>
+      <tr><td><code>toPrometheus()</code></td><td>Prometheus text exposition format. Emits <code># HELP</code> (when help is set), <code># TYPE</code>, then one line per series. Histograms emit <code>_bucket{...,le="..."}</code> (cumulative), <code>_bucket{...,le="+Inf"}</code>, <code>_sum</code>, and <code>_count</code>.</td></tr>
+      <tr><td><code>reset()</code></td><td>Clear all counters and histograms.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">import</span> { MetricsRegistry } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+<span class="kw">const</span> metrics = <span class="kw">new</span> MetricsRegistry();
+
+<span class="com">// Register a counter (optional — inc() auto-registers too)
+metrics.counter(<span class="str">'http_requests_total'</span>, <span class="str">'Total HTTP requests'</span>);
+metrics.inc(<span class="str">'http_requests_total'</span>, <span class="num">1</span>, { method: <span class="str">'GET'</span>, route: <span class="str">'/users/:id'</span> });
+metrics.inc(<span class="str">'http_requests_total'</span>,       <span class="com">// value defaults to 1, labels to {}</span>);
+
+<span class="com">// Register a histogram with explicit buckets, THEN record values with observe()
+metrics.histogram(<span class="str">'http_request_ms'</span>, [<span class="num">0.1</span>, <span class="num">0.5</span>, <span class="num">1</span>, <span class="num">5</span>], <span class="str">'Latency in ms'</span>);
+metrics.observe(<span class="str">'http_request_ms'</span>, latencyMs, { route: <span class="str">'/users/:id'</span> });
+
+<span class="kw">const</span> snapshot = metrics.toJSON();        <span class="com">// for an admin endpoint</span>
+<span class="kw">const</span> prom = metrics.toPrometheus();      <span class="com">// for a Prometheus scraper</span>
+metrics.reset();                          <span class="com">// clear everything (e.g. between tests)</span></code></pre>
+  <div class="callout danger">
+    <span class="label">Two-step histograms</span>
+     <code>histogram(name, buckets, help)</code> only <strong>registers</strong> the histogram (and its
+     bucket boundaries) — it returns <code>HistogramState</code> and does <strong>not</strong> record a
+     value. To record a measurement, call <code>observe(name, value, labels)</code>. Calling
+     <code>histogram('x', value, help)</code> with a number as the second argument will silently treat
+     that number as a one-element buckets array — always register with buckets, then observe.
+  </div>
+  <div class="callout danger">
+    <span class="label">Counters don't chain</span>
+     <code>counter(name, help)</code> returns the registered counter state — it does <strong>not</strong>
+     chain <code>.inc()</code>. Increment via the registry's <code>inc(name, value, labels)</code>.
+  </div>
+
+  <h2>Trace — request &amp; trace ids</h2>
+  <p>Generic <code>AsyncLocalStorage</code>-based trace context. It generates and propagates a
+     <code>requestId</code> and <code>traceId</code> across async boundaries within a single Node
+     process — no transport-specific (WebSocket, HTTP, Python) coupling is baked in; downstream
+     code reads <code>currentTrace()</code> and forwards the ids through whatever channel it uses.</p>
+
+  <h3 id="TraceContext">TraceContext</h3>
+  <pre><code><span class="kw">interface</span> TraceContext {
+  requestId: <span class="kw">string</span>;
+  traceId: <span class="kw">string</span>;
+}</code></pre>
+  <p>A pair of UUIDs. <code>requestId</code> identifies a single request; <code>traceId</code> groups a
+     chain of related requests (e.g. a fan-out). Both default to fresh <code>randomUUID()</code>s but
+     may be seeded from inbound headers via <code>withTrace</code>'s <code>existing</code> argument.</p>
+
+  <h3 id="withTrace">withTrace(fn, existing?)</h3>
+  <pre><code><span class="kw">function</span> withTrace&lt;R&gt;(fn: () =&gt; R, existing?: Partial&lt;TraceContext&gt;): R</code></pre>
+  <p>Start a trace context for the lifetime of <code>fn</code>, propagating request/trace ids. Builds a
+     <code>TraceContext</code> from <code>existing</code> (filling any missing id with a fresh
+     <code>randomUUID()</code>), then runs <code>fn</code> inside an <code>AsyncLocalStorage</code> scope
+     so that <code>currentTrace()</code> returns that context from anywhere in the same async chain.</p>
+  <pre><code><span class="kw">import</span> { withTrace, currentTrace } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+
+<span class="com">// seed from inbound headers, or mint fresh ids</span>
+<span class="kw">const</span> result = withTrace(() =&gt; handleRequest(req), {
+  requestId: req.headers[<span class="str">'x-request-id'</span>] <span class="kw">as</span> <span class="kw">string</span> | <span class="kw">undefined</span>,
+  traceId: req.headers[<span class="str">'x-trace-id'</span>] <span class="kw">as</span> <span class="kw">string</span> | <span class="kw">undefined</span>,
+});
+
+<span class="com">// deep inside handleRequest, still reachable:</span>
+<span class="kw">const</span> ctx = currentTrace();  <span class="com">// { requestId, traceId } | undefined</span>
+log.child({ requestId: ctx?.requestId }).info(<span class="str">'handled'</span>);</code></pre>
+
+  <h3 id="currentTrace">currentTrace()</h3>
+  <pre><code><span class="kw">function</span> currentTrace(): TraceContext | <span class="kw">undefined</span></code></pre>
+  <p>The current trace context, if any. Returns <code>undefined</code> outside a <code>withTrace</code>
+     scope. Reads the <code>AsyncLocalStorage</code> store, so it's safe across <code>await</code>s and
+     other async hops within the scope.</p>
+
+  <h3 id="newRequestId">newRequestId()</h3>
+  <pre><code><span class="kw">function</span> newRequestId(): <span class="kw">string</span></code></pre>
+  <p>Generate a standalone id (<code>crypto.randomUUID()</code>) — for headers, log bindings, or
+     anywhere you need a fresh id without entering a trace scope. <code>@bhooai/nexus-core</code> also
+     re-exports a <code>newRequestId</code> used by <code>NexusServer</code> when no
+     <code>x-request-id</code> header is present; both are the same trivial UUID helper.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Telemetry API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Telemetry - redaction &amp; levels","apiBase":"http://localhost:4000","js":"// Redaction matches the real Logger: exact, case-sensitive key match (key in record).\n// Not substring, not case-insensitive.\nfunction redact(obj, keys) {\n  const out = { ...obj };\n  for (const key of keys) {\n    if (key in out) out[key] = \"[REDACTED]\";\n  }\n  return out;\n}\nconsole.log(redact(\n  { email: \"a@b.com\", password: \"hunter2\", secret: \"sk-123\", Password: \"x\" },\n  [\"password\", \"secret\"]\n));\n// 'Password' (capital P) is NOT redacted - exact, case-sensitive match only.\n\n// All 6 levels ordered low -> high. A record at level L is emitted when\n// LEVEL_ORDER[L] >= LEVEL_ORDER[configured]. Try changing the configured level.\nconst rank = { trace: 10, debug: 20, info: 30, warn: 40, error: 50, fatal: 60 };\nconst at = (level, cfg) => rank[level] >= rank[cfg];\nconsole.log(\"trace @ info:\", at(\"trace\", \"info\"));\nconsole.log(\"debug @ info:\", at(\"debug\", \"info\"));\nconsole.log(\"warn  @ info:\", at(\"warn\", \"info\"));\nconsole.log(\"error @ info:\", at(\"error\", \"info\"));\nconsole.log(\"fatal @ info:\", at(\"fatal\", \"info\"));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

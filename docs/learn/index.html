@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Build Guide — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN THE CODE</div>
+  <h1>Build BhooAI Nexus <span class="sub">Step-by-step walkthroughs of every module, every file, and the code that makes it work — with a live playground to run it.</span></h1>
+
+  <p>This guide reconstructs the framework the way it is wired in <code>apps/backend/src/main.ts</code>:
+     foundation first, then security, data, the Graph layer, realtime, commerce, AI, and operations.
+     Each chapter explains the <em>role</em> of a package, maps <strong>every</strong> source file, and walks
+     through the important code line-by-line.</p>
+
+  <p>Every chapter ends with an interactive <strong>playground</strong>. Use the <em>JS sandbox</em> tab to run
+     browser-safe logic snippets, and the <em>Live API</em> tab to call a running Nexus backend on
+     <code>localhost:4000</code> (start it with <code>node bin/nexus.js dev</code>).</p>
+
+  <div class="hero">
+    <div class="eyebrow">THE BUILD ORDER</div>
+    <h1>Foundation → Intelligence</h1>
+    <p>Each layer builds on the previous one. If you want the shortest path to "I understand this codebase",
+       read chapters 1 → 4 → 8 → 11. For the full picture, read all thirteen.</p>
+    <div class="status-strip">
+      <span>16 packages</span><span>~180 source files</span><span>4 terminals</span><span>29 playgrounds</span>
+    </div>
+  </div>
+
+  <h2>Chapters</h2>
+  <div class="grid">
+    <a class="card" href="01-foundation.html"><h4>01 · Foundation</h4><p><code>nexus-core</code> — workspace, config, DI, errors, the custom HTTP server + trie router.</p></a>
+    <a class="card" href="02-security.html"><h4>02 · Security</h4><p><code>nexus-auth</code> + <code>nexus-telemetry</code> — CSRF, CORS, JWT, OAuth, RBAC, logging.</p></a>
+    <a class="card" href="03-data.html"><h4>03 · Data ODM</h4><p><code>nexus-data</code> — a from-scratch ODM on the MongoDB driver. No mongoose.</p></a>
+    <a class="card" href="04-graphql.html"><h4>04 · GraphQL</h4><p><code>nexus-graphql</code> — subgraphs, federation, query planner, subscriptions. No Apollo.</p></a>
+    <a class="card" href="05-realtime.html"><h4>05 · Realtime</h4><p><code>nexus-realtime</code> — WebSocket rooms, Redis fanout, WebRTC signaling, mediasoup SFU.</p></a>
+    <a class="card" href="06-payments-email-crypto.html"><h4>06 · Payments · Email · Crypto</h4><p>Five gateways, webhook verification, SMTP + templates, keypairs + CSRs.</p></a>
+    <a class="card" href="07-cache-ads.html"><h4>07 · Cache · Ads</h4><p><code>nexus-cache</code> Redis wrapper + rate limiter + pub/sub; <code>nexus-ads</code> GAQL client.</p></a>
+    <a class="card" href="08-ai.html"><h4>08 · AI Server</h4><p>Python FastAPI + <code>nexus-ai-client</code> — OpenAI-compatible, SSE streaming, one contract.</p></a>
+    <a class="card" href="09-plugins.html"><h4>09 · Plugins</h4><p><code>nexus-plugins</code> — manifest, trusted host, sandboxed workers, hooks, admin extensions.</p></a>
+    <a class="card" href="10-cluster.html"><h4>10 · Cluster</h4><p><code>nexus-cluster</code> — node agents, registry, load balancer, autoscaler, AI advisor.</p></a>
+    <a class="card" href="11-cli.html"><h4>11 · CLI</h4><p><code>nexus-cli</code> — supervisor, init/dev/doctor, config-sync, project templates.</p></a>
+    <a class="card" href="12-apps.html"><h4>12 · Apps</h4><p>The four terminals — backend bootstrap, frontend tabs, admin SPA, Docker.</p></a>
+    <a class="card" href="13-tests.html"><h4>13 · Tests</h4><p>vitest suites, backend integration, Python contract tests, Playwright e2e.</p></a>
+    <a class="card" href="14-postman-testing.html"><h4>14 · Postman API Testing</h4><p>Step-by-step guide to testing the cluster link API with Postman — CSRF, JWT auth, screenshots, troubleshooting.</p></a>
+  </div>
+
+  <h2>Reading guide</h2>
+  <table>
+    <thead><tr><th>You want to…</th><th>Read</th></tr></thead>
+    <tbody>
+      <tr><td>Understand how a request turns into a response</td><td><a href="01-foundation.html">01 · Foundation</a></td></tr>
+      <tr><td>Know how login, sessions and CSRF work</td><td><a href="02-security.html">02 · Security</a></td></tr>
+      <tr><td>Persist data without mongoose</td><td><a href="03-data.html">03 · Data ODM</a></td></tr>
+      <tr><td>Run GraphQL with multiple subgraphs</td><td><a href="04-graphql.html">04 · GraphQL</a></td></tr>
+      <tr><td>Add chat, rooms, or video calls</td><td><a href="05-realtime.html">05 · Realtime</a></td></tr>
+      <tr><td>Take payments or send email</td><td><a href="06-payments-email-crypto.html">06 · Payments · Email · Crypto</a></td></tr>
+      <tr><td>Call OpenAI or Ollama from Node</td><td><a href="08-ai.html">08 · AI Server</a></td></tr>
+      <tr><td>Extend the platform</td><td><a href="09-plugins.html">09 · Plugins</a></td></tr>
+      <tr><td>Scale to many machines</td><td><a href="10-cluster.html">10 · Cluster</a></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Open a playground below</span>
+    Run the framework's own config-merge logic in a sandbox, or hit the live
+    <code>/health</code> endpoint on a running backend.
+  </div>
+
+  <section data-playground='{
+    "title": "Nexus foundation playground",
+    "apiBase": "http://localhost:4000",
+    "js": "// Config precedence demo: defaults < nexus.config.ts < env\nconst merge = (base, over) => ({ ...base, ...over, nested: { ...base.nested, ...(over.nested || {}) } });\n\nconst defaults = { server: { port: 4000 }, logging: { level: \"info\" } };\nconst user = { server: { port: 4000 } };\nconst env = { server: { port: 5000 } };\n\nconst effective = merge(merge(defaults, user), env);\nconsole.log(\"effective port:\", effective.server.port);\nconsole.log(\"log level:\", effective.logging.level);",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <div class="foot">BhooAI Nexus · Learn · Build Guide</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

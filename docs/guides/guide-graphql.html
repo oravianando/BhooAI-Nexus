@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GraphQL API — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>GraphQL API <span class="sub">Build a subgraph, mount it on a gateway, expose <code>POST /graphql</code>, add subscriptions over WebSocket, and federate multiple subgraphs — all on <code>@bhooai/nexus-graphql</code> (graphql-js + a hand-rolled federation layer, no Apollo).</span></h1>
+
+  <h2>The flow</h2>
+  <pre><code>defineSubgraph({typeDefs, resolvers})  ──&gt;  createGateway({subgraph})  ──&gt;  graphqlHttpHandler on POST /graphql
+                                              │
+                                              └─&gt; SubscriptionServer on ws://host/graphql/ws   (graphql-transport-ws)</code></pre>
+
+  <h2>1. Define a subgraph</h2>
+  <p><code>defineSubgraph</code> takes SDL typeDefs (with federation <code>@key</code> directives) and resolvers.
+     It auto-wires <code>_service { sdl }</code> and <code>_entities</code>, prepends the federation directive
+     definitions + <code>@link</code>, and parses <code>@key</code> (single + composite):</p>
+  <pre><code><span class="kw">import</span> { defineSubgraph, createGateway, graphqlHttpHandler, PubSub, SubscriptionServer } <span class="kw">from</span> <span class="str">'@bhooai/nexus-graphql'</span>;
+
+<span class="kw">const</span> todoSubgraph = defineSubgraph({
+  typeDefs: <span class="str">`
+    type Todo @key(fields: "id") {
+      id: ID!
+      title: String!
+      done: Boolean!
+      ownerId: ID!
+    }
+    type Query {
+      todos(limit: Int = 50): [Todo!]!
+      todo(id: ID!): Todo
+    }
+    type Mutation {
+      addTodo(title: String!): Todo!
+      toggleTodo(id: ID!): Todo
+    }
+    type Subscription {
+      todoAdded: Todo!
+    }
+  `</span>,
+  resolvers: {
+    Query: {
+      todos:   (_p, { limit }) =&gt; Todo.find().limit(limit).lean(),
+      todo:    (_p, { id })     =&gt; Todo.findById(id).lean(),
+    },
+    Mutation: {
+      addTodo:   (_p, { title }, ctx) =&gt; Todo.create([{ title, done: <span class="num">false</span>, ownerId: ctx.user.id }]),
+      toggleTodo: <span class="kw">async</span> (_p, { id }) =&gt; {
+        <span class="kw">const</span> t = <span class="kw">await</span> Todo.findById(id);
+        t.done = !t.done; <span class="kw">await</span> t.save();
+        <span class="kw">return</span> t.toObject();
+      },
+    },
+    Subscription: {
+      todoAdded: { subscribe: () =&gt; pubsub.asyncIterator(<span class="str">'TODO_ADDED'</span>) },
+    },
+    Todo: {
+      __resolveReference: (rep) =&gt; Todo.findById(rep.id).lean(),   <span class="com">// federation entity join</span>
+    },
+  },
+});</code></pre>
+
+  <div class="callout note">
+    <span class="label">@key(fields: "id")</span>
+    The <code>@key</code> directive marks <code>Todo</code> as a federation entity whose identity is the
+    <code>id</code> field. Other subgraphs can reference <code>Todo</code> via <code>@extends</code> and the
+    gateway will join through <code>__resolveReference</code>.
+  </div>
+
+  <h2>2. Create the gateway</h2>
+  <p>Single-subgraph mode executes directly against the subgraph's resolvers — no network hop, shared in-process
+     context. This is the <strong>no-overhead path</strong>:</p>
+  <pre><code><span class="kw">const</span> gateway = createGateway({ subgraph: todoSubgraph });</code></pre>
+
+  <h2>3. Mount the HTTP handler — POST /graphql</h2>
+  <p><code>graphqlHttpHandler</code> handles <code>POST /graphql</code> with a JSON body of
+     <code>{ query, variables, operationName }</code>. The <code>context</code> factory receives the request
+     context and returns the GraphQL context:</p>
+  <pre><code>router.post(config.graphql.path, graphqlHttpHandler({
+  gateway,
+  introspection: config.graphql.introspection,   <span class="com">// gate introspection in prod</span>
+  context: <span class="kw">async</span> (ctx) =&gt; ({
+    request: ctx,
+    user: ctx.state.user,          <span class="com">// populated by authToken middleware</span>
+    pubsub,
+  }),
+}));</code></pre>
+
+  <h2>4. Subscriptions over WebSocket</h2>
+  <p><code>SubscriptionServer</code> speaks the <code>graphql-transport-ws</code> protocol on
+     <code>ws://host/graphql/ws</code>. Auth uses the <code>connection_init</code> payload — send the JWT as
+     <code>token</code>; the auth service verifies it once on connect:</p>
+  <pre><code><span class="kw">const</span> pubsub = <span class="kw">new</span> PubSub();
+
+<span class="kw">const</span> subs = <span class="kw">new</span> SubscriptionServer({
+  httpServer: server.httpServer,
+  gateway,
+  path: <span class="str">'/graphql/ws'</span>,
+  authService,
+  context: (_init, user) =&gt; ({ user, pubsub }),
+});
+
+<span class="com">// publish from anywhere in the app:</span>
+pubsub.publish(<span class="str">'TODO_ADDED'</span>, { todoAdded: newTodo });</code></pre>
+
+  <h3>Browser subscription client</h3>
+  <pre><code><span class="kw">import</span> { createClient } <span class="kw">from</span> <span class="str">'graphql-transport-ws'</span>;
+
+<span class="kw">const</span> ws = createClient({
+  url: <span class="str">`ws://${location.host}/graphql/ws`</span>,
+  connectionParams: () =&gt; ({ token: localStorage.getItem(<span class="str">'accessToken'</span>) }),
+});
+
+ws.subscribe(
+  { query: <span class="str">'subscription { todoAdded { id title done } }'</span> },
+  {
+    next: ({ data }) =&gt; console.log(<span class="str">'new todo'</span>, data.todoAdded),
+    error: (e) =&gt; console.error(e),
+    complete: () =&gt; console.log(<span class="str">'closed'</span>),
+  },
+);</code></pre>
+
+  <div class="callout warn">
+    <span class="label">contextValue vs context</span>
+    <code>gateway.subscribe({ document, contextValue })</code> needs a <strong>parsed</strong>
+    <code>DocumentNode</code> (<code>parse(query)</code>) and the parameter is named <code>contextValue</code>.
+    HTTP <code>execute</code> uses <code>context</code>. They differ — don't mix them up.
+  </div>
+
+  <h2>5. Multi-subgraph federation</h2>
+  <p>With more than one subgraph, switch to <code>createFederatedGateway</code>. <code>composeSupergraph</code>
+     merges the SDLs, <code>parseMetadata</code> extracts <code>@key</code> entities, and the executor builds a
+     FetchNode DAG that joins entities via <code>_entities</code> queries on <code>__typename + keyFields</code>:</p>
+  <pre><code><span class="kw">const</span> usersSubgraph = defineSubgraph({ typeDefs: usersSDL,  resolvers: usersResolvers  });
+<span class="kw">const</span> todosSubgraph = defineSubgraph({ typeDefs: todosSDL,  resolvers: todosResolvers });
+
+<span class="kw">const</span> gateway = createFederatedGateway({ subgraphs: [usersSubgraph, todosSubgraph] });
+
+router.post(<span class="str">'/graphql'</span>, graphqlHttpHandler({ gateway, introspection: <span class="num">true</span>, context }));</code></pre>
+
+  <div class="callout note">
+    <span class="label">When to federate</span>
+    Use the federated gateway only with &gt;1 subgraph. The single-subgraph path skips composition and planning
+    entirely and runs <code>execute()</code> directly against the public schema — same DX, zero overhead.
+  </div>
+
+  <h2>6. Browser — fetch POST /graphql</h2>
+  <p>Queries and mutations are plain POSTs. Send the CSRF header (the endpoint is a POST) and the JWT as a
+     Bearer token:</p>
+  <pre><code><span class="kw">async function</span> gql(query, variables = {}) {
+  <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">'/graphql'</span>, {
+    method: <span class="str">'POST'</span>,
+    headers: {
+      <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>,
+      <span class="str">'x-csrf-token'</span>: csrfToken,
+      <span class="str">'Authorization'</span>: <span class="str">`Bearer ${accessToken}`</span>,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  <span class="kw">const</span> { data, errors } = <span class="kw">await</span> res.json();
+  <span class="kw">if</span> (errors) <span class="kw">throw new</span> Error(errors[<span class="num">0</span>].message);
+  <span class="kw">return</span> data;
+}
+
+<span class="kw">const</span> data = <span class="kw">await</span> gql(
+  <span class="str">`mutation($title:String!){ addTodo(title:$title){ id title done } }`</span>,
+  { title: <span class="str">'Ship the gateway'</span> },
+);</code></pre>
+
+  <h2>7. Introspection gating</h2>
+  <p>Introspection is controlled by <code>config.graphql.introspection</code>. Enable it in dev so tools like
+     the GraphQL playground and Postman auto-complete the schema; disable it in production to avoid leaking your
+     API surface:</p>
+  <pre><code>graphql: {
+  path: <span class="str">'/graphql'</span>,
+  introspection: <span class="kw">process</span>.env.NODE_ENV !== <span class="str">'production'</span>,
+  playground:   <span class="kw">process</span>.env.NODE_ENV !== <span class="str">'production'</span>,
+}</code></pre>
+
+  <div class="callout danger">
+    <span class="label">Federation subset (v1)</span>
+    Supported: <code>@key</code> (single + composite), <code>@external</code>, <code>@requires</code>,
+    <code>@provides</code>, <code>@extends</code>, <code>_entities</code>, <code>_service { sdl }</code>.
+    <code>@shareable</code> arbitration, <code>@override</code>, and <code>@inaccessible</code> enforcement are
+    documented but <strong>not enforced</strong> yet. Don't rely on them for correctness.
+  </div>
+
+  <h2>Full example — Todo subgraph at a glance</h2>
+  <table>
+    <thead><tr><th>Concern</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Type defs (Query, Mutation, Subscription, <code>@key</code>)</td><td><code>defineSubgraph({ typeDefs })</code></td></tr>
+      <tr><td>Query / Mutation resolvers</td><td><code>resolvers.Query</code> / <code>resolvers.Mutation</code></td></tr>
+      <tr><td>Entity join for federation</td><td><code>Todo.__resolveReference</code></td></tr>
+      <tr><td>Subscription stream</td><td><code>Subscription.todoAdded.subscribe</code> + <code>pubsub.publish</code></td></tr>
+      <tr><td>HTTP endpoint</td><td><code>router.post('/graphql', graphqlHttpHandler(...))</code></td></tr>
+      <tr><td>WebSocket endpoint</td><td><code>SubscriptionServer({ path: '/graphql/ws' })</code></td></tr>
+      <tr><td>Auth on WS</td><td><code>connectionParams.token</code> verified by <code>authService</code></td></tr>
+    </tbody>
+  </table>
+
+  <p class="foot"><a href="guide-mongodb.html">← MongoDB CRUD</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-cluster.html">Cluster Setup →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · GraphQL API</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

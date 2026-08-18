@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>11 · CLI — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 11</div>
+  <h1>CLI <span class="sub"><code>@bhooai/nexus-cli</code> — the <code>nexus</code> command: <code>init</code>, <code>dev</code> (custom supervisor), <code>doctor</code>, <code>pysetup</code>, <code>cluster</code>, <code>node</code>, <code>sync</code>, plus the project templates.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/index.ts</code></td><td>Command dispatch (<code>nexus &lt;cmd&gt;</code>).</td></tr>
+      <tr><td><code>src/supervisor.ts</code></td><td>The four-terminal process supervisor + control API (:7474).</td></tr>
+      <tr><td><code>src/wizard.ts</code></td><td>Shared interactive primitives: <code>prompt</code>, <code>confirm</code>, <code>select</code>, <code>multiSelect</code>, <code>promptHidden</code>, <code>banner</code>, <code>summaryTable</code>, <code>isInteractive</code> — used by <code>init</code> and <code>pysetup</code>.</td></tr>
+      <tr><td><code>src/commands/dev.ts</code></td><td><code>nexus dev</code> — build the four ServiceSpecs and start the supervisor.</td></tr>
+      <tr><td><code>src/commands/init.ts</code></td><td><code>nexus init</code> — 20-step interactive setup wizard (scaffold + wire + config + .env + register + install).</td></tr>
+      <tr><td><code>src/commands/uninstall.ts</code></td><td><code>nexus uninstall</code> — drop DB, delete record, optionally purge directory.</td></tr>
+      <tr><td><code>src/commands/doctor.ts</code></td><td>Environment checks (node/python/mongo/redis/jwt-secret).</td></tr>
+      <tr><td><code>src/commands/pysetup.ts</code></td><td>Install the Python AI-server deps (supports <code>--interactive</code>).</td></tr>
+      <tr><td><code>src/commands/cluster.ts</code></td><td>Root-side mesh commands.</td></tr>
+      <tr><td><code>src/commands/node.ts</code></td><td>Run this machine as a cluster node.</td></tr>
+      <tr><td><code>src/commands/sync.ts</code></td><td>Rewrite Dockerfiles/serve-all/DB from <code>nexus.config.ts</code>.</td></tr>
+      <tr><td><code>src/config-sync.ts</code></td><td>Derive Docker/serve values from config + fingerprint change detection.</td></tr>
+      <tr><td><code>src/dotenv.ts</code></td><td>Minimal <code>.env</code> loader.</td></tr>
+      <tr><td><code>src/util.ts</code></td><td>Shared helpers: <code>scanRuntimes</code>, <code>scanServices</code>, <code>tcpReachable</code>, <code>isPortFree</code>.</td></tr>
+      <tr><td><code>templates/</code></td><td>The runnable project scaffold (backend/frontend/admin/ai-server + Docker).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>0. Wizard primitives</h3>
+  <p><code>src/wizard.ts</code> provides the shared interactive primitives used by every interactive
+     command. Built on <code>node:readline/promises</code> (no new deps):</p>
+  <ul>
+    <li><code>isInteractive()</code> — true when <code>process.stdin.isTTY &amp;&amp; !process.env.CI</code>.</li>
+    <li><code>prompt(question, defaultValue?)</code> — free-text input; returns default when non-interactive.</li>
+    <li><code>confirm(question, defaultValue?)</code> — yes/no (y/n); defaults when non-interactive.</li>
+    <li><code>select(question, options, defaultValue?)</code> — 1-indexed list choice.</li>
+    <li><code>multiSelect(question, options, defaultValues?)</code> — comma-separated multiple choice.</li>
+    <li><code>promptHidden(question)</code> — API-key / secret input (dev-only — non-interactive returns '').</li>
+    <li><code>banner(title, lines)</code> — prints a section header.</li>
+    <li><code>summaryTable(rows)</code> — label | value table with green/red status icons.</li>
+    <li><code>statusIcon(ok)</code> — ✓ / ✗ in green/red.</li>
+  </ul>
+  <p>Every prompt returns its default in non-interactive mode, so the wizard stays scriptable
+     (<code>--no-interactive</code> + flags for CI).</p>
+
+  <h3>1. <code>nexus init</code> — all-in-one wizard</h3>
+  <p>The most heavily used command. When <code>stdin</code> is a TTY it runs a 20-step interactive wizard;
+     when it isn't (CI, piped input) it operates entirely from flags with sensible defaults. After one run,
+     <code>npm run dev</code> starts the whole stack — backend, frontend, admin, Python AI server, Mongo
+     + Redis wired, JWT secret + AI keys in <code>.env</code>, cluster token generated, and the project
+     pre-registered in <code>nexus_projects.projects</code>.</p>
+  <p>Key features:</p>
+  <ul>
+    <li><strong>Prerequisite scan</strong> (shared with <code>doctor</code>) — detects node/npm/python/git,
+        probes Mongo + Redis via TCP. If Mongo/Redis are down, offers retry/continue/abort so you can start
+        them in another terminal and re-probe without aborting the wizard.</li>
+    <li><strong>Auto-detect cluster token</strong> — when scaffolding a node next to a root project,
+        <code>detectSiblingRootToken()</code> scans the parent directory for a sibling
+        <code>nexus.config.*</code> with <code>cluster: { enabled: true, token: '...' }</code> and
+        reuses it — so the node can authenticate to the central immediately.</li>
+    <li><strong>Pre-registration</strong> — writes a record into <code>nexus_projects.projects</code>
+        (status 'stopped', full settings snapshot, no secrets) so the admin dashboard recognizes the
+        project before the first <code>npm run dev</code>. The backend flips it to 'running' on startup.</li>
+    <li><strong>Security invariants</strong> — Python AI server binds <code>127.0.0.1</code>
+        (<code>AI_HOST</code> in <code>.env</code>) so only Node (same host) reaches it. Secrets stay in
+        <code>.env</code> only. The verify step asserts loopback and port-free checks.</li>
+    <li><strong>Idempotent</strong> — re-running <code>nexus init .</code> updates config + <code>.env</code>
+        without clobbering existing secrets or regenerating the cluster pairing token.</li>
+  </ul>
+
+  <h4>How to use — practical examples</h4>
+  <h5>Quick start (interactive)</h5>
+  <pre><code><span class="com"># Run the wizard — answer prompts with defaults or enter custom values</span>
+nexus init my-app
+<span class="com"># Walk through: project name → root/node → ports → Mongo/Redis → AI providers → venv → confirm → done</span>
+<span class="kw">cd</span> my-app && npm run dev</code></pre>
+
+  <h5>Scaffold a node that pairs with an existing root</h5>
+  <pre><code><span class="com"># The wizard auto-detects the sibling root's cluster token so nodes can link immediately</span>
+<span class="kw">cd</span> my-cluster
+nexus init root-server --as=root
+nexus init slave-1 --as=node --role=backend --port=<span class="num">7575</span>
+<span class="com"># Start the root and node, then link from the root:</span>
+<span class="kw">cd</span> root-server && nexus cluster serve
+<span class="kw">cd</span> slave-1 && nexus node serve --role=backend --port=<span class="num">7575</span>
+nexus cluster link http://localhost:7575</code></pre>
+
+  <h5>CI / non-interactive (one-liner)</h5>
+  <pre><code><span class="com"># All values from flags — no prompts, no TTY needed</span>
+nexus init ci-app --no-interactive --name ci-app \
+  --mongo-uri mongodb://localhost:27017/ci-app \
+  --redis-url redis://localhost:6379 \
+  --ai-providers ollama,openai \
+  --ai-key openai=sk-your-key-here \
+  --venv \
+  --skip-install    <span class="com"># skip npm install (CI does it separately)</span></code></pre>
+
+  <h5>Re-run in an existing project (idempotent)</h5>
+  <pre><code><span class="com"># Updates config + .env without clobbering secrets or regenerating the token</span>
+nexus init . --no-interactive --name my-updated-app --mongo-uri mongodb://localhost:27017/new-db</code></pre>
+
+  <h5>Custom ports (avoid collisions with another running project)</h5>
+  <pre><code><span class="com"># The wizard auto-allocates free ports. Pass --no-interactive to force defaults,</span>
+<span class="com"># then edit nexus.config.ts to set custom ports before the first npm run dev.</span>
+nexus init app2
+<span class="com"># or override ports in a single command (edit nexus.config.ts after):</span>
+nexus init app2 --no-interactive --name app2
+<span class="com"># then in nexus.config.ts: server: { port: 4010 }, frontend: { port: 3020 }, admin: { port: 3012 }</span></code></pre>
+
+  <h5>GitHub Codespaces / cloud (no Mongo/Redis locally)</h5>
+  <pre><code><span class="com"># Skip the Mongo/Redis probe so the wizard doesn't block on reachability</span>
+nexus init cloud-app --skip-mongo-check
+<span class="com"># Or set remote URIs in one go:</span>
+nexus init cloud-app --no-interactive \
+  --mongo-uri "mongodb+srv://user:pass@cluster.mongodb.net/myapp" \
+  --redis-url "redis://my-redis.cloud.com:6379" \
+  --skip-mongo-check</code></pre>
+
+  <h3>2. <code>nexus uninstall</code> — remove a project cleanly</h3>
+  <p>Three-step cleanup that removes a project from disk + the databases:</p>
+  <ol>
+    <li><strong>Drop the project's MongoDB database</strong> (e.g. <code>test_app</code>) — reuses the
+        project-info connection's <code>MongoClient</code> so no second connection is needed. Skipped
+        with <code>--keep-db</code> or if Mongo is unreachable.</li>
+    <li><strong>Delete the project's record</strong> from <code>nexus_projects.projects</code>
+        (the shared registry — other projects are untouched).</li>
+    <li><strong>Optionally purge files</strong> — only with <code>--purge</code>. Handles Windows
+        <code>EPERM</code> on read-only <code>node_modules/.bin</code> and <code>.venv</code> files
+        via a three-layer fallback: (a) recursively <code>chmod</code> to clear the read-only bit,
+        (b) <code>rmSync</code> with 3× retry, (c) OS shell <code>rd /s /q</code> on Windows /
+        <code>rm -rf</code> on Unix.</li>
+  </ol>
+  <p>Refuses to run non-interactively without <code>--force</code>. <code>--dry-run</code> previews
+     everything without deleting.</p>
+  <p>Instead of <code>concurrently</code>/<code>pm2</code>, Nexus ships its own supervisor. It spawns the four
+     services with prefixed colored logs, handles Ctrl-C, and exposes a localhost HTTP control API
+     (status/start/restart/stop/logs) the admin app drives. Notable Windows handling:</p>
+  <ul>
+    <li>Child PATH is rebuilt with <code>node_modules/.bin</code> dirs so <code>tsx</code>/<code>vite</code> resolve even when launched directly.</li>
+    <li>Log lines are split on <code>\r?\n</code> (Vite/uvicorn use LF on Windows) so output isn't stuck in a buffer.</li>
+    <li>Stop uses <code>taskkill /T /F</code> on Windows — <code>proc.kill()</code> would only kill the <code>cmd.exe</code> wrapper and orphan the tree.</li>
+  </ul>
+  <pre><code><span class="kw">const</span> proc = spawn(cmd, args, { cwd: cwdAbs, env: childEnv, shell: process.platform === <span class="str">'win32'</span>, stdio: [<span class="str">'ignore'</span>, <span class="str">'pipe'</span>, <span class="str">'pipe'</span>] });</code></pre>
+
+  <h3>4. Control API + port collision</h3>
+  <p>The control API binds <code>127.0.0.1:7474</code> first, then <strong>auto-increments</strong> on
+     <code>EADDRINUSE</code> and persists the actual port to <code>supervisor.json</code> — so a second
+     <code>nexus dev</code> doesn't break the admin's callbacks.</p>
+
+  <h3>5. Config sync</h3>
+  <p><code>sync</code> rewrites Dockerfiles, <code>docker.*</code>, <code>serve-all.mjs</code>, and the DB name
+     from the single <code>nexus.config.ts</code> — one source of truth, no stale ports. <code>config-sync.ts</code>
+     fingerprints values so <code>--check</code> can report drift.</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: model the port-collision auto-increment + log-line split. Live API: hit the supervisor control
+     API if a dev session is running (default <code>http://127.0.0.1:7474/status</code>).</p>
+
+  <section data-playground='{
+    "title": "CLI — supervisor control API + log split",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: control API port auto-increment on EADDRINUSE\nfunction bindPort(port, taken) {\n  let p = port;\n  while (taken.has(p)) p++;\n  taken.add(p);\n  return p;\n}\nconst taken = new Set([7474, 7475]);\nconsole.log(\"control API binds to:\", bindPort(7474, taken));\n\n// Model: split mixed CRLF/LF output into clean lines\nfunction splitLines(buf) {\n  const lines = buf.split(/\\r?\\n/);\n  return lines; // last element may be an incomplete line\n}\nconst chunk = \"[backend] listening\\r\\n[frontend] ready!\\n[ai] up\\r\\n\";\nconsole.log(splitLines(chunk).filter(Boolean).join(\"\\n\"));\n\n// Model: service spec spawn\nfunction spawnSpec(spec) {\n  return { name: spec.name, cmd: spec.command[0], args: spec.command.slice(1), cwd: spec.cwd };\n}\nconsole.log(spawnSpec({ name: \"backend\", command: [\"tsx\", \"watch\", \"apps/backend/src/main.ts\"], cwd: \"\" }));",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <p class="foot"><a href="10-cluster.html">&larr; 10 · Cluster</a> · <a href="index.html">Build Guide</a> · Next: <a href="12-apps.html">12 · Apps →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 11 CLI</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

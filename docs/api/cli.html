@@ -1,0 +1,612 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CLI API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-cli</span> CLI API
+    <span class="sub">The <code>nexus</code> command, the supervisor, and the config-sync engine.</span></h1>
+
+  <p>The developer-facing command line. It boots the four-process dev stack under an inbuilt supervisor,
+     scaffolds new projects from templates, syncs every derived artifact back to the single
+     <code>nexus.config.*</code> source of truth, and orchestrates the root/node mesh. No external
+     process manager — the supervisor is a small <code>node:http</code> server with a CORS-enabled
+     control API that the admin SPA drives directly.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>entrypoint</td><td><code>run</code></td></tr>
+      <tr><td>commands</td><td><code>doctor</code>, <code>init</code>, <code>dev</code>, <code>pysetup</code>, <code>uninstall</code>, <code>cluster</code>, <code>node</code>, <code>syncCommand</code></td></tr>
+      <tr><td>config-sync</td><td><code>syncConfig</code>, <code>configChangedSinceSync</code>, <code>deriveValues</code>, <code>fingerprintOf</code></td></tr>
+      <tr><td>supervisor</td><td><code>Supervisor</code> (class), <code>ServiceSpec</code>, <code>ServiceState</code>, <code>LogEntry</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="run">run(cmd, args)</h2>
+  <pre><code><span class="kw">async function</span> run(cmd: <span class="kw">string</span>, args: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Dispatch a CLI command and return its exit code. <code>run</code> is the bin shim's entrypoint:
+     <code>bin/nexus.js</code> parses <code>process.argv</code> and calls <code>run(cmd, args)</code>.
+     It loads the project <code>.env</code> once (via <code>loadDotEnv</code>) so <code>NEXUS_*</code>
+     keys reach both the config loader and the supervised child processes (they inherit
+     <code>process.env</code>).</p>
+  <pre><code><span class="kw">import</span> { run } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cli'</span>;
+process.exitCode = <span class="kw">await</span> run(<span class="str">'dev'</span>, [<span class="str">'--only'</span>, <span class="str">'backend,ai-server'</span>]);</code></pre>
+  <p>Unknown commands print <code>Unknown command: &lt;cmd&gt;</code> followed by the help text and
+     return <code>1</code>. <code>help</code>, <code>--help</code>, and <code>-h</code> print help and
+     return <code>0</code>.</p>
+
+  <h2>Commands</h2>
+  <table>
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>init [target]</code></td>
+        <td><strong>All-in-one setup wizard.</strong> Interactive (TTY) or non-interactive (<code>--no-interactive</code>).
+            20-step flow: prerequisite scan (node/npm/python/git + Mongo/Redis TCP with retry/continue/abort)
+            → project name → server kind (root/node) → cluster role + port → auto-allocate ports →
+            Mongo URI → Redis URL → AI providers (multi-select + per-key prompt) → Python venv →
+            review summary → scaffold templates → wire framework → allocate free ports → patch config →
+            generate <code>.env</code> (JWT + MONGODB_URI + REDIS_URL + AI_HOST=127.0.0.1 + AI keys +
+            payments) → <strong>register project in <code>nexus_projects.projects</code></strong> →
+            npm install → <code>pysetup</code> → verify → next steps.
+            After one command the whole stack is bootable (<code>npm run dev</code>). Idempotent.
+            Flags: <code>--force</code>, <code>--as=root|node</code>, <code>--name=N</code>,
+            <code>--mongo-uri=URI</code>, <code>--redis-url=URL</code>, <code>--ai-providers=a,b</code>,
+            <code>--ai-key id=val</code>, <code>--cluster-token=T</code>, <code>--role=&lt;R&gt;</code>,
+            <code>--port=&lt;N&gt;</code>, <code>--venv|--no-venv</code>, <code>--no-interactive</code>,
+            <code>--skip-install</code>, <code>--skip-mongo-check</code>.</td>
+      </tr>
+      <tr>
+        <td><code>uninstall [--target &lt;path&gt;]</code></td>
+        <td>Remove a project and its databases. Three-step cleanup: (1) drops the project's own MongoDB
+            database, (2) deletes the project's record from <code>nexus_projects.projects</code>,
+            (3) optionally removes the project directory from disk (<code>--purge</code>). Resistant to
+            Windows read-only files (<code>node_modules/.bin</code>, <code>.venv</code>) via
+            <code>chmod</code> + retry + shell (<code>rd /s /q</code>) fallback. Flags:
+            <code>--purge</code> (remove directory), <code>--force</code> (skip confirmations),
+            <code>--dry-run</code> (preview only — no changes), <code>--keep-db</code> (leave DB),
+            <code>--no-interactive</code>. Refuses to run non-interactively without <code>--force</code>.
+            Returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>dev</code></td>
+        <td>Start backend + frontend + AI server + admin under the <code>Supervisor</code>. Re-syncs
+            derived artifacts first when <code>nexus.config.*</code> changed since the last
+            <code>nexus sync</code> (use <code>--no-sync</code> to skip). Disabled services
+            (<code>frontend.enabled</code>/<code>admin.enabled</code>) are dropped unless pinned by
+            <code>--only</code>. Flags: <code>--only a,b</code>, <code>--no-sync</code>,
+            <code>--control-port &lt;N&gt;</code> (default <code>7474</code>).</td>
+      </tr>
+      <tr>
+        <td><code>sync</code></td>
+        <td>Rewrite every derived artifact (Dockerfile, <code>docker.ps1</code>/<code>.sh</code>/<code>.bat</code>,
+            <code>bin/serve-all.mjs</code>, <code>apps/admin/package.json</code> dev script) and upsert the
+            shared <code>nexus_projects</code> MongoDB record to match <code>nexus.config.*</code>. Writes a
+            <code>.nexus-sync.json</code> fingerprint so <code>dev</code> can detect drift. Flags:
+            <code>--check</code> / <code>--dry-run</code> (audit only, nothing written), <code>--no-db</code>
+            (skip MongoDB upsert). Always returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>doctor</code></td>
+        <td>Comprehensive environment check — see <a href="#doctor">doctor</a> below. Always returns
+            <code>0</code> (advisory — never hard-fails).</td>
+      </tr>
+      <tr>
+        <td><code>pysetup [pkgs...]</code></td>
+        <td>Install the AI-server Python deps from <code>apps/ai-server/requirements.txt</code> (or a path
+            given with <code>--requirements</code>) plus any extra packages, streaming pip output through.
+            Flags: <code>--python &lt;path&gt;</code>, <code>--requirements</code> / <code>-r &lt;path&gt;</code>,
+            <code>--upgrade</code> / <code>-U</code>, <code>--venv</code> (create
+            <code>apps/ai-server/.venv</code> and install into it). Returns the pip exit code.</td>
+      </tr>
+      <tr>
+        <td><code>node &lt;sub&gt;</code></td>
+        <td>Run THIS machine as a cluster node. Subcommands: <code>id --role &lt;R&gt;</code> prints the
+            stable node id for <code>cwd</code>+role; <code>serve --role=&lt;R&gt; [--port &lt;N&gt;]</code>
+            starts the <code>NodeAgent</code> + role service and holds the process (prints agent URL +
+            pairing token for the central to <code>cluster link</code>). Roles: <code>backend</code>,
+            <code>files</code>, <code>database</code>, <code>ai</code>.</td>
+      </tr>
+      <tr>
+        <td><code>cluster &lt;sub&gt;</code></td>
+        <td>Central-side mesh orchestration via <code>ClusterManager</code>. Subcommands:
+            <code>status</code>, <code>link &lt;url&gt;</code>, <code>unlink &lt;id&gt;</code>,
+            <code>start|stop|restart|kill &lt;id&gt;</code>, <code>scale &lt;n&gt;</code>,
+            <code>serve</code> (hold process: LB + autoscaler + 15s node poll), <code>check</code>
+            (poll every node once).</td>
+      </tr>
+      <tr>
+        <td><code>build</code></td>
+        <td><strong>(stub — not yet implemented)</strong> Prints
+            <code>nexus build — implemented in a later phase (tsc across workspaces).</code> and
+            returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>test</code></td>
+        <td><strong>(stub — not yet implemented)</strong> Prints
+            <code>nexus test — run `npm test` (vitest + pytest) for now.</code> and returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>plugin</code></td>
+        <td><strong>(stub — not yet implemented)</strong> Prints
+            <code>nexus plugin &lt;new|install&gt; — implemented in Phase 8.</code> and returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>add</code></td>
+        <td><strong>(stub — not yet implemented)</strong> Prints
+            <code>nexus add &lt;subgraph|module&gt; — implemented in Phase 5/6.</code> and returns <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>help</code> · <code>-h</code> · <code>--help</code></td>
+        <td>Print the command summary and return <code>0</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="doctor">doctor()</h2>
+  <pre><code><span class="kw">async function</span> doctor(): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Verify the environment end-to-end and print a colored checklist. It checks, in order:</p>
+  <ul>
+    <li><strong>Runtime versions</strong> — <code>node</code>, <code>npm</code> (<code>npm --version</code>),
+        <code>python</code>/<code>python3</code>, <code>git --version</code>.</li>
+    <li><strong>Project files</strong> — <code>package.json</code>, <code>nexus.config.{ts,js,mjs,cjs}</code>,
+        <code>.env</code>.</li>
+    <li><strong>Project structure</strong> — 10 directories: <code>apps/backend</code>,
+        <code>apps/frontend</code>, <code>apps/admin</code>, <code>apps/ai-server</code>,
+        <code>packages</code>, <code>bin</code>, <code>uploads</code>, <code>plugins</code>,
+        <code>certs</code>, <code>logs</code> (each must exist and be non-empty).</li>
+    <li><strong>Dependencies installed</strong> — <code>node_modules</code> in root, <code>apps/backend</code>,
+        <code>apps/frontend</code>, <code>apps/admin</code> (each must have ≥ 10 packages).</li>
+    <li><strong>Disk usage</strong> — <code>uploads/</code> and <code>logs/</code> directory sizes (always ok).</li>
+    <li><strong>Config load</strong> — <code>loadConfigAuto</code> resolves; reports
+        <code>env</code> + <code>server host:port</code>.</li>
+    <li><strong>Service reachability</strong> — TCP probe of MongoDB (parsed from <code>db.uri</code>),
+        Redis (<code>redis.url</code>), and the AI server (<code>ai.serverUrl</code>).</li>
+    <li><strong>Port conflicts</strong> — backend, frontend, and admin ports free on
+        <code>127.0.0.1</code>.</li>
+    <li><strong>JWT pipeline</strong> — rejects the default <code>change-me-please</code> secret; when a
+        real secret is set, signs and verifies a live HS256 test token (<code>jose</code>) and checks the
+        <code>sub</code>/<code>roles</code> payload round-trips.</li>
+    <li><strong>Paths &amp; flags</strong> — <code>graphql.path</code>/<code>federation</code>,
+        <code>ws.path</code>/<code>ws.requireCsrf</code>, <code>frontend.enabled</code>,
+        <code>admin.enabled</code>, <code>cluster.enabled</code> (+ LB port when on),
+        <code>payments.currency</code>, <code>email.provider</code>.</li>
+  </ul>
+  <p>A small set of names (<code>node</code>, <code>config</code>, <code>jwt-secret</code>,
+     <code>jwt token</code>, <code>package.json</code>, <code>nexus.config</code>) are treated as
+     <strong>critical</strong> — a failure there flips the summary to "Critical issues found — cannot
+     start." Everything else is a warning. Regardless of outcome, <code>doctor</code> <strong>always
+     returns <code>0</code></strong> — it is advisory and never blocks boot.</p>
+
+  <h2 id="init">init(opts?, args?)</h2>
+  <pre><code><span class="kw">async function</span> init(opts?: InitOptions, args: <span class="kw">string</span>[] = []): Promise&lt;<span class="kw">number</span>&gt;
+
+<span class="kw">interface</span> InitOptions {
+  force?: <span class="kw">boolean</span>;
+  target?: <span class="kw">string</span>;
+}</code></pre>
+  <p>Scaffold a new project from <code>packages/nexus-cli/templates/</code> into <code>target</code>
+     (defaults to <code>.</code>). <code>opts.force</code> / <code>--force</code> overwrites existing
+     files; otherwise existing files are skipped (an existing <code>package.json</code> is deep-merged
+     rather than clobbered). <code>gitignore</code>/<code>dockerignore</code> ship un-dotted in the
+     template (npm strips dotfiles from tarballs) and are restored to <code>.gitignore</code>/
+     <code>.dockerignore</code> on copy.</p>
+
+  <h3>Interactive wizard (TTY)</h3>
+  <p>When <code>process.stdin.isTTY</code> and <code>--no-interactive</code> is not set,
+     <code>init</code> runs a 20-step interactive wizard that leaves the project fully bootable after
+     a single command:</p>
+  <ol>
+    <li><strong>Banner</strong> — "BhooAI Nexus — project setup wizard" + what it will do.</li>
+    <li><strong>Prerequisite scan</strong> — node, npm, python, git versions; Mongo + Redis TCP
+        reachability with a retry/continue/abort prompt.</li>
+    <li><strong>Project name</strong> → stamped into <code>package.json</code> <code>name</code>.</li>
+    <li><strong>Server kind</strong> — root (mesh hub) or node (worker).</li>
+    <li><strong>Cluster role + port</strong> (node only) — backend / ai / files / database + agent port.</li>
+    <li><strong>Ports</strong> — auto-allocate free ports for backend/frontend/admin/ai.</li>
+    <li><strong>Mongo URI</strong> — confirm or edit (default <code>mongodb://localhost:27017/&lt;name&gt;</code>).</li>
+    <li><strong>Redis URL</strong> — confirm or edit (default <code>redis://localhost:6379</code>).</li>
+    <li><strong>AI providers</strong> — multi-select (Ollama/OpenAI/Anthropic/…); per-key prompt for each.</li>
+    <li><strong>Python venv</strong> — create <code>.venv</code> for the AI server? (default yes).</li>
+    <li><strong>Review summary</strong> — table of all choices; proceed?</li>
+    <li><strong>Scaffold</strong> — copy template files.</li>
+    <li><strong>Wire framework</strong> — patch workspace paths + <code>file:</code> dep + Vite/Tailwind.</li>
+    <li><strong>Allocate ports</strong> — auto-pick free ports (walks up to 100 ports from defaults).</li>
+    <li><strong>Write config</strong> — patch <code>nexus.config.ts</code> with chosen Mongo URI / Redis
+        URL, stamp <code>cluster.enabled + token</code> (fresh token for root; reuse sibling-root token
+        for node), patch <code>package.json</code> name.</li>
+    <li><strong>Generate <code>.env</code></strong> — JWT secret + <code>MONGODB_URI</code> +
+        <code>REDIS_URL</code> + <code>AI_HOST=127.0.0.1</code> + AI keys + payment placeholders.</li>
+    <li><strong>Register project</strong> — upsert record into <code>nexus_projects.projects</code>
+        (name, path, dbName, status='stopped', settings snapshot). Non-fatal if Mongo is unreachable.</li>
+    <li><strong>npm install</strong> — skip with <code>--skip-install</code>.</li>
+    <li><strong>Python setup</strong> — call <code>pysetup</code> to install AI-server deps.</li>
+    <li><strong>Verify + next steps</strong> — run mini-doctor on the new project; print onboarding URLs.</li>
+  </ol>
+  <p>In non-interactive mode (CI, or <code>--no-interactive</code>), all values are taken from flags
+     with sensible defaults.</p>
+
+  <table>
+    <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>--force</code></td><td>Overwrite existing files (also settable via <code>opts.force</code>).</td></tr>
+      <tr><td><code>--as=root|node</code></td><td>Server kind — hub of the mesh (<code>root</code>, default) or a worker that joins a root (<code>node</code>).</td></tr>
+      <tr><td><code>--name=N</code></td><td>Project name → <code>package.json</code> <code>name</code> + MongoDB db name. Default: target directory basename.</td></tr>
+      <tr><td><code>--mongo-uri=URI</code></td><td>MongoDB connection string (default <code>mongodb://localhost:27017/&lt;name&gt;</code>).</td></tr>
+      <tr><td><code>--redis-url=URL</code></td><td>Redis connection string (default <code>redis://localhost:6379</code>).</td></tr>
+      <tr><td><code>--ai-providers=a,b</code></td><td>Comma-separated AI providers to enable (default <code>ollama</code>).</td></tr>
+      <tr><td><code>--ai-key id=val</code></td><td>Set an AI provider API key (repeatable). Keys go into <code>.env</code>.</td></tr>
+      <tr><td><code>--cluster-token=T</code></td><td>Shared cluster pairing token (node mode — reuse the root's token).</td></tr>
+      <tr><td><code>--role=&lt;R&gt;</code></td><td>Node role: <code>backend</code> (default), <code>files</code>, <code>database</code>, or <code>ai</code>.</td></tr>
+      <tr><td><code>--port=&lt;N&gt;</code></td><td>Node agent port (default <code>7575</code>).</td></tr>
+      <tr><td><code>--venv</code> / <code>--no-venv</code></td><td>Create Python virtualenv for the AI server (<code>--venv</code> is the default in interactive mode).</td></tr>
+      <tr><td><code>--no-interactive</code></td><td>Run fully non-interactively (CI-safe); all values from flags + defaults.</td></tr>
+      <tr><td><code>--skip-install</code></td><td>Skip both <code>npm install</code> and <code>pysetup</code>.</td></tr>
+      <tr><td><code>--skip-mongo-check</code></td><td>Skip the Mongo/Redis TCP reachability check in step 1.</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Usage examples</h4>
+  <pre><code><span class="com">// Quick interactive wizard</span>
+nexus init my-app
+
+<span class="com">// Scaffold a node that pairs with a sibling root</span>
+<span class="com">// (the wizard auto-detects the root's cluster token)</span>
+nexus init slave-1 --as=node --role=backend --port=<span class="num">7575</span>
+
+<span class="com">// CI one-liner (non-interactive, all flags)</span>
+nexus init ci-app --no-interactive --name ci-app \
+  --mongo-uri mongodb://localhost:27017/ci-app \
+  --ai-providers ollama --venv --skip-install
+
+<span class="com">// Re-run in an existing project (idempotent — only updates config + .env)</span>
+nexus init . --no-interactive --name updated-name
+
+<span class="com">// Skip Mongo/Redis probes for cloud environments</span>
+nexus init cloud-app --skip-mongo-check \
+  --mongo-uri "mongodb+srv://user:pass@cluster.mongodb.net/db"</code></pre>
+
+  <h2 id="uninstall">uninstall(args)</h2>
+  <pre><code><span class="kw">async function</span> uninstall(args: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Remove a project and its databases. Resolves the project identity from
+     <code>package.json</code> at the target, loads its config, and performs up to three actions:</p>
+  <ol>
+    <li><strong>Drop the project's MongoDB database</strong> (e.g. <code>test_app</code>) — uses the
+        project-info connection's <code>MongoClient</code> so no second connection is needed. Skipped
+        with <code>--keep-db</code> or if Mongo is unreachable.</li>
+    <li><strong>Delete the project's record</strong> from <code>nexus_projects.projects</code>.</li>
+    <li><strong>Remove the project directory from disk</strong> — only with <code>--purge</code>.
+        Handles Windows <code>EPERM</code> errors on read-only files
+        (<code>node_modules/.bin</code>, <code>.venv</code>) by recursively clearing the read-only
+        attribute, retrying up to 3× with backoff, and falling back to the OS shell
+        (<code>cmd /c rd /s /q</code> on Windows, <code>rm -rf</code> elsewhere).</li>
+  </ol>
+  <table>
+    <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>--target &lt;path&gt;</code></td><td>Project root (default: current directory).</td></tr>
+      <tr><td><code>--purge</code></td><td>Also delete the project directory from disk after DB+record cleanup.</td></tr>
+      <tr><td><code>--force</code></td><td>Skip confirmation prompts.</td></tr>
+      <tr><td><code>--dry-run</code></td><td>Show what would be deleted — nothing is changed.</td></tr>
+      <tr><td><code>--keep-db</code></td><td>Do not drop the project's database (only delete the record).</td></tr>
+      <tr><td><code>--no-interactive</code></td><td>Never prompt (refuses to run unless <code>--force</code> is also set).</td></tr>
+    </tbody>
+  </table>
+  <p>Refuses to run non-interactively without <code>--force</code>. The <code>nexus_projects</code>
+     database is never touched. Returns <code>0</code> on success, <code>1</code> if the target is not
+     a nexus project or the operation was cancelled by the user.</p>
+
+  <h2 id="dev">dev(args?)</h2>
+  <pre><code><span class="kw">async function</span> dev(args: <span class="kw">string</span>[] = []): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Load the effective config, optionally re-sync derived artifacts, then start the four services under
+     a <code>Supervisor</code>:</p>
+  <ul>
+    <li><code>backend</code> — <code>tsx watch apps/backend/src/main.ts</code>;</li>
+    <li><code>frontend</code> — <code>vite --port &lt;cfg.frontend.port&gt; --host &lt;cfg.frontend.host&gt;</code> (optional, dropped when <code>frontend.enabled</code> is false);</li>
+    <li><code>ai-server</code> — <code>python main.py</code> in <code>apps/ai-server</code> with <code>AI_PORT</code> from <code>ai.serverUrl</code> (optional);</li>
+    <li><code>admin</code> — <code>vite --port &lt;cfg.admin.port&gt; --host &lt;cfg.admin.host&gt;</code> (optional, dropped when <code>admin.enabled</code> is false).</li>
+  </ul>
+  <table>
+    <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>--only a,b</code></td><td>Start only the named services (overrides <code>enabled</code> flags).</td></tr>
+      <tr><td><code>--no-sync</code></td><td>Skip the pre-boot config re-sync even when the fingerprint has drifted.</td></tr>
+      <tr><td><code>--control-port &lt;N&gt;</code></td><td>Control API base port (default <code>7474</code>; auto-increments on <code>EADDRINUSE</code>).</td></tr>
+    </tbody>
+  </table>
+  <p><code>dev</code> prints a startup banner (service / host / port table), constructs the
+     <code>Supervisor</code> with <code>controlPort</code>, calls <code>supervisor.start()</code>, prints
+     quick-start URLs after 2s, and returns <code>0</code> — the supervisor keeps the process alive and
+     handles <code>SIGINT</code>/<code>SIGTERM</code>.</p>
+
+  <h2 id="pysetup">pysetup(args)</h2>
+  <pre><code><span class="kw">async function</span> pysetup(args: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Install the Python AI-server dependencies. Locates
+     <code>apps/ai-server/requirements.txt</code> (or <code>apps/server/requirements.txt</code> /
+     <code>./requirements.txt</code> as fallbacks), optionally creates a virtualenv, and streams pip
+     output through so progress is visible. Positional non-flag args are extra packages installed
+     alongside the requirements file.</p>
+  <table>
+    <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>--python &lt;path&gt;</code></td><td>Path to a specific Python interpreter (else probes <code>python</code>/<code>py</code> on Windows, <code>python3</code>/<code>python</code> elsewhere).</td></tr>
+      <tr><td><code>--requirements &lt;path&gt;</code> / <code>-r &lt;path&gt;</code></td><td>Use this requirements file instead of the auto-discovered one.</td></tr>
+      <tr><td><code>--upgrade</code> / <code>-U</code></td><td>Pass <code>--upgrade</code> to pip.</td></tr>
+      <tr><td><code>--venv</code></td><td>Create <code>&lt;requirementsDir&gt;/.venv</code> (if absent) and install into it; the venv's python is used for pip.</td></tr>
+      <tr><td><code>--interactive</code></td><td>Prompt for venv y/n + python path when TTY (used internally by <code>nexus init</code>).</td></tr>
+    </tbody>
+  </table>
+  <p>Returns the pip exit code; <code>1</code> if no requirements file or Python interpreter is found.</p>
+
+  <h2 id="cluster">cluster(args)</h2>
+  <pre><code><span class="kw">async function</span> cluster(args: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Central-side mesh orchestration. Loads the config, warns if <code>cluster.enabled</code> is false,
+     and constructs a <code>ClusterManager</code> bound to <code>cfg.cluster</code>. The first positional
+     arg is the subcommand:</p>
+  <table>
+    <thead><tr><th>Subcommand</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td><code>status</code></td><td>List linked nodes (id, role, tier, status, enabled, rps, cpu/mem if metrics exist).</td></tr>
+      <tr><td><code>link &lt;agent-url&gt;</code></td><td>Handshake + register a node by its agent URL. Returns <code>1</code> on failure.</td></tr>
+      <tr><td><code>unlink &lt;id&gt;</code></td><td>Forget a node. <code>1</code> if no such node.</td></tr>
+      <tr><td><code>start &lt;id&gt;</code> · <code>stop &lt;id&gt;</code> · <code>restart &lt;id&gt;</code> · <code>kill &lt;id&gt;</code></td><td>Run the named action on the node's agent (<code>kill</code> maps to <code>stop</code>). <code>1</code> without an id.</td></tr>
+      <tr><td><code>scale &lt;n&gt;</code></td><td>Target exactly <code>n</code> backend nodes via <code>manager.scaleTo</code>.</td></tr>
+      <tr><td><code>serve</code></td><td>Hold the process: bind the LB on <code>cluster.lbHost:lbPort</code>, start the autoscaler (10s tick), and poll all nodes every 15s.</td></tr>
+      <tr><td><code>check</code></td><td>Poll every node once (health + metrics) and print the count.</td></tr>
+      <tr><td><code>help</code> / (none)</td><td>Print usage and return <code>0</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="node">node(args)</h2>
+  <pre><code><span class="kw">async function</span> node(args: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Run THIS machine as a cluster node. Loads the config, reads <code>cluster.token</code> and
+     <code>cluster.nodeAgentHost</code>/<code>nodeAgentPort</code>, and dispatches on the first arg:</p>
+  <table>
+    <thead><tr><th>Subcommand</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>id --role &lt;R&gt;</code></td>
+        <td>Print this node's stable id (<code>nodeIdFor(cwd, role)</code>) and return <code>0</code>.</td>
+      </tr>
+      <tr>
+        <td><code>serve --role=&lt;R&gt; [--port &lt;N&gt;]</code></td>
+        <td>Start a <code>NodeAgent</code> on <code>cluster.nodeAgentHost</code>:<code>port</code>
+            (default <code>cfg.cluster.nodeAgentPort</code> → <code>7575</code>), print the agent URL +
+            pairing token, start the role service (<code>tsx apps/backend/src/main.ts</code> for
+            <code>backend</code>/<code>files</code>/<code>database</code>; <code>python main.py</code> for
+            <code>ai</code>), and <strong>hold the process</strong> (returns a never-resolving promise).
+            <code>NEXUS_NODE_ADVERTISED_URL</code> overrides the advertised URL. Roles:
+            <code>backend</code>, <code>files</code>, <code>database</code>, <code>ai</code>.</td>
+      </tr>
+      <tr><td>(none / unknown)</td><td>Print usage and return <code>1</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="syncCommand">syncCommand(args?)</h2>
+  <pre><code><span class="kw">async function</span> syncCommand(args: <span class="kw">string</span>[] = []): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>CLI wrapper around <a href="#syncConfig"><code>syncConfig</code></a>. Loads the config, runs the
+     sync with <code>{ write: !--check &amp;&amp; !--dry-run, db: !--no-db }</code>, prints a per-value
+     summary table + per-file status table + db outcome + fingerprint, and returns <code>0</code>. Flags:
+     <code>--check</code> or <code>--dry-run</code> (audit only, nothing written), <code>--no-db</code>
+     (skip the MongoDB upsert).</p>
+
+  <h2>Templates</h2>
+  <p><code>packages/nexus-cli/templates/</code> holds the real project files copied by <code>init</code> — a
+     runnable backend (boots <code>NexusServer</code> with the security stack + <code>/health</code>,
+     <code>/csrf-token</code>, <code>/echo</code>, and CSRF-protected <code>/uploads</code>), a React+Vite frontend
+     with an upload example, a Python FastAPI AI server, an admin shell, and the <code>bin/nexus.js</code> CLI shim.
+     The scaffold includes an ignored project-local <code>uploads/</code> directory.</p>
+
+  <h2 id="config-sync">Config-sync engine</h2>
+  <p>The sync layer propagates the single <code>nexus.config.*</code> source of truth into every derived
+     artifact that still hardcodes a host/port/URL: the <code>Dockerfile</code>,
+     <code>docker.ps1</code>/<code>.sh</code>/<code>.bat</code> helpers,
+     <code>bin/serve-all.mjs</code>, <code>apps/admin/package.json</code> (the <code>vite --port NNNN</code>
+     dev script), and the shared <code>nexus_projects</code> MongoDB record. A
+     <code>.nexus-sync.json</code> fingerprint at the project root lets <code>dev</code> detect "config
+     changed since last sync" and re-sync before booting.</p>
+
+  <h3 id="deriveValues">deriveValues(cfg, image)</h3>
+  <pre><code><span class="kw">function</span> deriveValues(cfg: NexusConfig, image: <span class="kw">string</span>): SyncValues</code></pre>
+  <p>Derive the full set of printable / embeddable values from the effective config. Host-service URLs
+     (<code>dbUri</code>, <code>redisUri</code>, <code>aiUrl</code>) are rewritten so a container reaches
+     them via <code>host.docker.internal</code> instead of <code>localhost</code>/<code>127.0.0.1</code>.
+     <code>image</code> is the package.json <code>name</code> (or the project folder name).</p>
+  <h4>SyncValues</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>image</code></td><td><code>string</code></td><td>Docker image / container name.</td></tr>
+      <tr><td><code>serverPort</code></td><td><code>string</code></td><td><code>cfg.server.port</code>.</td></tr>
+      <tr><td><code>frontendPort</code></td><td><code>string</code></td><td><code>cfg.frontend.port</code>.</td></tr>
+      <tr><td><code>adminPort</code></td><td><code>string</code></td><td><code>cfg.admin.port</code>.</td></tr>
+      <tr><td><code>nodePort</code></td><td><code>string</code></td><td><code>cfg.cluster.nodeAgentPort ?? 7575</code>.</td></tr>
+      <tr><td><code>lbPort</code></td><td><code>string</code></td><td><code>cfg.cluster.lbPort ?? 8080</code>.</td></tr>
+      <tr><td><code>aiPort</code></td><td><code>string</code></td><td>Port from <code>ai.serverUrl</code> (default <code>8000</code>).</td></tr>
+      <tr><td><code>dbUri</code> · <code>redisUri</code> · <code>aiUrl</code></td><td><code>string</code></td><td>Host-service URLs rewritten for <code>host.docker.internal</code>.</td></tr>
+      <tr><td><code>dbName</code></td><td><code>string</code></td><td>MongoDB name parsed from <code>db.uri</code> (default <code>platform</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="fingerprintOf">fingerprintOf(values)</h3>
+  <pre><code><span class="kw">function</span> fingerprintOf(values: SyncValues): <span class="kw">string</span></code></pre>
+  <p>Stable <code>sha256</code> hash (first 16 hex chars) of the pipe-joined
+     <code>SyncValues</code>. This is the value written to <code>.nexus-sync.json</code> and compared by
+     <code>configChangedSinceSync</code>.</p>
+
+  <h3 id="syncConfig">syncConfig(root, cfg, opts?)</h3>
+  <pre><code><span class="kw">async function</span> syncConfig(
+  root: <span class="kw">string</span>,
+  cfg: NexusConfig,
+  opts?: SyncOptions,
+): Promise&lt;SyncReport&gt;
+
+<span class="kw">interface</span> SyncOptions {
+  <span class="com">/** Write files (default true). False = dry-run / diff-only audit. */</span>
+  write?: <span class="kw">boolean</span>;
+  <span class="com">/** Upsert the project-info MongoDB record (default true). */</span>
+  db?: <span class="kw">boolean</span>;
+}
+
+<span class="kw">interface</span> SyncReport {
+  values: SyncValues;
+  fingerprint: <span class="kw">string</span>;
+  files: FileSyncReport[];
+  db: <span class="str">'updated'</span> | <span class="str">'skipped'</span> | <span class="str">'failed'</span>;
+}</code></pre>
+  <p>Render every derived file (<code>Dockerfile</code>, <code>bin/serve-all.mjs</code>,
+     <code>apps/admin/package.json</code>, <code>docker.ps1</code>, <code>docker.sh</code>,
+     <code>docker.bat</code>) against <code>deriveValues(cfg, image)</code>. Missing files are reported
+     as <code>missing</code>; unchanged files as <code>in-sync</code>; changed files as
+     <code>updated</code> with a per-line diff. With <code>opts.write !== false</code> the new content is
+     written and the fingerprint record is persisted to <code>.nexus-sync.json</code>. The DB upsert runs
+     unless <code>opts.db === false</code>; a MongoDB failure is reported as <code>failed</code> (the
+     sync still succeeds for files).</p>
+  <pre><code><span class="kw">import</span> { syncConfig } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cli'</span>;
+<span class="kw">const</span> report = <span class="kw">await</span> syncConfig(process.cwd(), cfg, { write: <span class="kw">false</span> });
+report.files.filter((f) =&gt; f.status === <span class="str">'updated'</span>);   <span class="com">// audit only</span></code></pre>
+
+  <h3 id="configChangedSinceSync">configChangedSinceSync(root, cfg)</h3>
+  <pre><code><span class="kw">function</span> configChangedSinceSync(root: <span class="kw">string</span>, cfg: NexusConfig): <span class="kw">boolean</span></code></pre>
+  <p>True when no <code>.nexus-sync.json</code> exists yet, or when the stored fingerprint differs from
+     the current one. <code>dev</code> calls this to decide whether to re-sync before booting.</p>
+
+  <h2 id="Supervisor">Supervisor</h2>
+  <pre><code><span class="kw">class</span> Supervisor {
+  constructor(services: ServiceSpec[], root: <span class="kw">string</span>, controlPort = <span class="str">7474</span>);
+  <span class="kw">get</span> controlEndpointPort(): <span class="kw">number</span>;   <span class="com">// 0 until start() binds</span>
+  startService(spec: ServiceSpec): <span class="kw">void</span>;
+  stopService(name: <span class="kw">string</span>): <span class="kw">void</span>;
+  restartService(name: <span class="kw">string</span>): <span class="kw">void</span>;
+  status(): ServiceState[];
+  start(): Promise&lt;<span class="kw">void</span>&gt;;
+  shutdown(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>The inbuilt process supervisor for the four Nexus terminals. It owns the child processes, streams
+     prefixed colored logs (splitting on both CRLF and LF so Vite/uvicorn LF-only output flushes
+     correctly), keeps a per-service log ring buffer (<code>MAX_TAIL=200</code>) plus an aggregated
+     structured log buffer (<code>MAX_ALL_LOGS=2000</code>) powering <code>/logs/all</code>, handles
+     graceful Ctrl-C, and exposes a localhost HTTP control API.</p>
+  <p>Each service is spawned with local + framework <code>node_modules/.bin</code> prepended to
+     <code>PATH</code> so <code>tsx</code>/<code>vite</code> resolve even when the supervisor is launched
+     directly via <code>node bin/nexus.js dev</code> (where npm hasn't prepended <code>.bin</code>). On
+     Windows, children spawn with <code>shell: true</code> and <code>stopService</code> uses
+     <code>taskkill /T /F</code> to kill the whole process tree (POSIX signals the process group) — so
+     <code>stop</code> actually frees the port.</p>
+
+  <div class="callout note">
+    <span class="label">Port auto-allocation</span>
+    The control API does <strong>not</strong> fix itself to <code>7474</code>. On
+    <code>EADDRINUSE</code> (e.g. another <code>nexus dev</code> is already running) it auto-increments
+    the port, up to <code>100</code> attempts, and the actual bound port is exposed via the
+    <code>controlEndpointPort</code> getter and written to <code>supervisor.json</code> at the project
+    root (<code>{ port, url, writtenAt }</code>) so the backend/admin can discover it. <code>dev</code>
+    also injects <code>VITE_SUPERVISOR_URL=http://127.0.0.1:&lt;boundPort&gt;</code> into the admin
+    service's env.
+  </div>
+
+  <h4>ServiceSpec</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Service id (used in logs + control API).</td></tr>
+      <tr><td><code>command</code></td><td><code>string[]</code></td><td>Command + args to run.</td></tr>
+      <tr><td><code>cwd</code></td><td><code>string</code></td><td>Working directory relative to <code>root</code>.</td></tr>
+      <tr><td><code>color</code></td><td><code>string</code></td><td>ANSI color for the log prefix.</td></tr>
+      <tr><td><code>optional?</code></td><td><code>boolean</code></td><td>When true, a start failure is logged but does not stop the supervisor.</td></tr>
+      <tr><td><code>env?</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Extra env for the child (merged over <code>process.env</code>).</td></tr>
+    </tbody>
+  </table>
+  <h4>ServiceState</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Service id.</td></tr>
+      <tr><td><code>status</code></td><td><code>'stopped' | 'running' | 'errored'</code></td><td>Current state.</td></tr>
+      <tr><td><code>pid?</code></td><td><code>number</code></td><td>Child pid when running.</td></tr>
+      <tr><td><code>startedAt?</code></td><td><code>number</code></td><td>Unix ms when started.</td></tr>
+      <tr><td><code>lastExitCode?</code></td><td><code>number | null</code></td><td>Last exit code.</td></tr>
+      <tr><td><code>logTail</code></td><td><code>string[]</code></td><td>Last <code>MAX_TAIL=200</code> lines.</td></tr>
+    </tbody>
+  </table>
+  <h4 id="LogEntry">LogEntry</h4>
+  <pre><code><span class="kw">interface</span> LogEntry {
+  service: <span class="kw">string</span>;
+  ts: <span class="kw">number</span>;                       <span class="com">// Date.now() ms</span>
+  source: <span class="str">'stdout'</span> | <span class="str">'stderr'</span> | <span class="str">'system'</span>;
+  level: <span class="str">'info'</span> | <span class="str">'warn'</span> | <span class="str">'error'</span>;   <span class="com">// auto-classified from line content</span>
+  line: <span class="kw">string</span>;
+}</code></pre>
+  <p>Structured log entry returned by <code>/logs/all</code>. <code>source</code> is the originating
+     stream (or <code>system</code> for supervisor-emitted lines like exit notices); <code>level</code>
+     is auto-classified by scanning the lowercased line for
+     <code>error</code>/<code>fatal</code>/<code>fail</code>/<code>exception</code> (error) and
+     <code>warn</code>/<code>unauthorized</code>/<code>forbidden</code> (warn), defaulting to
+     <code>info</code>.</p>
+
+  <h3>Control API</h3>
+  <p>The supervisor's HTTP control API is CORS-enabled (<code>*</code> origin) so the browser-based
+     admin app (on <code>:3001</code>) can drive it directly — decoupling admin from OS-specific process
+     management. Bound on <code>127.0.0.1</code> at <code>controlPort</code> (auto-allocated on
+     collision):</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Method</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td><code>/status</code></td><td>GET</td><td>All services + their <code>ServiceState</code>.</td></tr>
+      <tr><td><code>/start?name=&lt;service&gt;</code></td><td>POST</td><td>Start a service.</td></tr>
+      <tr><td><code>/restart?name=&lt;service&gt;</code></td><td>POST</td><td>Restart a service (stop + 300ms gap + start).</td></tr>
+      <tr><td><code>/stop?name=&lt;service&gt;</code></td><td>POST</td><td>Stop a complete service process tree (<code>taskkill /T /F</code> on Windows).</td></tr>
+      <tr><td><code>/logs?name=&lt;service&gt;</code></td><td>GET</td><td>Tail a service's buffered logs (<code>logTail</code>, last <code>MAX_TAIL=200</code>).</td></tr>
+      <tr><td><code>/logs/all?service=&amp;level=&amp;q=</code></td><td>GET</td><td>Aggregated structured logs across all services (<code>LogEntry[]</code>, capped at <code>MAX_ALL_LOGS=2000</code>). Optional <code>service</code>, <code>level</code>, and <code>q</code> (case-insensitive substring) filters.</td></tr>
+      <tr><td><code>/logs/clear</code></td><td>POST</td><td>Clear every service's <code>logTail</code> and the aggregated buffer.</td></tr>
+    </tbody>
+  </table>
+  <p>Unknown paths return <code>404</code> with <code>{ error: 'not found' }</code>. <code>OPTIONS</code>
+     requests get a <code>204</code> (CORS preflight).</p>
+
+  <h2>Programmatic use</h2>
+  <pre><code><span class="kw">import</span> {
+  run, doctor, init, dev, pysetup, uninstall, cluster, node, syncCommand,
+  syncConfig, configChangedSinceSync, deriveValues, fingerprintOf,
+  Supervisor,
+  <span class="kw">type</span> LogEntry,
+} <span class="kw">from</span> <span class="str">'@bhooai/nexus-cli'</span>;
+
+<span class="com">// CLI dispatch — load .env, then run a command (returns exit code).</span>
+<span class="kw">await</span> run(<span class="str">'doctor'</span>, []);
+
+<span class="com">// Run a command function directly (skips the .env load + arg parsing).</span>
+<span class="kw">await</span> dev([<span class="str">'--only'</span>, <span class="str">'backend'</span>, <span class="str">'--control-port'</span>, <span class="str">'7480'</span>]);
+
+<span class="com">// Audit derived artifacts without writing.</span>
+<span class="kw">const</span> cfg = <span class="kw">await</span> loadConfigAuto({ root: process.cwd() });
+<span class="kw">if</span> (configChangedSinceSync(process.cwd(), cfg)) {
+  <span class="kw">const</span> report = <span class="kw">await</span> syncConfig(process.cwd(), cfg, { write: <span class="kw">false</span> });
+  console.log(report.fingerprint, report.files.filter((f) =&gt; f.status === <span class="str">'updated'</span>));
+}
+
+<span class="com">// Stand up a supervisor over an arbitrary service set.</span>
+<span class="kw">const</span> supervisor = <span class="kw">new</span> Supervisor(
+  [{ name: <span class="str">'api'</span>, command: [<span class="str">'node'</span>, <span class="str">'server.js'</span>], cwd: <span class="str">''</span>, color: <span class="str">'\x1b[32m'</span> }],
+  process.cwd(),
+  <span class="str">7474</span>,
+);
+<span class="kw">await</span> supervisor.start();
+supervisor.controlEndpointPort;   <span class="com">// actual bound port (may be &gt; 7474)</span></code></pre>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · CLI API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"CLI - supervisor + log split","apiBase":"http://localhost:4000","js":"function bindPort(port, taken) { let p = port; while (taken.has(p)) p++; taken.add(p); return p; }\nconst taken = new Set([7474, 7475]);\nconsole.log(\"control API binds to:\", bindPort(7474, taken));\n\nconst chunk = \"[backend] listening\\\\r\\\\n[frontend] ready!\\\\n[ai] up\\\\r\\\\n\";\nconsole.log(chunk.split(/\\\\r?\\\\n/).filter(Boolean).join(\"\\\\n\"));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

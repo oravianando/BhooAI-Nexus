@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Getting Started — BhooAI Nexus Docs</title>
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">BOOT SEQUENCE</div>
+  <h1>Getting Started <span class="sub">Install, configure, verify, and run the Nexus service mesh locally.</span></h1>
+
+  <h2>Prerequisites</h2>
+  <table>
+    <thead><tr><th>Tool</th><th>Version</th><th>Used by</th></tr></thead>
+    <tbody>
+      <tr><td>Node.js</td><td>≥ 22</td><td>backend, frontend, admin, CLI</td></tr>
+      <tr><td>Python</td><td>≥ 3.13</td><td>AI server (optional)</td></tr>
+      <tr><td>MongoDB</td><td>≥ 6</td><td>auth, persistence, GraphQL</td></tr>
+      <tr><td>Redis</td><td>≥ 6</td><td>cache, sessions, WS fanout, rate limits (optional — degrades gracefully)</td></tr>
+    </tbody>
+  </table>
+  <p>MongoDB and Redis should be reachable at <code>localhost:27017</code> and <code>localhost:6379</code>
+     (override with <code>NEXUS_DB_URI</code> / <code>NEXUS_REDIS_URL</code>).</p>
+
+  <h2>1. Install</h2>
+  <pre><code>git clone &lt;repo&gt; BhooAI-Nexus
+cd BhooAI-Nexus/BhooAI-Nexus/bhooai-nexus
+npm install        # installs all npm workspaces</code></pre>
+  <p>The outer <code>BhooAI-Nexus/</code> directory is only a container. The package manifest and
+     lockfile are in the nested <code>bhooai-nexus/</code> workspace root.</p>
+  <p>The monorepo uses npm workspaces with scoped packages under <code>packages/nexus-*</code>.
+     Inter-package deps use <code>"*"</code> (npm resolves them to the workspace package).</p>
+
+  <h2>2. Verify the environment</h2>
+  <pre><code>node bin/nexus.js doctor</code></pre>
+   <p><code>doctor</code> checks Node/Python versions and MongoDB/Redis reachability. It is <strong>advisory</strong>:
+      optional services can be unavailable, but the backend still needs MongoDB for auth and persistence. It also
+      flags the default JWT secret, which you should replace.</p>
+  <pre><code>  ✓ node         v22.20.0
+  ✓ python       Python 3.13.7
+  ✓ mongodb      localhost:27017 reachable
+  ✓ redis        localhost:6379 reachable
+  ✗ jwt-secret   still the default — set NEXUS_AUTH_JWT_SECRET</code></pre>
+
+   <h2>3. Configure</h2>
+   <p>Create one project-root <code>.env</code> file. The framework loads it automatically; do not put secrets in
+      <code>nexus.config.ts</code> or <code>nexus.runtime.json</code>.</p>
+   <pre><code><span class="com"># .env</span>
+NEXUS_DB_URI=mongodb://localhost:27017/myapp
+NEXUS_REDIS_URL=redis://localhost:6379
+NEXUS_AUTH_JWT_SECRET=<span class="str">a-long-random-string-at-least-32-chars</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_ID=rzp_test_TO8kiKmXDUC8l8
+NEXUS_PAYMENTS_RAZORPAY_KEY_SECRET=cqpmZEC1fbNwvyYC0UhE0P1I
+# OpenAI
+NEXUS_AI_OPENAI_API_KEY=
+
+# Anthropic Claude
+NEXUS_AI_ANTHROPIC_API_KEY=
+
+# Google Gemini
+NEXUS_AI_GOOGLE_API_KEY=
+
+
+<span class="com"># Optional Razorpay example; keys auto-enable the provider.</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_ID=<span class="str">rzp_test_...</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_SECRET=<span class="str">...</span></code></pre>
+   <p>App-level settings live in <code>nexus.config.ts</code>. For a generated app, this is the user-defined area;
+      the framework config supplies defaults. Precedence, low → high:</p>
+   <pre><code>code defaults &lt; framework config &lt; user nexus.config.ts &lt; nexus.runtime.json &lt; .env / NEXUS_* &lt; CLI flags</code></pre>
+   <p>Uploads use the project-local <code>uploads/</code> directory. The generated backend accepts
+      <code>multipart/form-data</code> at <code>POST /uploads</code> and serves saved files from
+      <code>/uploads/&lt;generated-name&gt;</code>. The endpoint is CSRF-protected by the default security stack.</p>
+
+  <h2>4. Run all four terminals</h2>
+  <pre><code>node bin/nexus.js dev</code></pre>
+  <p>The supervisor boots the backend, frontend, AI server, and admin with colored prefixed logs and
+     handles Ctrl-C gracefully. Visit:</p>
+  <table>
+    <thead><tr><th>URL</th><th>What</th></tr></thead>
+    <tbody>
+      <tr><td><code>http://localhost:4000/health</code></td><td>Backend liveness</td></tr>
+       <tr><td><code>http://localhost:3000</code></td><td>Frontend</td></tr>
+      <tr><td><code>http://localhost:3001</code></td><td>Admin console</td></tr>
+      <tr><td><code>http://localhost:8000/health</code></td><td>Python AI server</td></tr>
+      <tr><td><code>http://localhost:7474/status</code></td><td>Supervisor control API</td></tr>
+    </tbody>
+  </table>
+   <div class="callout note">
+     <span class="label">Run a single terminal</span>
+      Each terminal is also runnable standalone. From the workspace root use
+     <code>npx tsx apps/backend/src/main.ts</code>; from <code>apps/frontend</code> or <code>apps/admin</code> use
+     <code>npx vite</code>; from <code>apps/ai-server</code> use <code>python main.py</code>. Direct backend startup
+     also loads the project <code>.env</code>.
+   </div>
+
+  <h2>5. Test</h2>
+   <pre><code>npx vitest run                                      # Node unit/integration tests
+pytest                                               # Python AI tests
+npx playwright test --config=playwright.config.ts    # cross-service e2e</code></pre>
+  <p>Integration tests use a <strong>real</strong> MongoDB (via <code>NEXUS_DB_URI</code>) — there is no
+     embedded Mongo. Frontend client tests are fully mocked (a <code>FakeWebSocket</code> + fetch stub).</p>
+
+  <h2>Scaffold a new project</h2>
+  <pre><code>node bin/nexus.js init ./my-app
+cd my-app
+npm install
+npm run doctor
+npm run dev</code></pre>
+   <p><code>init</code> copies a real, runnable project tree from <code>packages/nexus-cli/templates/</code> —
+     the generated backend boots a Nexus HTTP server with the full security stack and serves
+      <code>/health</code>, <code>/csrf-token</code>, <code>/echo</code>, and <code>/uploads</code>. It is idempotent (skips existing
+      files unless <code>--force</code>).</p>
+
+  <h2>Use the published npm package</h2>
+   <p>Publish the package from the <code>bhooai-nexus/</code> workspace root with
+      <code>npm publish</code>. The published package exposes the
+     <code>nexus</code> executable. From an empty directory:</p>
+  <pre><code>mkdir my-app
+cd my-app
+npm init -y
+ npm install C:\server\BhooAI\BhooAI-Nexus\BhooAI-Nexus\bhooai-nexus
+npx nexus init .
+npm install
+npm run doctor
+npm run dev</code></pre>
+  <p>Run <code>npx nexus init .</code> after the first <code>npm install</code>; <code>npm init</code> only
+     creates the project <code>package.json</code>. The second install picks up generated frontend/admin
+      dependencies. The generated project owns the <code>doctor</code> and <code>dev</code> scripts.</p>
+
+  <h2>Frontend styling</h2>
+   <p>Scaffolded frontends ship with Tailwind CSS and a framework-owned PostCSS preset
+      (<code>@bhooai/nexus-postcss</code>). The <code>postcss.config.js</code> loads the
+      entire plugin chain — Tailwind, nesting, autoprefixing, minification — with one line:</p>
+  <pre><code><span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+<span class="kw">export default</span> createPreset();</code></pre>
+   <p>A design-token stylesheet (<code>theme.css</code>) provides 22 CSS custom properties
+      (<code>--nexus-bg</code>, <code>--nexus-ink</code>, <code>--nexus-accent</code>, etc.)
+      for a consistent dark theme baseline. Import it at the top of your
+      <code>index.css</code>:</p>
+  <pre><code>@<span class="kw">import</span> <span class="str">'@bhooai/nexus-postcss/theme.css'</span>;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;</code></pre>
+   <p>See the <a href="guides/guide-frontend-styling.html">Frontend Styling guide</a> and the
+      <a href="api/postcss.html">PostCSS API reference</a> for full documentation.</p>
+
+  <div class="foot">BhooAI Nexus · Getting Started</div>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

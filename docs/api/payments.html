@@ -1,0 +1,558 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Payments API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-payments</span> Payments API
+    <span class="sub">One <code>PaymentProvider</code> interface, five gateways, signed webhooks.</span></h1>
+
+  <p>One unified adapter interface over five payment gateways. App code is gateway-agnostic: pick a
+     provider by name, call <code>createOrder</code> / <code>capture</code> / <code>refund</code>, and
+     mount a single webhook route. Amounts are always expressed in <strong>major units</strong>
+     (e.g. <code>10.50</code>); each provider converts to its native representation (Razorpay paise,
+     PayPal decimal string, etc.).</p>
+
+  <h2>Providers</h2>
+  <table>
+    <thead><tr><th>Provider</th><th>Status</th><th><code>testConnection</code></th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Razorpay</td><td><span class="badge full">full</span></td><td>yes</td><td>REST orders + HMAC-SHA256 webhook verify. Amounts in paise (INR).</td></tr>
+      <tr><td>PayPal</td><td><span class="badge full">full</span></td><td>yes</td><td>Orders v2 + OAuth2 token caching (5-min safety margin). Webhook verified via the <code>verify-webhook-signature</code> API.</td></tr>
+      <tr><td>PayU</td><td><span class="badge partial">happy-path</span></td><td>no</td><td>Hash-based flow: SHA-512 request + response hash. <code>createOrder</code> builds the checkout params; capture/refund/status are stubs.</td></tr>
+      <tr><td>Skrill</td><td><span class="badge partial">happy-path</span></td><td>no</td><td>Quick Checkout redirect URL + MD5 <code>md5sig</code> IPN verify. Capture/refund/status are stubs.</td></tr>
+      <tr><td>Payoneer</td><td><span class="badge partial">happy-path</span></td><td>no</td><td>HMAC-signed redirect; webhook verified with HMAC-SHA256 over the raw body. No public sandbox — verified structurally, not live. Capture/refund/status are stubs.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>service</td><td><code>createPayments</code>, <code>PaymentsOptions</code>, <code>PaymentsService</code></td></tr>
+      <tr><td>provider interface</td><td><code>PaymentProvider</code> (incl. optional <code>testConnection</code>)</td></tr>
+      <tr><td>types</td><td><code>OrderStatus</code>, <code>Money</code>, <code>CustomerInfo</code>, <code>CreateOrderInput</code>, <code>Order</code>, <code>CaptureInput</code>, <code>RefundInput</code>, <code>RefundResult</code>, <code>WebhookVerifyInput</code>, <code>WebhookEvent</code>, <code>ConnectionTest</code>, <code>ProviderConfig</code></td></tr>
+      <tr><td>http transport</td><td><code>HttpRequest</code>, <code>HttpResponse</code>, <code>HttpTransport</code>, <code>fetchTransport</code>, <code>jsonRequest</code>, <code>basicAuth</code></td></tr>
+      <tr><td>signatures</td><td><code>hmacSha256Hex</code>, <code>sha512Hex</code>, <code>md5Hex</code>, <code>safeEqual</code></td></tr>
+      <tr><td>webhooks</td><td><code>WebhookRouter</code></td></tr>
+      <tr><td>errors</td><td><code>PaymentError</code></td></tr>
+      <tr><td>providers (classes)</td><td><code>RazorpayProvider</code>, <code>PayPalProvider</code>, <code>PayUProvider</code>, <code>SkrillProvider</code>, <code>PayoneerProvider</code></td></tr>
+      <tr><td>PayU helpers</td><td><code>payuRequestHash</code>, <code>payuResponseHash</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { createPayments } <span class="kw">from</span> <span class="str">'@bhooai/nexus-payments'</span>;
+
+<span class="kw">const</span> payments = createPayments(config.payments);
+
+router.post(<span class="str">'/payments/order'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> { provider, amount, currency, reference, description } = ctx.body;
+  <span class="kw">const</span> gateway = payments.get(provider);          <span class="com">// throws when disabled</span>
+  <span class="kw">const</span> order = <span class="kw">await</span> gateway.createOrder({ amount, currency, reference, description });
+  ctx.json(order);
+}, [authToken(auth, { cookieName: config.auth.cookieName, allowCookie: <span class="num">true</span> })]);
+
+<span class="com">// webhooks mount on a route that includes :provider (the default webhookPath already does)</span>
+router.post(config.payments.webhookPath, payments.webhookRouter((ev) =&gt; {
+  log.info(<span class="str">'payment event'</span>, { provider: ev.provider, event: ev.event, verified: ev.verified });
+}).handler);</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Webhook route must include <code>:provider</code></span>
+    The <code>WebhookRouter.handler</code> reads <code>ctx.params.provider</code> to look up the
+    provider, and returns <code>404</code> when it is missing. The default
+    <code>payments.webhookPath</code> is <code>'/payments/webhook/:provider'</code> — keep the
+    <code>:provider</code> param if you override it. A fixed string like
+    <code>'/payments/webhook'</code> would <code>404</code> every request.
+  </div>
+
+  <div class="callout note">
+    <span class="label">Testing</span>
+    The <code>HttpTransport</code> is injectable — pass a mock as the second arg to
+    <code>createPayments</code> so tests never touch a live gateway:
+    <pre><code><span class="kw">const</span> payments = createPayments(config.payments, { transport: mockTransport });</code></pre>
+    Razorpay/PayPal exercise the transport on every call; PayU/Skrill/Payoneer compute hashes locally
+    (no transport needed for <code>createOrder</code> / <code>verifyWebhook</code>).
+  </div>
+
+  <h2 id="createPayments">createPayments(config, opts?)</h2>
+  <pre><code><span class="kw">function</span> createPayments(
+  config: {
+    razorpay?: ProviderConfig;
+    paypal?: ProviderConfig;
+    payu?: ProviderConfig;
+    skrill?: ProviderConfig;
+    payoneer?: ProviderConfig;
+  },
+  opts?: PaymentsOptions,
+): PaymentsService</code></pre>
+  <p>Build the payments service from a <code>payments</code> config section. A provider <strong>activates</strong>
+     when <code>enabled: true</code> <em>or</em> all of its credential keys are set — so adding keys
+     (via config or <code>NEXUS_PAYMENTS_*</code> env) without flipping <code>enabled</code> still yields a
+     working provider. The only way to keep a configured provider off is
+     <code>enabled: false</code> with keys present. The second arg injects an
+     <code>HttpTransport</code> (defaults to <code>fetchTransport</code>).</p>
+  <table>
+    <thead><tr><th>Provider</th><th>Activates on</th></tr></thead>
+    <tbody>
+      <tr><td>razorpay</td><td><code>keyId</code> + <code>keySecret</code></td></tr>
+      <tr><td>paypal</td><td><code>clientId</code> + <code>clientSecret</code></td></tr>
+      <tr><td>payu</td><td><code>merchantKey</code> + <code>salt</code></td></tr>
+      <tr><td>skrill</td><td><code>merchantEmail</code></td></tr>
+      <tr><td>payoneer</td><td><code>programId</code> + <code>apiKey</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PaymentsOptions">PaymentsOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>transport?</code></td><td><code>HttpTransport</code></td><td><code>fetchTransport</code></td><td>HTTP transport used by every provider. Inject a mock for tests.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PaymentsService">PaymentsService</h3>
+  <pre><code><span class="kw">interface</span> PaymentsService {
+  providers: Map&lt;<span class="kw">string</span>, PaymentProvider&gt;;
+  get(name: <span class="kw">string</span>): PaymentProvider;
+  webhookRouter(onEvent: (event: WebhookEvent) =&gt; Promise&lt;<span class="kw">void</span>&gt; | <span class="kw">void</span>): WebhookRouter;
+}</code></pre>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>providers</code></td><td>Enabled providers keyed by name (<code>razorpay</code>, <code>paypal</code>, <code>payu</code>, <code>skrill</code>, <code>payoneer</code>).</td></tr>
+      <tr><td><code>get(name)</code></td><td>Get a provider by name; throws <code>Error('[nexus-payments] provider not enabled: &lt;name&gt;')</code> if not enabled.</td></tr>
+      <tr><td><code>webhookRouter(onEvent)</code></td><td>Build a <a href="#WebhookRouter"><code>WebhookRouter</code></a> instance whose <code>handler</code> dispatches verified events to <code>onEvent</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="PaymentProvider">PaymentProvider interface</h2>
+  <pre><code><span class="kw">interface</span> PaymentProvider {
+  <span class="kw">readonly</span> name: <span class="kw">string</span>;
+  createOrder(input: CreateOrderInput): Promise&lt;Order&gt;;
+  capture(input: CaptureInput): Promise&lt;Order&gt;;
+  refund(input: RefundInput): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId: <span class="kw">string</span>): Promise&lt;Order&gt;;
+  verifyWebhook(input: WebhookVerifyInput): Promise&lt;WebhookEvent&gt;;
+  testConnection?(): Promise&lt;ConnectionTest&gt;;
+}</code></pre>
+  <p>Every gateway adapter implements this. <code>testConnection</code> is <strong>optional</strong> —
+     only Razorpay and PayPal implement a safe anonymous probe; PayU/Skrill/Payoneer omit it and the
+     admin test console reports them as "configured — no public probe".</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>createOrder(input)</code></td><td>Create an order at the provider. Returns an <code>Order</code> (with <code>paymentUrl</code> for hosted-checkout providers).</td></tr>
+      <tr><td><code>capture(input)</code></td><td>Capture an authorized payment. Razorpay/PayPal call the provider API; PayU/Skrill/Payoneer delegate to <code>getOrderStatus</code>.</td></tr>
+      <tr><td><code>refund(input)</code></td><td>Refund a captured payment. Razorpay/PayPal call the provider API; PayU/Skrill/Payoneer return a placeholder.</td></tr>
+      <tr><td><code>getOrderStatus(orderId)</code></td><td>Fetch the current order status. Razorpay/PayPal hit the API; PayU/Skrill/Payoneer return a placeholder.</td></tr>
+      <tr><td><code>verifyWebhook(input)</code></td><td>Verify a webhook signature and parse the event. Returns <code>{ verified, event?, data?, provider? }</code>.</td></tr>
+      <tr><td><code>testConnection?()</code></td><td>Optional live probe that authenticates <strong>without</strong> moving money. Razorpay lists orders; PayPal exchanges an OAuth token.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Types</h2>
+
+  <h3 id="OrderStatus">OrderStatus</h3>
+  <pre><code><span class="kw">type</span> OrderStatus =
+  | <span class="str">'created'</span> | <span class="str">'pending'</span> | <span class="str">'authorized'</span> | <span class="str">'paid'</span>
+  | <span class="str">'captured'</span> | <span class="str">'failed'</span> | <span class="str">'refunded'</span> | <span class="str">'cancelled'</span>;</code></pre>
+  <p>The eight unified order statuses. Each provider maps its native statuses onto these (e.g.
+     PayPal <code>APPROVED</code> → <code>authorized</code>, <code>COMPLETED</code> → <code>captured</code>;
+     Razorpay <code>attempted</code> → <code>pending</code>).</p>
+
+  <h3 id="Money">Money</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>amount</code></td><td><code>number</code></td><td>Amount in <strong>major</strong> units (e.g. <code>10.50</code>).</td></tr>
+      <tr><td><code>currency</code></td><td><code>string</code></td><td>ISO 4217 currency code.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="CustomerInfo">CustomerInfo</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>email?</code></td><td><code>string</code></td><td>Customer email (PayU uses it in the request hash).</td></tr>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>Customer name (PayU <code>firstname</code>).</td></tr>
+      <tr><td><code>phone?</code></td><td><code>string</code></td><td>Customer phone.</td></tr>
+      <tr><td><code>userId?</code></td><td><code>string</code></td><td>Internal user id.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="CreateOrderInput">CreateOrderInput</h3>
+  <pre><code><span class="kw">interface</span> CreateOrderInput {
+  amount: <span class="kw">number</span>;
+  currency: <span class="kw">string</span>;
+  reference: <span class="kw">string</span>;          <span class="com">// REQUIRED — merchant order id / receipt</span>
+  description?: <span class="kw">string</span>;
+  customer?: CustomerInfo;
+  returnUrl?: <span class="kw">string</span>;        <span class="com">// hosted-checkout return URL (PayPal/Skrill/PayU)</span>
+  cancelUrl?: <span class="kw">string</span>;
+}</code></pre>
+  <div class="callout warn">
+    <span class="label"><code>reference</code> is required</span>
+    Every provider uses <code>reference</code> as the merchant order id (Razorpay <code>receipt</code>,
+    PayPal <code>reference_id</code>, PayU <code>txnid</code>, Skrill <code>transaction_id</code>,
+    Payoneer <code>reference</code>). Omitting it produces an invalid order.
+  </div>
+
+  <h3 id="Order">Order</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Provider order id (for hash-based providers, the <code>reference</code> echoed back).</td></tr>
+      <tr><td><code>reference</code></td><td><code>string</code></td><td>Merchant reference echoed back.</td></tr>
+      <tr><td><code>status</code></td><td><code>OrderStatus</code></td><td>Normalized status.</td></tr>
+      <tr><td><code>amount</code></td><td><code>number</code></td><td>Amount in major units.</td></tr>
+      <tr><td><code>currency</code></td><td><code>string</code></td><td>ISO 4217 currency.</td></tr>
+      <tr><td><code>paymentUrl?</code></td><td><code>string</code></td><td>Hosted-checkout / redirect URL, when the provider offers one.</td></tr>
+      <tr><td><code>paymentId?</code></td><td><code>string</code></td><td>Provider payment id once a payment exists.</td></tr>
+      <tr><td><code>raw</code></td><td><code>unknown</code></td><td>Raw provider response (for debugging / extra fields).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="CaptureInput">CaptureInput</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>orderId</code></td><td><code>string</code></td><td>Provider order id.</td></tr>
+      <tr><td><code>paymentId?</code></td><td><code>string</code></td><td>Required by Razorpay (the payment to capture).</td></tr>
+      <tr><td><code>amount?</code></td><td><code>number</code></td><td>Partial capture amount (major units); omitted = full.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RefundInput">RefundInput</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>paymentId</code></td><td><code>string</code></td><td>Provider payment id to refund.</td></tr>
+      <tr><td><code>amount?</code></td><td><code>number</code></td><td>Partial refund amount (major units); omitted = full.</td></tr>
+      <tr><td><code>reason?</code></td><td><code>string</code></td><td>Refund reason (Razorpay stores it in <code>notes.reason</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RefundResult">RefundResult</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Provider refund id.</td></tr>
+      <tr><td><code>status</code></td><td><code>string</code></td><td>Provider-specific refund status string.</td></tr>
+      <tr><td><code>amount</code></td><td><code>number</code></td><td>Refunded amount in major units.</td></tr>
+      <tr><td><code>raw</code></td><td><code>unknown</code></td><td>Raw provider response.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="WebhookVerifyInput">WebhookVerifyInput</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>rawBody</code></td><td><code>string | Buffer</code></td><td>Raw request body (needed for HMAC signature verification).</td></tr>
+      <tr><td><code>headers</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Request headers (signature lives in provider-specific headers).</td></tr>
+      <tr><td><code>params?</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Route params (e.g. provider name) if mounted on a param route.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="WebhookEvent">WebhookEvent</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>verified</code></td><td><code>boolean</code></td><td>Whether the signature checked out.</td></tr>
+      <tr><td><code>event?</code></td><td><code>string</code></td><td>Event type (e.g. <code>payment.captured</code>, <code>refund.created</code>).</td></tr>
+      <tr><td><code>data?</code></td><td><code>unknown</code></td><td>Normalized, provider-specific payload.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>string</code></td><td>Provider name that produced the event.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ConnectionTest">ConnectionTest</h3>
+  <p>Result of a live connectivity probe, returned by <code>testConnection()</code> for the admin
+     test console.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ok</code></td><td><code>boolean</code></td><td>Whether the probe succeeded.</td></tr>
+      <tr><td><code>detail?</code></td><td><code>string</code></td><td>Human note on success (e.g. <code>"authenticated; 3 order(s) in the first page"</code>).</td></tr>
+      <tr><td><code>error?</code></td><td><code>string</code></td><td>Error message when <code>ok</code> is false.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ProviderConfig">ProviderConfig</h3>
+  <pre><code><span class="kw">interface</span> ProviderConfig {
+  enabled: <span class="kw">boolean</span>;
+  sandbox: <span class="kw">boolean</span>;
+  [key: <span class="kw">string</span>]: <span class="kw">unknown</span>;
+}</code></pre>
+  <p>Provider configuration as it appears in <code>nexus.config.ts</code>
+     <code>payments.&lt;provider&gt;</code>. The index signature lets provider-specific keys
+     (e.g. <code>keyId</code>, <code>clientSecret</code>, <code>webhookSecret</code>) flow through.</p>
+
+  <h2 id="PaymentError">Errors — PaymentError</h2>
+  <pre><code><span class="kw">class</span> PaymentError <span class="kw">extends</span> Error {
+  <span class="kw">readonly</span> code: <span class="kw">string</span>;
+  <span class="kw">readonly</span> provider: <span class="kw">string</span>;
+  <span class="kw">readonly</span> status?: <span class="kw">number</span>;
+  <span class="kw">readonly</span> raw?: <span class="kw">unknown</span>;
+  <span class="kw">constructor</span>(message: <span class="kw">string</span>, opts: { code: <span class="kw">string</span>; provider: <span class="kw">string</span>; status?: <span class="kw">number</span>; raw?: <span class="kw">unknown</span> });
+}</code></pre>
+  <p>Payment-domain error thrown by every provider. <code>code</code> is machine-readable
+     (<code>'HTTP_ERROR'</code>, <code>'AUTH'</code>, <code>'CONFIG'</code>, ...), <code>provider</code>
+     names the gateway, <code>status</code> is the upstream HTTP status when applicable, and
+     <code>raw</code> is the parsed provider response (for debugging). <code>name</code> is
+     <code>'PaymentError'</code>.</p>
+
+  <h2>HTTP transport</h2>
+
+  <h3 id="HttpTransport">HttpRequest / HttpResponse / HttpTransport</h3>
+  <pre><code><span class="kw">interface</span> HttpRequest {
+  method: <span class="str">'GET'</span> | <span class="str">'POST'</span> | <span class="str">'PUT'</span> | <span class="str">'PATCH'</span> | <span class="str">'DELETE'</span>;
+  url: <span class="kw">string</span>;
+  headers?: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;;
+  body?: <span class="kw">string</span>;
+}
+<span class="kw">interface</span> HttpResponse {
+  status: <span class="kw">number</span>;
+  body: <span class="kw">string</span>;
+  headers?: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;;
+}
+<span class="kw">type</span> HttpTransport = (req: HttpRequest) =&gt; Promise&lt;HttpResponse&gt;;</code></pre>
+  <p>The injectable HTTP seam. Providers accept any <code>HttpTransport</code>; tests pass a mock
+     that returns canned <code>HttpResponse</code>s and never touches the network. Inject it via
+     <code>createPayments(config, { transport: mockTransport })</code>.</p>
+
+  <h3 id="fetchTransport">fetchTransport</h3>
+  <pre><code><span class="kw">const</span> fetchTransport: HttpTransport</code></pre>
+  <p>Default transport built on the global <code>fetch</code> (Node ≥ 18). Returns
+     <code>{ status, body, headers }</code> with lowercased header keys. Used unless you inject your
+     own.</p>
+
+  <h3 id="jsonRequest">jsonRequest(transport, provider, req)</h3>
+  <pre><code><span class="kw">function</span> jsonRequest(transport: HttpTransport, provider: <span class="kw">string</span>, req: HttpRequest): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Run a JSON request through <code>transport</code>, parse the JSON body, and throw a
+     <code>PaymentError</code> (<code>code: 'HTTP_ERROR'</code>, <code>status</code> = upstream status)
+     on non-2xx. Returns the parsed JSON (or <code>undefined</code> for an empty body). Every Razorpay
+     and PayPal call goes through this.</p>
+
+  <h3 id="basicAuth">basicAuth(user, pass)</h3>
+  <pre><code><span class="kw">function</span> basicAuth(user: <span class="kw">string</span>, pass: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Build a <code>Basic</code> Authorization header value from <code>user:pass</code>
+     (<code>'Basic ' + base64(user:pass)</code>). Used by Razorpay (key id/secret) and PayPal's OAuth2
+     token exchange (client id/secret).</p>
+
+  <h2>Signatures</h2>
+
+  <h3 id="hmacSha256Hex">hmacSha256Hex(key, message)</h3>
+  <pre><code><span class="kw">function</span> hmacSha256Hex(key: <span class="kw">string</span> | Buffer, message: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>HMAC-SHA256 hex digest. Used by Razorpay webhooks and Payoneer (request signing + webhook verify).</p>
+
+  <h3 id="sha512Hex">sha512Hex(message)</h3>
+  <pre><code><span class="kw">function</span> sha512Hex(message: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>SHA-512 hex digest. Used by PayU for the request and response hashes
+     (<code>payuRequestHash</code> / <code>payuResponseHash</code>).</p>
+
+  <h3 id="md5Hex">md5Hex(message)</h3>
+  <pre><code><span class="kw">function</span> md5Hex(message: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>MD5 hex digest. Used by Skrill for the Quick Checkout <code>md5sig</code> (uppercase, per Skrill's spec).</p>
+
+  <h3 id="safeEqual">safeEqual(a, b)</h3>
+  <pre><code><span class="kw">function</span> safeEqual(a: <span class="kw">string</span>, b: <span class="kw">string</span>): <span class="kw">boolean</span></code></pre>
+  <p>Constant-time string compare. Returns <code>false</code> immediately on length mismatch, then XORs
+     each character. Used by every webhook verifier to compare the provided signature against the
+     expected one without leaking via timing.</p>
+
+  <h2 id="WebhookRouter">Webhooks — WebhookRouter</h2>
+  <pre><code><span class="kw">class</span> WebhookRouter {
+  <span class="kw">constructor</span>(providers: Map&lt;<span class="kw">string</span>, PaymentProvider&gt;, onEvent: (event: WebhookEvent) =&gt; Promise&lt;<span class="kw">void</span>&gt; | <span class="kw">void</span>);
+  handler: Handler;
+}</code></pre>
+  <p>Returned by <code>payments.webhookRouter(onEvent)</code>. Mount its <code>handler</code> on
+     <code>POST /payments/webhook/:provider</code>. The handler reads <code>ctx.params.provider</code>,
+     looks up the provider, and dispatches the raw body to <code>verifyWebhook</code>:</p>
+  <ul>
+    <li><strong>Unknown/missing provider</strong> → <code>404</code> <code>{ error: 'unknown provider: &lt;name&gt;' }</code>.</li>
+    <li><strong>Bad signature</strong> → <code>401</code> <code>{ error: 'signature verification failed' }</code>.</li>
+    <li><strong>Verified</strong> → calls <code>onEvent(event)</code>, then <code>200</code> <code>{ ok: true }</code>.</li>
+    <li><strong>onEvent throws</strong> → still <code>200</code> <code>{ ok: false, error }</code> so the gateway doesn't retry — the app should persist + retry internally.</li>
+  </ul>
+  <p>The raw body is taken from <code>ctx.state.__rawBody</code> (set by <code>bodyParser</code>) when
+     available, falling back to re-serializing <code>ctx.body</code>. Webhook routes should run
+     <strong>after</strong> <code>bodyParser</code> but <strong>without</strong> auth/CSRF — the
+     signature is the auth.</p>
+
+  <h2>Provider classes</h2>
+
+  <h3 id="RazorpayProvider">RazorpayProvider</h3>
+  <pre><code><span class="kw">class</span> RazorpayProvider <span class="kw">implements</span> PaymentProvider {
+  <span class="kw">readonly</span> name = <span class="str">'razorpay'</span>;
+  <span class="kw">constructor</span>(cfg: RazorpayConfig, transport: HttpTransport);
+  createOrder(input): Promise&lt;Order&gt;;
+  capture(input): Promise&lt;Order&gt;;
+  refund(input): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId): Promise&lt;Order&gt;;
+  verifyWebhook(input): Promise&lt;WebhookEvent&gt;;
+  testConnection(): Promise&lt;ConnectionTest&gt;;
+}</code></pre>
+  <p>Full adapter. Uses basic-auth (<code>keyId</code> / <code>keySecret</code>) against
+     <code>https://api.razorpay.com/v1</code>. Amounts converted to paise via <code>toMinor</code>
+     (3-decimal currencies ×1000, 0-decimal ×1, else ×100). <code>capture</code> requires
+     <code>paymentId</code> and resolves the order currency first for partial captures. Webhooks
+     verified with <code>hmacSha256Hex(webhookSecret, rawBody)</code> against the
+     <code>x-razorpay-signature</code> header. <code>testConnection</code> lists one order.</p>
+  <h4>RazorpayConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>On/off.</td></tr>
+      <tr><td><code>sandbox</code></td><td><code>boolean</code></td><td>Sandbox mode.</td></tr>
+      <tr><td><code>keyId</code></td><td><code>string</code></td><td>API key id (activates the provider).</td></tr>
+      <tr><td><code>keySecret</code></td><td><code>string</code></td><td>API key secret.</td></tr>
+      <tr><td><code>webhookSecret?</code></td><td><code>string</code></td><td>From the Razorpay dashboard; <code>verifyWebhook</code> returns <code>verified: false</code> if unset.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PayPalProvider">PayPalProvider</h3>
+  <pre><code><span class="kw">class</span> PayPalProvider <span class="kw">implements</span> PaymentProvider {
+  <span class="kw">readonly</span> name = <span class="str">'paypal'</span>;
+  <span class="kw">constructor</span>(cfg: PayPalConfig, transport: HttpTransport);
+  createOrder(input): Promise&lt;Order&gt;;
+  capture(input): Promise&lt;Order&gt;;
+  refund(input): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId): Promise&lt;Order&gt;;
+  verifyWebhook(input): Promise&lt;WebhookEvent&gt;;
+  testConnection(): Promise&lt;ConnectionTest&gt;;
+}</code></pre>
+  <p>Full adapter against the Orders v2 API. Caches an OAuth2 client-credentials token with a 5-minute
+     safety margin on expiry (<code>Date.now() &lt; expiresAt - 300_000</code>). Base URL is
+     <code>api-m.sandbox.paypal.com</code> or <code>api-m.paypal.com</code> per <code>sandbox</code>.
+     Amounts formatted as 2-decimal strings (<code>toFixed(2)</code>). Webhooks verified via the
+     <code>/v1/notifications/verify-webhook-signature</code> API (PayPal signs with a rotating
+     certificate, so local HMAC isn't possible) — requires <code>webhookId</code> configured.
+     <code>testConnection</code> exchanges an OAuth token.</p>
+  <h4>PayPalConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code> / <code>sandbox</code></td><td><code>boolean</code></td><td>On/off + sandbox.</td></tr>
+      <tr><td><code>clientId</code></td><td><code>string</code></td><td>OAuth client id (activates the provider).</td></tr>
+      <tr><td><code>clientSecret</code></td><td><code>string</code></td><td>OAuth client secret.</td></tr>
+      <tr><td><code>webhookId?</code></td><td><code>string</code></td><td>Webhook id for the verify API; <code>verifyWebhook</code> returns <code>verified: false</code> if unset.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PayUProvider">PayUProvider</h3>
+  <pre><code><span class="kw">class</span> PayUProvider <span class="kw">implements</span> PaymentProvider {
+  <span class="kw">readonly</span> name = <span class="str">'payu'</span>;
+  <span class="kw">constructor</span>(cfg: PayUConfig, transport: HttpTransport);
+  createOrder(input): Promise&lt;Order&gt;;
+  capture(input): Promise&lt;Order&gt;;
+  refund(input): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId): Promise&lt;Order&gt;;
+  verifyWebhook(input): Promise&lt;WebhookEvent&gt;;
+}</code></pre>
+  <p>Happy-path adapter for PayU India's hash-based flow. <code>createOrder</code> builds the checkout
+     params + SHA-512 request hash and returns the hosted-checkout URL as <code>paymentUrl</code>
+     (with the POST params in <code>raw</code> for the client to submit). <code>verifyWebhook</code>
+     recomputes the response hash over the form fields and compares in constant time. No
+     <code>testConnection</code>.</p>
+  <h4>PayUConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code> / <code>sandbox</code></td><td><code>boolean</code></td><td>On/off + sandbox (selects <code>test.payu.in</code> vs <code>secure.payu.in</code>).</td></tr>
+      <tr><td><code>merchantKey</code></td><td><code>string</code></td><td>PayU merchant key (activates the provider).</td></tr>
+      <tr><td><code>salt</code></td><td><code>string</code></td><td>Merchant salt (used in both hashes).</td></tr>
+    </tbody>
+  </table>
+  <h4 id="payuRequestHash">payuRequestHash(key, salt, p)</h4>
+  <pre><code><span class="kw">function</span> payuRequestHash(key: <span class="kw">string</span>, salt: <span class="kw">string</span>, p: {
+  txnid: <span class="kw">string</span>; amount: <span class="kw">string</span>; productinfo: <span class="kw">string</span>; firstname: <span class="kw">string</span>; email: <span class="kw">string</span>; udf: <span class="kw">string</span>[];
+}): <span class="kw">string</span></code></pre>
+  <p>Request hash = <code>sha512(key|txnid|amount|productinfo|firstname|email|udf1..udf10|salt)</code>.
+     Exported so callers can build the checkout form outside <code>createOrder</code> if needed.</p>
+  <h4 id="payuResponseHash">payuResponseHash(key, salt, p)</h4>
+  <pre><code><span class="kw">function</span> payuResponseHash(key: <span class="kw">string</span>, salt: <span class="kw">string</span>, p: {
+  status: <span class="kw">string</span>; txnid: <span class="kw">string</span>; amount: <span class="kw">string</span>; productinfo: <span class="kw">string</span>; firstname: <span class="kw">string</span>; email: <span class="kw">string</span>; udf: <span class="kw">string</span>[];
+}): <span class="kw">string</span></code></pre>
+  <p>Response hash = <code>sha512(salt|status|udf10..udf1|email|firstname|productinfo|amount|txnid|key)</code>
+     — the reverse sequence of the request hash.</p>
+
+  <h3 id="SkrillProvider">SkrillProvider</h3>
+  <pre><code><span class="kw">class</span> SkrillProvider <span class="kw">implements</span> PaymentProvider {
+  <span class="kw">readonly</span> name = <span class="str">'skrill'</span>;
+  <span class="kw">constructor</span>(cfg: SkrillConfig, transport: HttpTransport);
+  createOrder(input): Promise&lt;Order&gt;;
+  capture(input): Promise&lt;Order&gt;;
+  refund(input): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId): Promise&lt;Order&gt;;
+  verifyWebhook(input): Promise&lt;WebhookEvent&gt;;
+}</code></pre>
+  <p>Happy-path adapter for Skrill Quick Checkout. <code>createOrder</code> builds the
+     <code>https://pay.skrill.com/?...</code> redirect URL with payment params and returns it as
+     <code>paymentUrl</code>. The status-report IPN is verified by recomputing
+     <code>md5sig = MD5(merchantEmail + secretWord + mb_transaction_id + amount + currency)</code>
+     (uppercase) and comparing in constant time. No <code>testConnection</code>.</p>
+  <h4>SkrillConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code> / <code>sandbox</code></td><td><code>boolean</code></td><td>On/off + sandbox (Skrill has no sandbox flag per se; the field is kept for uniformity).</td></tr>
+      <tr><td><code>merchantEmail</code></td><td><code>string</code></td><td>The <code>pay_to_email</code> (activates the provider).</td></tr>
+      <tr><td><code>secretWord</code></td><td><code>string</code></td><td>Secret word from the Skrill merchant account; <code>verifyWebhook</code> returns <code>verified: false</code> if unset.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PayoneerProvider">PayoneerProvider</h3>
+  <pre><code><span class="kw">class</span> PayoneerProvider <span class="kw">implements</span> PaymentProvider {
+  <span class="kw">readonly</span> name = <span class="str">'payoneer'</span>;
+  <span class="kw">constructor</span>(cfg: PayoneerConfig, transport: HttpTransport);
+  createOrder(input): Promise&lt;Order&gt;;
+  capture(input): Promise&lt;Order&gt;;
+  refund(input): Promise&lt;RefundResult&gt;;
+  getOrderStatus(orderId): Promise&lt;Order&gt;;
+  verifyWebhook(input): Promise&lt;WebhookEvent&gt;;
+}</code></pre>
+  <p>Happy-path adapter. <code>createOrder</code> builds a signed redirect URL:
+     <code>HMAC-SHA256(apiKey, canonicalQuery(params))</code> appended as <code>signature</code>, sent
+     to <code>https://api.sandbox.payoneer.com/checkout/&lt;programId&gt;</code> (or live). Webhooks
+     verified with <code>hmacSha256Hex(webhookSecret, rawBody)</code> against the
+     <code>x-payoneer-signature</code> header. Payoneer has no public sandbox without a provisioned
+     program, so this adapter is verified structurally — not against live calls. No
+     <code>testConnection</code>.</p>
+  <h4>PayoneerConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code> / <code>sandbox</code></td><td><code>boolean</code></td><td>On/off + sandbox (selects <code>api.sandbox.payoneer.com</code> vs <code>api.payoneer.com</code>).</td></tr>
+      <tr><td><code>programId</code></td><td><code>string</code></td><td>Payoneer program id (activates the provider).</td></tr>
+      <tr><td><code>apiKey</code></td><td><code>string</code></td><td>API key used as the HMAC key for request signing.</td></tr>
+      <tr><td><code>webhookSecret?</code></td><td><code>string</code></td><td>Shared secret for webhook HMAC verification; <code>verifyWebhook</code> returns <code>verified: false</code> if unset.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <span class="label">Happy-path stubs (PayU / Skrill / Payoneer)</span>
+    For these three providers, <code>capture</code> delegates to <code>getOrderStatus</code>,
+    <code>refund</code> returns a placeholder <code>RefundResult</code> (<code>status: 'pending'</code>,
+    with a <code>raw.note</code> explaining the v1 limitation), and <code>getOrderStatus</code>
+    returns a placeholder <code>Order</code> (<code>status: 'pending'</code>,
+    <code>raw.note: '... status via webhook (v1)'</code>). The real status arrives via the webhook;
+    refunds happen via the provider's merchant panel / partner API. Treat these results as
+    "no-op succeeded" — do not rely on them for ledger truth. Razorpay and PayPal implement all
+    four methods against their live APIs.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Payments API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Payments - minor units + activation","apiBase":"http://localhost:4000","js":"function toMinor(amount, currency) {\n  const threeDp = [\"KWD\",\"BHD\",\"JOD\",\"OMR\",\"TND\"];\n  const zeroDp = [\"JPY\",\"KRW\",\"VND\",\"ISK\"];\n  if (threeDp.includes(currency)) return Math.round(amount * 1000);\n  if (zeroDp.includes(currency)) return Math.round(amount);\n  return Math.round(amount * 100);\n}\nconsole.log(\"INR 99.50 -\u003e\", toMinor(99.50, \"INR\"), \"paise\");\n\nconst active = (cfg, keys) =\u003e cfg.enabled || keys.every((k) =\u003e typeof cfg[k] === \"string\" \u0026\u0026 cfg[k].length \u003e 0);\nconsole.log(\"razorpay active:\", active({ keyId: \"rzp_test_1\", keySecret: \"s\" }, [\"keyId\",\"keySecret\"]));\nconsole.log(\"paypal active (enabled:false w/ keys):\", active({ enabled: false, clientId: \"id\", clientSecret: \"s\" }, [\"clientId\",\"clientSecret\"]));","api":{"method":"POST","path":"/payments/order","body":{"provider":"razorpay","amount":99,"currency":"INR","reference":"demo_1","description":"Demo"}}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

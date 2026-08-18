@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Login & Auth Flow — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Login &amp; Auth Flow <span class="sub">CSRF, JWT access/refresh tokens, cookies, RBAC, and optional Google OAuth — the complete end-to-end flow with server- and browser-side code.</span></h1>
+
+  <p>Nexus auth is one cohesive unit: <strong>CSRF → CORS → security headers →
+     rate limit → body parse → router</strong>. This guide walks through every
+     endpoint a browser hits, shows the exact request/response shapes, and
+     explains how to protect your own routes.</p>
+
+  <h2>The full flow at a glance</h2>
+  <pre><code><span class="com">┌────────────┐   GET /csrf-token     ┌──────────────┐</span>
+<span class="com">│  Browser   │ ───────────────────▶ │   Backend    │</span>
+<span class="com">│            │ ◀── cookie + token ─ │ (CSRF + JWT) │</span>
+<span class="com">│            │                      │              │</span>
+<span class="com">│            │   POST /auth/login    │              │</span>
+<span class="com">│            │   x-csrf-token: ...   │              │</span>
+<span class="com">│            │ ───────────────────▶ │              │</span>
+<span class="com">│            │ ◀── user + tokens ─── │              │</span>
+<span class="com">│            │   + HttpOnly cookies   │              │</span>
+<span class="com">│            │                      │              │</span>
+<span class="com">│            │   GET /auth/me        │              │</span>
+<span class="com">│            │   Authorization: Bearer ...          │</span>
+<span class="com">│            │ ───────────────────▶ │              │</span>
+<span class="com">│            │ ◀── { user } ─────── │              │</span>
+<span class="com">└────────────┘                      └──────────────┘</span></code></pre>
+
+  <h2>1. CSRF token flow</h2>
+  <p>CSRF uses the <strong>double-submit cookie</strong> pattern. Safe methods
+     (GET/HEAD/OPTIONS/TRACE) get a fresh <code>nexus_csrf</code> cookie and
+     expose the token in the response body. Unsafe methods must send it back in
+     the <code>x-csrf-token</code> header.</p>
+  <pre><code><span class="com">// Step 1 — get a CSRF token (also sets the nexus_csrf cookie)</span>
+GET /csrf-token
+Origin: http://localhost:3000
+
+<span class="com">// 200 response</span>
+{
+  <span class="str">"token"</span>: <span class="str">"HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG"</span>
+}
+<span class="com">// Set-Cookie: nexus_csrf=HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG; HttpOnly; ...</span></code></pre>
+  <pre><code><span class="com">// Step 2 — every POST/PUT/PATCH/DELETE must echo the token</span>
+POST /auth/login
+Origin: http://localhost:3000
+Content-Type: application/json
+x-csrf-token: HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG
+
+{ <span class="str">"email"</span>: <span class="str">"demo@nexus.local"</span>, <span class="str">"password"</span>: <span class="str">"password"</span> }</code></pre>
+  <div class="callout danger">
+    <span class="label">CSRF gotchas</span>
+    With a non-empty <code>trustedOrigins</code>, every unsafe request
+    <strong>must</strong> carry an <code>Origin</code> header that exactly matches
+    a trusted origin (<strong>including the port</strong>) <em>and</em> a matching
+    <code>x-csrf-token</code>. The WebSocket upgrade verifies the same token via
+    <code>Sec-WebSocket-Protocol</code>. Loopback origins are trusted regardless
+    of port; external origins match strictly.
+  </div>
+
+  <h2>2. Register</h2>
+  <p>POST <code>/auth/register</code> creates a user and returns the auth bundle.
+     The <strong>very first</strong> registered user is bootstrapped as
+     <code>admin</code>; everyone after gets <code>user</code>.</p>
+  <pre><code>POST /auth/register
+Origin: http://localhost:3000
+Content-Type: application/json
+x-csrf-token: &lt;token&gt;
+
+{
+  <span class="str">"email"</span>: <span class="str">"founder@myapp.com"</span>,
+  <span class="str">"password"</span>: <span class="str">"supersecret-8-chars"</span>,
+  <span class="str">"name"</span>: <span class="str">"Founder"</span>
+}</code></pre>
+  <pre><code><span class="com">// 200 response</span>
+{
+  <span class="str">"user"</span>: {
+    <span class="str">"_id"</span>: <span class="str">"6823..."</span>,
+    <span class="str">"email"</span>: <span class="str">"founder@myapp.com"</span>,
+    <span class="str">"name"</span>: <span class="str">"Founder"</span>,
+    <span class="str">"roles"</span>: [<span class="str">"admin"</span>]       <span class="com">// first user → admin</span>
+  },
+  <span class="str">"accessToken"</span>: <span class="str">"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI..."</span>,
+  <span class="str">"refreshToken"</span>: <span class="str">"eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiI..."</span>
+}
+<span class="com">// Set-Cookie: nexus_sid=&lt;accessToken&gt;; HttpOnly; SameSite=Lax</span>
+<span class="com">// Set-Cookie: nexus_rid=&lt;refreshToken&gt;; HttpOnly; SameSite=Lax</span></code></pre>
+  <div class="callout note">
+    <span class="label">Password rules</span>
+    Passwords are bcrypt-hashed via <code>hashPassword</code> /
+    <code>verifyPassword</code>. The minimum length is 8 characters; the
+    <code>ValidationError</code> is thrown otherwise.
+  </div>
+
+  <h2>3. Login</h2>
+  <pre><code>POST /auth/login
+Origin: http://localhost:3000
+Content-Type: application/json
+x-csrf-token: &lt;token&gt;
+
+{ <span class="str">"email"</span>: <span class="str">"founder@myapp.com"</span>, <span class="str">"password"</span>: <span class="str">"supersecret-8-chars"</span> }</code></pre>
+  <pre><code><span class="com">// 200 response — same shape as register</span>
+{
+  <span class="str">"user"</span>:  { <span class="str">"_id"</span>: <span class="str">"..."</span>, <span class="str">"email"</span>: <span class="str">"..."</span>, <span class="str">"roles"</span>: [<span class="str">"admin"</span>] },
+  <span class="str">"accessToken"</span>:  <span class="str">"eyJ..."</span>,
+  <span class="str">"refreshToken"</span>: <span class="str">"eyJ..."</span>
+}
+<span class="com">// Set-Cookie: nexus_sid=...; nexus_rid=...</span></code></pre>
+  <p>Invalid credentials return <code>401</code> with a generic message
+     (<code>"Invalid email or password"</code>) so email enumeration is not
+     possible.</p>
+
+  <h2>4. Get current user</h2>
+  <pre><code>GET /auth/me
+Authorization: Bearer eyJ...        <span class="com">// access token</span>
+
+<span class="com">// 200 response</span>
+{ <span class="str">"user"</span>: { <span class="str">"_id"</span>: <span class="str">"..."</span>, <span class="str">"email"</span>: <span class="str">"..."</span>, <span class="str">"roles"</span>: [<span class="str">"admin"</span>] } }</code></pre>
+  <p>The <code>authToken</code> middleware reads the Bearer header (or the
+     <code>nexus_sid</code> cookie when <code>allowCookie: true</code>), verifies
+     it via <code>AuthService.verifyAccessToken</code>, and populates
+     <code>ctx.state.user = { id, roles, sid }</code>. <code>requireAuth()</code>
+     then ensures a user is present.</p>
+
+  <h2>5. Refresh</h2>
+  <p>Access tokens are short-lived (default 15m). Refresh tokens rotate on every
+     use, and reuse of an old refresh token revokes the whole session family
+     (reuse detection).</p>
+  <pre><code>POST /auth/refresh
+Content-Type: application/json
+x-csrf-token: &lt;token&gt;
+
+{ <span class="str">"refreshToken"</span>: <span class="str">"eyJ..."</span> }   <span class="com">// or omit body — read from nexus_rid cookie</span>
+
+<span class="com">// 200 response — fresh pair</span>
+{ <span class="str">"accessToken"</span>: <span class="str">"eyJ.new..."</span>, <span class="str">"refreshToken"</span>: <span class="str">"eyJ.new..."</span> }
+<span class="com">// Set-Cookie: nexus_sid=...; nexus_rid=...  (rotated)</span></code></pre>
+  <pre><code><span class="com">// Server-side rotation + reuse detection (AuthService.refresh)</span>
+<span class="kw">if</span> (session.currentJti &amp;&amp; payload.jti &amp;&amp; session.currentJti !== payload.jti) {
+  <span class="kw">await this</span>.sessions.destroyFamily(session.familyId);
+  <span class="kw">throw new</span> AuthenticationError(<span class="str">'Refresh token reuse detected; session revoked'</span>);
+}</code></pre>
+  <div class="callout warn">
+    <span class="label">JWT kinds are segregated</span>
+    <code>jwt.ts</code> signs tokens with a <code>kind</code> discriminator
+    (<code>access</code> vs <code>refresh</code>). An access token can never be used
+    to refresh, and a refresh token can never be used as a Bearer for
+    <code>/auth/me</code>.
+  </div>
+
+  <h2>6. Logout</h2>
+  <pre><code>POST /auth/logout
+x-csrf-token: &lt;token&gt;
+Authorization: Bearer eyJ...   <span class="com">// optional — never 401s on logout</span>
+
+<span class="com">// 200 response</span>
+{ <span class="str">"ok"</span>: <span class="kw">true</span> }
+<span class="com">// Set-Cookie: nexus_sid=; Max-Age=0   (cleared)</span>
+<span class="com">// Set-Cookie: nexus_rid=; Max-Age=0   (cleared)</span></code></pre>
+
+  <h2>7. Protecting your own routes</h2>
+  <p>Route-level middleware is the third argument to <code>router.&lt;method&gt;()</code>.
+     Chain <code>authToken</code> for auth + <code>requireRole</code> for RBAC.</p>
+  <pre><code><span class="kw">import</span> { authToken, requireRole, requireAuth } <span class="kw">from</span> <span class="str">'@bhooai/nexus-auth'</span>;
+
+<span class="com">// Any authenticated user</span>
+router.get(<span class="str">'/me'</span>, handler, [
+  authToken(authService, { cookieName: config.auth.cookieName, allowCookie: <span class="kw">true</span>, required: <span class="kw">true</span> }),
+  requireAuth(),
+]);
+
+<span class="com">// Admin only</span>
+router.get(<span class="str">'/admin/users'</span>, handler, [
+  authToken(authService, { cookieName: config.auth.cookieName, allowCookie: <span class="kw">true</span> }),
+  requireRole(<span class="str">'admin'</span>),
+]);</code></pre>
+  <div class="callout warn">
+    <span class="label">Signature</span>
+    <code>authToken(service: AuthService, options: AuthTokenOptions)</code> — the
+    <strong>first</strong> argument is the <code>AuthService</code> instance;
+    options are the second. <code>allowCookie: true</code> lets the middleware
+    fall back to the <code>nexus_sid</code> cookie when the
+    <code>Authorization</code> header is absent.
+  </div>
+
+  <h2>8. Google OAuth (optional)</h2>
+  <p>OAuth is wired only when <code>config.auth.google.clientId</code> is set.
+     The flow is PKCE + state.</p>
+  <pre><code><span class="com">// nexus.config.ts</span>
+auth: {
+  google: {
+    clientId: <span class="str">'...apps.googleusercontent.com'</span>,
+    clientSecret: <span class="str">'...'</span>,
+    callbackPath: <span class="str">'/auth/google/callback'</span>,
+    scope: <span class="str">'openid email profile'</span>,
+  },
+}</code></pre>
+  <pre><code><span class="com">// Browser flow</span>
+1. GET /auth/google
+   → redirects to accounts.google.com with state + PKCE verifier
+2. User consents on Google
+3. Google redirects back to /auth/google/callback?code=...&amp;state=...
+4. Backend exchanges code → tokens → fetches profile → upserts user
+5. Response: { user, accessToken } + sets nexus_sid / nexus_rid cookies</code></pre>
+  <pre><code><span class="com">// Server-side (authRoutes.ts)</span>
+router.get(<span class="str">'/auth/google'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> state = generateState();
+  <span class="kw">const</span> verifier = generatePkceVerifier();
+  <span class="kw">await</span> oauthState.set(state, { provider: <span class="str">'google'</span>, verifier }, <span class="num">5</span> * <span class="num">60_000</span>);
+  ctx.redirect(buildGoogleAuthUrl(google, { state, verifier }));
+});
+
+router.get(config.auth.google.callbackPath, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> { code, state } = ctx.query <span class="kw">as</span> { code?: <span class="kw">string</span>; state?: <span class="kw">string</span> };
+  <span class="kw">const</span> data = <span class="kw">await</span> oauthState.consume(state);
+  <span class="kw">const</span> tokens = <span class="kw">await</span> exchangeGoogleCode(code, google, data.verifier);
+  <span class="kw">const</span> profile = <span class="kw">await</span> fetchGoogleProfile(tokens.accessToken);
+  <span class="kw">const</span> user = <span class="kw">await</span> upsertOAuthUser({ provider: <span class="str">'google'</span>, providerUserId: profile.providerUserId, email: profile.email, name: profile.name });
+  <span class="kw">const</span> pair = <span class="kw">await</span> service.login({ userId: String(user._id), roles: user.roles });
+  setAuthCookies(ctx, pair, { accessTokenName: config.auth.cookieName, refreshTokenName: config.auth.refreshCookieName });
+  ctx.json({ user: publicUser(user), accessToken: pair.accessToken });
+});</code></pre>
+
+  <h2>9. Browser fetch example — full login flow</h2>
+  <pre><code><span class="com">// lib/auth.ts — the frontend pattern (simplified from apps/frontend)</span>
+<span class="kw">let</span> csrfToken = <span class="str">''</span>;
+<span class="kw">let</span> accessToken = <span class="str">''</span>;   <span class="com">// lives in memory only — NOT localStorage</span>
+<span class="kw">let</span> currentUser = <span class="kw">null</span>;
+
+<span class="kw">async function</span> refreshCsrf() {
+  <span class="kw">if</span> (csrfToken) <span class="kw">return</span>;
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'include'</span> });
+  csrfToken = (<span class="kw">await</span> r.json()).token;
+}
+
+<span class="kw">function</span> csrfHeaders() {
+  <span class="kw">return</span> { <span class="str">'x-csrf-token'</span>: csrfToken };
+}
+<span class="kw">function</span> authHeaders() {
+  <span class="kw">return</span> accessToken ? { authorization: <span class="str">'Bearer '</span> + accessToken } : {};
+}
+
+<span class="kw">async function</span> postJson(path, body) {
+  <span class="kw">await</span> refreshCsrf();
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(path, {
+    method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+    headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, ...csrfHeaders(), ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  <span class="kw">if</span> (!r.ok) <span class="kw">throw new</span> Error((<span class="kw">await</span> r.json()).error?.message ?? r.statusText);
+  <span class="kw">return</span> r.json();
+}
+
+<span class="com">// Register → first user becomes admin</span>
+<span class="kw">const</span> res = <span class="kw">await</span> postJson(<span class="str">'/auth/register'</span>, {
+  email: <span class="str">'founder@myapp.com'</span>, password: <span class="str">'supersecret-8-chars'</span>, name: <span class="str">'Founder'</span>,
+});
+accessToken = res.accessToken;
+currentUser = res.user;
+console.log(<span class="str">'logged in as'</span>, currentUser.email, currentUser.roles);
+
+<span class="com">// Call a protected endpoint</span>
+<span class="kw">const</span> me = <span class="kw">await</span> fetch(<span class="str">'/auth/me'</span>, {
+  headers: { authorization: <span class="str">'Bearer '</span> + accessToken },
+  credentials: <span class="str">'include'</span>,
+}).then(r =&gt; r.json());
+console.log(me.user);
+
+<span class="com">// Refresh when the access token expires</span>
+<span class="kw">async function</span> maybeRefresh() {
+  <span class="kw">try</span> {
+    <span class="kw">const</span> fresh = <span class="kw">await</span> postJson(<span class="str">'/auth/refresh'</span>, {});
+    accessToken = fresh.accessToken;
+  } <span class="kw">catch</span> { currentUser = <span class="kw">null</span>; }
+}
+
+<span class="com">// Logout</span>
+<span class="kw">async function</span> logout() {
+  <span class="kw">await</span> postJson(<span class="str">'/auth/logout'</span>, {});
+  accessToken = <span class="str">''</span>; currentUser = <span class="kw">null</span>;
+}</code></pre>
+  <div class="callout note">
+    <span class="label">Why the token is in memory</span>
+    The access token lives <strong>in memory only</strong> (not
+    <code>localStorage</code>) to reduce XSS exposure. Refresh uses the
+    HttpOnly <code>nexus_rid</code> cookie, which JavaScript cannot read.
+  </div>
+
+  <h2>Endpoint reference</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/csrf-token</code></td><td>none</td><td><code>{ token }</code> + cookie</td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/register</code></td><td>CSRF</td><td><code>{ user, accessToken, refreshToken }</code> + cookies</td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/login</code></td><td>CSRF</td><td><code>{ user, accessToken, refreshToken }</code> + cookies</td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/refresh</code></td><td>CSRF</td><td><code>{ accessToken, refreshToken }</code> (rotated)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/logout</code></td><td>CSRF (optional auth)</td><td><code>{ ok: true }</code> + cleared cookies</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/me</code></td><td>Bearer (authToken + requireAuth)</td><td><code>{ user }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/google</code></td><td>none</td><td>redirect to Google</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/google/callback</code></td><td>none</td><td><code>{ user, accessToken }</code> + cookies</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/facebook</code></td><td>none</td><td>redirect to Facebook</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/facebook/callback</code></td><td>none</td><td><code>{ user, accessToken }</code> + cookies</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Testing with Postman</span>
+    For a step-by-step guide to the CSRF → login → protected-call flow in
+    Postman (with screenshots, environment variables, and auto-extraction
+    scripts), see <a href="../learn/14-postman-testing.html">14 · Postman
+    Testing</a> in the build guide.
+  </div>
+
+  <p class="foot"><a href="guide-empty-project.html">&larr; From Empty Project</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-websocket.html">WebSocket Chat →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · Login &amp; Auth Flow</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

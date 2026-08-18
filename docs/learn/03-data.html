@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>03 · Data ODM — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 03</div>
+  <h1>Data ODM <span class="sub"><code>@bhooai/nexus-data</code> is a from-scratch Object-Document Mapper on the official <code>mongodb</code> driver. Schemas, validation, hooks, populate, indexes, transactions — no mongoose.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/connection/Connection.ts</code></td><td>Wraps <code>MongoClient</code>; lazy <code>db()</code>, model registry, index creation.</td></tr>
+      <tr><td><code>src/connection/ConnectionManager.ts</code></td><td>Registry of named connections (default + named).</td></tr>
+      <tr><td><code>src/schema/SchemaType.ts</code></td><td>Field type definitions (<code>String</code>, <code>Number</code>, <code>ObjectId</code>, arrays, refs).</td></tr>
+      <tr><td><code>src/schema/Schema.ts</code></td><td><code>NexusSchema</code> — field types, defaults, validators, hooks, statics, indexes.</td></tr>
+      <tr><td><code>src/schema/validators.ts</code></td><td>Self-contained validators (no zod dependency in the data layer).</td></tr>
+      <tr><td><code>src/model/Document.ts</code></td><td><code>DocumentInstance</code> — dirty tracking, <code>save()</code>, <code>populate()</code>.</td></tr>
+      <tr><td><code>src/model/hydrate.ts</code></td><td>Rehydrate a raw mongo doc (<code>_isNew = false</code>).</td></tr>
+      <tr><td><code>src/model/Model.ts</code></td><td><code>Model</code> — find/findOne/create/update/delete/bulk/aggregate + indexes.</td></tr>
+      <tr><td><code>src/query/Query.ts</code></td><td>Fluent query builder (filter, sort, limit, populate, lean, exec).</td></tr>
+      <tr><td><code>src/populate/populate.ts</code></td><td>Batched multi-level populate with <code>refPath</code>.</td></tr>
+      <tr><td><code>src/projects.ts</code></td><td>Per-project DB naming + project-info store (<code>nexus_projects</code>).</td></tr>
+      <tr><td><code>src/errors.ts</code></td><td>ODM error types.</td></tr>
+      <tr><td><code>src/index.ts</code></td><td>Barrel — <code>connect</code>, <code>getConnection</code>, <code>model</code>, <code>transaction</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Connection</h3>
+  <p><code>connect(uri, opts)</code> creates a <code>Connection</code> (lazy <code>MongoClient</code>). Models
+     register on a connection and their indexes are created on connect:</p>
+  <pre><code>connect(config.db.uri, { name: dbName, autoIndex: config.db.autoIndex });
+<span class="kw">await</span> getConnection().db;  <span class="com">// forces the driver to connect</span></code></pre>
+
+  <h3>2. Schema + validation</h3>
+  <p>Schemas declare field types, defaults, hooks, statics, and indexes — e.g. the User model in
+     <code>apps/backend/src/modules/users/userModel.ts</code>:</p>
+  <pre><code><span class="kw">const</span> userSchema = <span class="kw">new</span> Schema({
+  email: { type: String, required: <span class="num">true</span>, unique: <span class="num">true</span>, match: /.+@.+\..+/, transform: (v) =&gt; String(v).toLowerCase() },
+  passwordHash: { type: String, select: <span class="num">false</span> },
+  roles: { type: [String], default: () =&gt; [<span class="str">'user'</span>] },
+  oauthAccounts: { type: Array, default: () =&gt; [] },
+}, { timestamps: <span class="num">true</span>, collection: <span class="str">'users'</span> });</code></pre>
+  <div class="callout note">
+    <span class="label">select: false</span>
+    <code>passwordHash</code> is excluded from normal queries — a real security default. Login uses a raw
+    driver lookup (<code>findUserForLogin</code>) that requests the field explicitly.
+  </div>
+
+  <h3>3. Model — the write API</h3>
+  <p><code>Model.create</code> builds a <strong>new</strong> instance (<code>_isNew = true</code>), applies
+     defaults, validates, then <code>save()</code> inserts. <code>hydrate()</code> marks <code>_isNew = false</code>
+     for rehydrated docs. This new-vs-hydrate discipline was a real bug class caught during the build:</p>
+  <pre><code><span class="kw">async</span> create(docs) {
+  <span class="kw">const</span> input = Array.isArray(docs) ? docs : [docs];
+  <span class="kw">const</span> out = [];
+  <span class="kw">for</span> (<span class="kw">const</span> data <span class="kw">of</span> input) {
+    <span class="kw">const</span> instance = newInstance(<span class="kw">this</span>.schema, <span class="kw">this</span>, data);  <span class="com">// _isNew = true</span>
+    <span class="kw">await</span> instance.save();
+    out.push(instance);
+  }
+  <span class="kw">return</span> out;
+}</code></pre>
+
+  <h3>4. Query builder</h3>
+  <p><code>Model.find().sort().limit().populate('author').lean().exec()</code> — a fluent chain that builds a
+     mongo cursor. <code>populate</code> is batched (one extra query per relation) to avoid N+1.</p>
+
+  <h3>5. Transactions</h3>
+  <p><code>transaction(fn)</code> wraps a callback in a mongo session
+     (<code>session.withTransaction</code>), used by payment flows.</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: model default/validation + a mini query chain. Live API: the GraphQL users query backed by the
+     real ODM.</p>
+
+  <section data-playground='{
+    "title": "Data — schema defaults, validation, query chain",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model schema defaults + a simple required validator\nfunction makeSchema(fields) { return { fields, applyDefaults(d) { for (const [k, f] of Object.entries(this.fields)) { if (d[k] === undefined && f.default !== undefined) d[k] = typeof f.default === \"function\" ? f.default() : f.default; } return d; }, validate(d) { for (const [k, f] of Object.entries(this.fields)) { if (f.required && d[k] === undefined) throw new Error(k + \" is required\"); } return true; } }; }\n\nconst userSchema = makeSchema({\n  email: { required: true },\n  roles: { default: () => [\"user\"] },\n  emailVerified: { default: false },\n});\n\nconst doc = userSchema.applyDefaults({ email: \"a@b.com\" });\nconsole.log(\"defaults applied:\", doc);\ntry { userSchema.validate({}); } catch (e) { console.log(\"validation error:\", e.message); }\n\n// Mini query chain: filter then sort then limit\nclass Query {\n  constructor(list) { this.list = list; this._filter = () => true; this._sort = null; this._limit = Infinity; }\n  where(fn) { this._filter = fn; return this; }\n  sort(k, dir) { this._sort = [k, dir || 1]; return this; }\n  limit(n) { this._limit = n; return this; }\n  exec() { const f = this.list.filter(this._filter); if (this._sort) f.sort((a, b) => (a[this._sort[0]] - b[this._sort[0]]) * this._sort[1]); return f.slice(0, this._limit); }\n}\nconst posts = [ { likes: 5 }, { likes: 20 }, { likes: 8 }, { likes: 1 } ];\nconsole.log(\"top 2 by likes:\", new Query(posts).where(p => p.likes > 3).sort(\"likes\", -1).limit(2).exec().map(p => p.likes));",
+    "api": { "method": "POST", "path": "/graphql", "body": { "query": "query { users(limit: 3) { id email } }" } }
+  }'></section>
+
+  <p class="foot"><a href="02-security.html">&larr; 02 · Security</a> · <a href="index.html">Build Guide</a> · Next: <a href="04-graphql.html">04 · GraphQL →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 03 Data ODM</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

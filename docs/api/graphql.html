@@ -1,0 +1,697 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GraphQL API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-graphql</span> GraphQL API
+    <span class="sub">graphql-js + a custom federation/gateway layer (no Apollo).</span></h1>
+
+  <p>A self-contained GraphQL stack: <code>defineSubgraph</code> builds federation-compliant subgraphs,
+     <code>createGateway</code> executes a single subgraph in-process, <code>createFederatedGateway</code>
+     composes multiple subgraphs and executes federated queries (root pass + iterative entity-join passes).
+     Subscriptions run over WebSocket via the <code>graphql-transport-ws</code> protocol. No Apollo
+     dependency — composition and execution are ours; the directive surface matches Federation v2 so
+     subgraph SDL stays interoperable.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>types</td><td><code>Resolver</code>, <code>SubscribeResolver</code>, <code>TypeResolvers</code>, <code>Resolvers</code>, <code>GraphQLContext</code>, <code>EntityRepresentation</code>, <code>EntityResolver</code>, <code>DefineSubgraphOptions</code>, <code>Subgraph</code>, <code>ExecuteParams</code>, <code>ExecutionResultLike</code>, <code>Gateway</code></td></tr>
+      <tr><td>subgraph</td><td><code>defineSubgraph</code>, <code>validateOperation</code>, <code>parseEntityKeys</code></td></tr>
+      <tr><td>federation directives</td><td><code>FEDERATION_DIRECTIVE_SDL</code>, <code>FEDERATION_LINK</code>, <code>FEDERATION_TYPES</code>, <code>entityUnionSdl</code>, <code>FEDERATION_DIRECTIVE_NAMES</code></td></tr>
+      <tr><td>gateway</td><td><code>createGateway</code>, <code>createFieldResolver</code>, <code>createSubscribeFieldResolver</code>, <code>buildPublicSchema</code>, <code>GraphqlHandlerOptions</code>, <code>graphqlHttpHandler</code></td></tr>
+      <tr><td>subscriptions</td><td><code>PubSub</code>, <code>SubscriptionServerOptions</code>, <code>SubscriptionServer</code></td></tr>
+      <tr><td>federation</td><td><code>parseFederationMetadata</code>, <code>FieldMeta</code>, <code>TypeMeta</code>, <code>composeSupergraph</code>, <code>EntitySource</code>, <code>RequiresRecord</code>, <code>Supergraph</code>, <code>planQuery</code>, <code>FetchNode</code>, <code>FetchPlan</code>, <code>executeFederated</code>, <code>FederatedGateway</code>, <code>createFederatedGateway</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="types">Types</h2>
+
+  <h3 id="Resolver">Resolver</h3>
+  <pre><code><span class="kw">type</span> Resolver = (
+  parent: <span class="kw">any</span>,
+  args: Record&lt;<span class="kw">string</span>, <span class="kw">any</span>&gt;,
+  context: GraphQLContext,
+  info: <span class="kw">any</span>,
+) =&gt; <span class="kw">any</span> | Promise&lt;<span class="kw">any</span>&gt;;</code></pre>
+  <p>A field resolver: <code>(parent, args, context, info) =&gt; value | Promise&lt;value&gt;</code>. The
+     <code>info</code> parameter is typed loosely as <code>any</code>; at runtime it is the graphql-js
+     <code>GraphQLResolveInfo</code>. Return a Promise for async data access (DB, HTTP).</p>
+
+  <h3 id="SubscribeResolver">SubscribeResolver</h3>
+  <pre><code><span class="kw">type</span> SubscribeResolver = (
+  parent: <span class="kw">any</span>,
+  args: Record&lt;<span class="kw">string</span>, <span class="kw">any</span>&gt;,
+  context: GraphQLContext,
+  info: <span class="kw">any</span>,
+) =&gt; AsyncIterable&lt;<span class="kw">any</span>&gt; | Promise&lt;AsyncIterable&lt;<span class="kw">any</span>&gt;&gt;;</code></pre>
+  <p>A subscribe resolver returning an <code>AsyncIterable</code> of event payloads. Used as the
+     <code>subscribe</code> key on a subscription field's resolver object
+     (<code>{ subscribe, resolve }</code>). Typically returns <code>pubsub.asyncIterator('TOPIC')</code>.</p>
+
+  <h3 id="TypeResolvers">TypeResolvers</h3>
+  <pre><code><span class="kw">type</span> TypeResolvers = Record&lt;
+  <span class="kw">string</span>,
+  Resolver | { resolve?: Resolver; subscribe?: SubscribeResolver }
+&gt;;</code></pre>
+  <p>Resolvers for a single GraphQL type, keyed by field name. Each field may be a plain
+     <code>Resolver</code> function, or an object <code>{ resolve?, subscribe? }</code> — the latter is
+     used for subscription root fields (and any field that needs both a resolve and a subscribe phase).</p>
+
+  <h3 id="Resolvers">Resolvers</h3>
+  <pre><code><span class="kw">interface</span> Resolvers {
+  [typeName: <span class="kw">string</span>]: TypeResolvers;
+}</code></pre>
+  <p>The top-level resolver map: type name → field resolvers. Passed to <code>defineSubgraph</code> and
+     used by <code>createFieldResolver</code> to dispatch at execution time.</p>
+
+  <h3 id="GraphQLContext">GraphQLContext</h3>
+  <pre><code><span class="kw">interface</span> GraphQLContext {
+  request?: <span class="kw">unknown</span>;
+  user?: { sub: <span class="kw">string</span>; roles: <span class="kw">string</span>[]; sid?: <span class="kw">string</span> };
+  [key: <span class="kw">string</span>]: <span class="kw">unknown</span>;
+}</code></pre>
+  <p>Per-request context passed to every resolver. Constructed by the context-builder callback on the
+     handler options (<code>GraphqlHandlerOptions.context</code> for HTTP,
+     <code>SubscriptionServerOptions.context</code> for WS) and forwarded as <code>contextValue</code> to
+     <code>gateway.execute</code> / <code>gateway.subscribe</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>request?</code></td><td><code>unknown</code></td><td>The raw HTTP/WS request (for auth headers, ip, etc.).</td></tr>
+      <tr><td><code>user?</code></td><td><code>{ sub, roles, sid? }</code></td><td>Authenticated user payload (sub, roles, session id) when auth is applied.</td></tr>
+      <tr><td><code>[key]</code></td><td><code>unknown</code></td><td>Anything the host injects (DB connections, services, dataloaders, <code>pubsub</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="EntityRepresentation">EntityRepresentation</h3>
+  <pre><code><span class="kw">interface</span> EntityRepresentation {
+  __typename: <span class="kw">string</span>;
+  [key: <span class="kw">string</span>]: <span class="kw">unknown</span>;
+}</code></pre>
+  <p>An entity representation: <code>__typename</code> plus the key fields of an entity. This is what
+     <code>_entities(representations: [_Any!]!)</code> receives and what the federated executor builds
+     from a parent object's <code>@key</code> fields to join across subgraphs.</p>
+
+  <h3 id="EntityResolver">EntityResolver</h3>
+  <pre><code><span class="kw">type</span> EntityResolver = (
+  representation: EntityRepresentation,
+  context: GraphQLContext,
+) =&gt; Promise&lt;<span class="kw">any</span> | <span class="kw">null</span>&gt; | <span class="kw">any</span> | <span class="kw">null</span>;</code></pre>
+  <p>Resolves an entity by its representation. Returns the object (with fields) or <code>null</code>.
+     Provided per-subgraph via <code>DefineSubgraphOptions.entityResolver</code>; the gateway's
+     auto-wired <code>_entities</code> field calls it once per representation and backfills
+     <code>__typename</code> onto the result when absent. The default resolver is pass-through (returns
+     the representation as-is), which is correct when the owning subgraph already has the fields in the
+     representation.</p>
+
+  <h3 id="DefineSubgraphOptions">DefineSubgraphOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>—</td><td><strong>Required.</strong> Subgraph name — used as the identity in composition and in <code>Supergraph.ownership</code>/<code>entities</code> maps.</td></tr>
+      <tr><td><code>typeDefs</code></td><td><code>string</code></td><td>—</td><td>The subgraph SDL (user types + federation directives like <code>@key</code>).</td></tr>
+      <tr><td><code>resolvers?</code></td><td><code>Resolvers</code></td><td><code>{}</code></td><td>Field resolvers. Federation fields (<code>_service</code>, <code>_entities</code>, <code>_Any</code>, <code>_Service</code>) are auto-wired and merged in.</td></tr>
+      <tr><td><code>entityResolver?</code></td><td><code>EntityResolver</code></td><td>pass-through (<code>(rep) =&gt; rep</code>)</td><td>Entity resolver for <code>_entities</code>. This is how entity resolution works — there is no <code>__resolveReference</code> field.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="Subgraph">Subgraph</h3>
+  <p>The built subgraph object returned by <code>defineSubgraph</code>, ready to be composed or executed
+     in-process.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Subgraph name (from options).</td></tr>
+      <tr><td><code>schema</code></td><td><code>GraphQLSchema</code></td><td>Executable schema including federation boilerplate (<code>_service</code>, <code>_entities</code>, <code>_Any</code>, <code>_Entity</code>).</td></tr>
+      <tr><td><code>sdl</code></td><td><code>string</code></td><td>The subgraph SDL (with federation directives + <code>@link</code>) — what <code>_service.sdl</code> returns.</td></tr>
+      <tr><td><code>entityKeys</code></td><td><code>Map&lt;string, string[]&gt;</code></td><td>Map of entity typeName → key field paths (e.g. <code>["id"]</code> or <code>["id","tenant"]</code>).</td></tr>
+      <tr><td><code>resolvers</code></td><td><code>Resolvers</code></td><td>The merged resolver map (user resolvers + auto-wired federation resolvers).</td></tr>
+      <tr><td><code>entityResolver</code></td><td><code>EntityResolver</code></td><td>The entity resolver (from options or the default pass-through).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ExecuteParams">ExecuteParams</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>schema</code></td><td><code>GraphQLSchema</code></td><td>The schema to execute against (supplied by the gateway, omitted from <code>Gateway.execute</code> params).</td></tr>
+      <tr><td><code>document</code></td><td><code>DocumentNode</code></td><td>Parsed operation (from <code>parse(query)</code>).</td></tr>
+      <tr><td><code>resolvers</code></td><td><code>Resolvers</code></td><td>Resolver map (supplied by the gateway, omitted from <code>Gateway.execute</code> params).</td></tr>
+      <tr><td><code>variableValues?</code></td><td><code>Record&lt;string, any&gt;</code></td><td>Operation variables.</td></tr>
+      <tr><td><code>operationName?</code></td><td><code>string</code></td><td>Named operation to run (when the document has multiple).</td></tr>
+      <tr><td><code>contextValue?</code></td><td><code>GraphQLContext</code></td><td>Per-request context. <strong>Both</strong> <code>Gateway.execute</code> and <code>Gateway.subscribe</code> use <code>contextValue</code>.</td></tr>
+      <tr><td><code>rootValue?</code></td><td><code>any</code></td><td>Root value (rarely needed).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ExecutionResultLike">ExecutionResultLike</h3>
+  <pre><code><span class="kw">type</span> ExecutionResultLike = ExecutionResult;</code></pre>
+  <p>Alias for the graphql-js <code>ExecutionResult</code> (<code>{ data?, errors? }</code>). Returned by
+     <code>Gateway.execute</code> and yielded by <code>Gateway.subscribe</code>.</p>
+
+  <h3 id="Gateway">Gateway</h3>
+  <pre><code><span class="kw">interface</span> Gateway {
+  schema: GraphQLSchema;
+  subgraphs: Subgraph[];
+  execute(params: Omit&lt;ExecuteParams, <span class="str">'schema'</span> | <span class="str">'resolvers'</span>&gt;): Promise&lt;ExecutionResult&gt;;
+  subscribe(params: Omit&lt;ExecuteParams, <span class="str">'schema'</span> | <span class="str">'resolvers'</span>&gt;): Promise&lt;AsyncIterable&lt;ExecutionResult&gt;&gt;;
+}</code></pre>
+  <p>The in-process gateway returned by <code>createGateway</code>. Exposes the public (client-facing)
+     schema and <code>execute</code> / <code>subscribe</code> methods. Both methods take
+     <code>contextValue</code> (not <code>context</code>) — the context-builder callbacks live on the
+     handler options (<code>GraphqlHandlerOptions.context</code>, <code>SubscriptionServerOptions.context</code>).</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>schema</code></td><td><code>GraphQLSchema</code></td><td>Public (client-facing) schema — federation internals stripped.</td></tr>
+      <tr><td><code>subgraphs</code></td><td><code>Subgraph[]</code></td><td>The subgraphs backing this gateway.</td></tr>
+      <tr><td><code>execute(params)</code></td><td><code>Promise&lt;ExecutionResult&gt;</code></td><td>Validate + execute a query/mutation. <code>params</code> omits <code>schema</code> and <code>resolvers</code> (the gateway supplies them).</td></tr>
+      <tr><td><code>subscribe(params)</code></td><td><code>Promise&lt;AsyncIterable&lt;ExecutionResult&gt;&gt;</code></td><td>Validate + subscribe to a subscription. Returns an async iterable of results.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="subgraph">Subgraph</h2>
+
+  <h3 id="defineSubgraph">defineSubgraph(options)</h3>
+  <pre><code><span class="kw">function</span> defineSubgraph(options: DefineSubgraphOptions): Subgraph</code></pre>
+  <p>Define a federation-compliant subgraph from user <code>typeDefs</code> + <code>resolvers</code>.
+     The user SDL may use federation directives (<code>@key</code>, <code>@external</code>,
+     <code>@requires</code>, <code>@provides</code>, <code>@extends</code>). <code>defineSubgraph</code>:</p>
+  <ol>
+    <li>Parses <code>@key</code> directives via <code>parseEntityKeys</code> to learn entity types + key field paths.</li>
+    <li>Builds the <code>_Entity</code> union SDL via <code>entityUnionSdl</code> and wires its <code>resolveType</code> to read <code>__typename</code> off the resolved value.</li>
+    <li>Prepends the federation directive definitions (<code>FEDERATION_DIRECTIVE_SDL</code>), the <code>@link</code> clause (<code>FEDERATION_LINK</code>), and appends the federation boilerplate types (<code>FEDERATION_TYPES</code> + the <code>_Entity</code> union) so <code>buildSchema</code> accepts the schema.</li>
+    <li>Auto-wires <code>Query._service</code> (returns <code>{ sdl }</code>), <code>Query._entities</code> (calls <code>entityResolver</code> per representation), the <code>_Any</code> scalar (pass-through), and <code>_Service.sdl</code>.</li>
+    <li>Validates the SDL parses standalone and returns the <code>Subgraph</code> object.</li>
+  </ol>
+  <p><code>defineSubgraph</code> does <strong>not</strong> compose — it produces a single executable
+     subgraph. <code>createGateway</code> executes it in-process for the single-subgraph case;
+     <code>createFederatedGateway</code> composes multiple subgraphs.</p>
+  <pre><code><span class="kw">const</span> users = defineSubgraph({
+  name: <span class="str">'accounts'</span>,
+  typeDefs: <span class="str">`
+    type User @key(fields: "id") { id: ID! email: String! roles: [String!]! }
+    type Query { me: User users(limit: Int): [User!]! }
+  `</span>,
+  resolvers: {
+    Query: {
+      me: (_p, _a, ctx) =&gt; ctx.user,
+      users: (_p, { limit }, ctx) =&gt; ctx.db.User.find().limit(limit).lean(),
+    },
+  },
+  entityResolver: (rep, ctx) =&gt; ctx.db.User.findById(rep.id).lean(),
+});
+
+<span class="kw">const</span> gateway = createGateway({ subgraph: users });
+router.post(<span class="str">'/graphql'</span>, graphqlHttpHandler({
+  gateway,
+  introspection: <span class="kw">true</span>,
+  context: <span class="kw">async</span> (ctx) =&gt; ({ request: ctx, user: ctx.state.user, db }),
+}));</code></pre>
+  <div class="callout warn">
+    <span class="label">Entity resolution</span>
+    There is no <code>__resolveReference</code> field. Entity resolution is via the
+    <code>entityResolver</code> option of <code>DefineSubgraphOptions</code>, which the auto-wired
+    <code>_entities</code> field calls once per representation.
+  </div>
+  <div class="callout note">
+    <span class="label">name is required</span>
+    <code>DefineSubgraphOptions.name</code> is required — it is the subgraph identity used in
+    composition (<code>Supergraph.ownership</code>, <code>Supergraph.entities</code>).
+  </div>
+
+  <h3 id="validateOperation">validateOperation(schema, source)</h3>
+  <pre><code><span class="kw">function</span> validateOperation(schema: GraphQLSchema, source: <span class="kw">string</span>): <span class="kw">string</span>[]</code></pre>
+  <p>Validate a query string against a schema before execution. Parses the source (returns the parse
+     error message in the array on failure), then runs graphql-js <code>validate</code> and returns an
+     array of error messages (empty = valid). Useful for the HTTP handler to reject malformed operations
+     early.</p>
+  <pre><code><span class="kw">const</span> errs = validateOperation(gateway.schema, query);
+<span class="kw">if</span> (errs.length) <span class="kw">return</span> res.json({ errors: errs.map((m) =&gt; ({ message: m })) });</code></pre>
+
+  <h3 id="parseEntityKeys">parseEntityKeys(typeDefs)</h3>
+  <pre><code><span class="kw">function</span> parseEntityKeys(typeDefs: <span class="kw">string</span>): Map&lt;<span class="kw">string</span>, <span class="kw">string</span>[]&gt;</code></pre>
+  <p>Parse <code>@key(fields: "...")</code> directives from subgraph SDL to learn which types are
+     entities and what their key field paths are. A pragmatic regex scan (not a full SDL parser) —
+     sufficient for the v1 federation subset. Composite keys like
+     <code>@key(fields: "id tenant")</code> are supported (space-separated, as in the spec).</p>
+  <p>Returns a <code>Map&lt;typeName, string[]&gt;</code> of key field names (flattened — a composite key
+     yields <code>["id","tenant"]</code>). Types with no <code>@key</code> are absent. Used by
+     <code>defineSubgraph</code>; also usable directly to inspect SDL.</p>
+  <pre><code><span class="kw">const</span> keys = parseEntityKeys(<span class="str">`type User @key(fields: "id tenant") { id: ID! tenant: String! }`</span>);
+<span class="com">// Map { "User" =&gt; ["id","tenant"] }</span></code></pre>
+
+  <h2 id="federation-directives">Federation directives</h2>
+
+  <h3 id="FEDERATION_DIRECTIVE_SDL">FEDERATION_DIRECTIVE_SDL</h3>
+  <pre><code><span class="kw">const</span> FEDERATION_DIRECTIVE_SDL: <span class="kw">string</span></code></pre>
+  <p>The federation directive definitions, prepended to the user's typeDefs so <code>buildSchema</code>
+     accepts the federation directives. We target a Federation v2-style subset (the same directives
+     Apollo uses); composition is ours, but the directive <em>surface</em> matches the spec so subgraph
+     SDL is interoperable.</p>
+  <pre><code>directive @link(url: String!, import: [String!]) on SCHEMA
+directive @key(fields: String!) repeatable on OBJECT | INTERFACE
+directive @external on FIELD_DEFINITION
+directive @requires(fields: String!) on FIELD_DEFINITION
+directive @provides(fields: String!) on FIELD_DEFINITION
+directive @extends on OBJECT | INTERFACE | FIELD_DEFINITION</code></pre>
+  <div class="callout note">
+    <span class="label">@link import list not enforced</span>
+    <code>@link</code> is declared so <code>extend schema @link(...)</code> parses. We do not enforce
+    the import list — the directives are always declared and available.
+  </div>
+
+  <h3 id="FEDERATION_LINK">FEDERATION_LINK</h3>
+  <pre><code><span class="kw">const</span> FEDERATION_LINK: <span class="kw">string</span></code></pre>
+  <p>The <code>extend schema @link(...)</code> clause advertising the federation import. Prepended to the
+     published subgraph SDL (what <code>_service.sdl</code> returns).</p>
+  <pre><code>extend schema @link(
+  url: "https://specs.apollo.dev/federation/v2.0"
+  import: ["@key", "@external", "@requires", "@provides", "@extends"]
+)</code></pre>
+
+  <h3 id="FEDERATION_TYPES">FEDERATION_TYPES</h3>
+  <pre><code><span class="kw">const</span> FEDERATION_TYPES: <span class="kw">string</span></code></pre>
+  <p>Federation boilerplate types appended to make a schema subgraph-compliant: the <code>_Any</code>
+     scalar, the <code>_Service</code> type, and the <code>Query._service</code> /
+     <code>Query._entities</code> root fields. The <code>_Entity</code> union is generated separately by
+     <code>entityUnionSdl</code> (it depends on the entity type names).</p>
+  <pre><code>scalar _Any
+type _Service { sdl: String! }
+extend type Query {
+  _service: _Service!
+  _entities(representations: [_Any!]!): [_Entity]!
+}</code></pre>
+
+  <h3 id="entityUnionSdl">entityUnionSdl(entityTypeNames)</h3>
+  <pre><code><span class="kw">function</span> entityUnionSdl(entityTypeNames: <span class="kw">string</span>[]): <span class="kw">string</span></code></pre>
+  <p>Build the <code>_Entity</code> union SDL for the given entity type names. Returns
+     <code>scalar _Entity</code> when there are no entities (so the schema still parses), otherwise
+     <code>union _Entity = A | B | C</code>. Used by <code>defineSubgraph</code>.</p>
+
+  <h3 id="FEDERATION_DIRECTIVE_NAMES">FEDERATION_DIRECTIVE_NAMES</h3>
+  <pre><code><span class="kw">const</span> FEDERATION_DIRECTIVE_NAMES: <span class="kw">string</span>[]</code></pre>
+  <p>Names of the federation directives we recognize: <code>['key','external','requires','provides','extends','link']</code>.
+     Used for stripping when building the public schema (see <code>buildPublicSchema</code>).</p>
+
+  <h2 id="gateway">Gateway</h2>
+
+  <h3 id="createGateway">createGateway(input)</h3>
+  <pre><code><span class="kw">function</span> createGateway(
+  input: { subgraph: Subgraph } | { subgraphs: Subgraph[] },
+): Gateway</code></pre>
+  <p>Create an in-process gateway over one or more subgraphs. The input is a <strong>union</strong>:</p>
+  <ul>
+    <li><code>{ subgraph: Subgraph }</code> — single-subgraph mode (the default app shape).</li>
+    <li><code>{ subgraphs: Subgraph[] }</code> — multi-subgraph. Currently throws a clear "not yet"
+        error for <code>&gt;1</code> subgraph — use <code>createFederatedGateway</code> for multi-subgraph
+        federation. A single-element <code>subgraphs</code> array is accepted.</li>
+  </ul>
+  <p>In single-subgraph mode the gateway exposes the subgraph's public schema (federation internals
+     stripped via <code>buildPublicSchema</code>) and executes operations directly against the
+     subgraph's resolvers — no network hop, shared in-process context (DB pool, services). Federation
+     overhead only kicks in with <code>createFederatedGateway</code>.</p>
+  <pre><code><span class="com">// single subgraph (either form works)</span>
+<span class="kw">const</span> gw1 = createGateway({ subgraph: users });
+<span class="kw">const</span> gw2 = createGateway({ subgraphs: [users] });
+
+<span class="com">// execute in-process</span>
+<span class="kw">const</span> result = <span class="kw">await</span> gw1.execute({
+  document: parse(<span class="str">'query { me { id email } }'</span>),
+  contextValue: { user, db },
+});</code></pre>
+  <div class="callout warn">
+    <span class="label">Multi-subgraph</span>
+    Passing <code>&gt;1</code> subgraph to <code>createGateway</code> throws — it is forward-compatible
+    but not implemented here. Use <a href="#createFederatedGateway"><code>createFederatedGateway</code></a>
+    for composition + federated execution.
+  </div>
+
+  <h3 id="createFieldResolver">createFieldResolver(resolvers)</h3>
+  <pre><code><span class="kw">function</span> createFieldResolver(resolvers: Resolvers): GraphQLFieldResolver&lt;<span class="kw">any</span>, GraphQLContext&gt;</code></pre>
+  <p>Build a graphql-js <code>fieldResolver</code> that dispatches to the user's resolvers map. Used
+     internally by <code>createGateway</code> and <code>executeFederated</code>. Resolution order:</p>
+  <ol>
+    <li><code>__typename</code> → the parent's <code>__typename</code> (or the field's parent type name).</li>
+    <li><code>resolvers[typeName][fieldName]</code> — if it's a <code>{ resolve, subscribe }</code> shape
+        (subscription field), use <code>.resolve</code>; otherwise call it directly.</li>
+    <li>Default property access: <code>parent[fieldName]</code> (works for DB docs/objects).</li>
+  </ol>
+
+  <h3 id="createSubscribeFieldResolver">createSubscribeFieldResolver(resolvers)</h3>
+  <pre><code><span class="kw">function</span> createSubscribeFieldResolver(resolvers: Resolvers): GraphQLFieldResolver&lt;<span class="kw">any</span>, GraphQLContext&gt;</code></pre>
+  <p>Build a <code>subscribeFieldResolver</code> for subscription root fields. Looks up
+     <code>resolvers[typeName][fieldName].subscribe</code> and throws if absent
+     (<code>No 'subscribe' resolver for &lt;Type&gt;.&lt;field&gt;</code>). Used internally by
+     <code>createGateway</code> for the <code>subscribe()</code> path.</p>
+
+  <h3 id="buildPublicSchema">buildPublicSchema(subgraphSdl)</h3>
+  <pre><code><span class="kw">function</span> buildPublicSchema(subgraphSdl: <span class="kw">string</span>): GraphQLSchema</code></pre>
+  <p>Strip federation directives from subgraph SDL to produce the <em>public</em> (client-facing)
+     schema. The gateway exposes this clean schema; the federation internals (<code>_service</code>,
+     <code>_entities</code>, <code>@key</code>, <code>@external</code>, <code>@link</code>, …) are not
+     part of the public API. For the single-subgraph case the public schema is simply the user's types
+     without the federation markers. Stripping is regex-based: drops the <code>extend schema @link(...)</code>
+     clause, standalone <code>@link(...)</code>, and the <code>@key</code>/<code>@requires</code>/
+     <code>@provides</code>/<code>@external</code>/<code>@extends</code> directives, then collapses
+     leftover blank lines and builds the schema.</p>
+
+  <h3 id="GraphqlHandlerOptions">GraphqlHandlerOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>gateway</code></td><td><code>Gateway</code></td><td>—</td><td>The gateway to execute against.</td></tr>
+      <tr><td><code>context?</code></td><td><code>(ctx: RequestContext) =&gt; GraphQLContext | Promise&lt;GraphQLContext&gt;</code></td><td><code>{ request: ctx, user: ctx.state.user }</code></td><td>Build the per-request resolver context (<code>contextValue</code> passed to <code>gateway.execute</code>).</td></tr>
+      <tr><td><code>introspection?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Allow introspection queries (<code>__schema</code>/<code>__type</code>). Rejects with <code>403</code> when disabled.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="graphqlHttpHandler">graphqlHttpHandler(options)</h3>
+  <pre><code><span class="kw">function</span> graphqlHttpHandler(options: GraphqlHandlerOptions): Handler</code></pre>
+  <p>HTTP handler for <code>/graphql</code>. Returns a <code>Handler</code> (from
+     <code>@bhooai/nexus-core</code>) suitable for <code>router.post('/graphql', graphqlHttpHandler(...))</code>.
+     Accepts <code>POST</code> with <code>{ query, variables, operationName }</code> (or <code>GET</code>
+     with <code>?query=</code>). Applies the gateway in-process. Introspection is rejected with
+     <code>403</code> when <code>introspection: false</code>; a missing query returns <code>400</code>;
+     a parse error returns <code>400</code> with the graphql-js message.</p>
+  <pre><code>router.post(<span class="str">'/graphql'</span>, graphqlHttpHandler({
+  gateway,
+  introspection: config.graphql.introspection,
+  context: <span class="kw">async</span> (ctx) =&gt; ({ request: ctx, user: ctx.state.user, db, pubsub }),
+}));</code></pre>
+  <p>Internally: parses the query, checks introspection, builds <code>contextValue</code> via
+     <code>options.context(ctx)</code> (or the default), calls <code>gateway.execute({ document,
+     variableValues, operationName, contextValue })</code>, and responds with JSON.</p>
+
+  <h2 id="subscriptions">Subscriptions</h2>
+
+  <h3 id="PubSub">PubSub</h3>
+  <pre><code><span class="kw">class</span> PubSub {
+  constructor();
+  publish(topic: <span class="kw">string</span>, payload: <span class="kw">unknown</span>): <span class="kw">void</span>;
+  asyncIterator(topics: <span class="kw">string</span> | <span class="kw">string</span>[]): AsyncIterable&lt;<span class="kw">any</span>&gt;;
+}</code></pre>
+  <p>Minimal in-process PubSub for GraphQL subscriptions, built on <code>node:events</code>.
+     Sufficient for the single-instance default app; a Redis-backed pub/sub adapter can be plugged in
+     later for cross-instance fanout. The <code>EventEmitter</code> max listeners is set to 0 (unlimited).</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>publish(topic, payload)</code></td><td>Emit <code>payload</code> to <code>topic</code> (synchronous <code>EventEmitter.emit</code>).</td></tr>
+      <tr><td><code>asyncIterator(topics)</code></td><td>Return an <code>AsyncIterable</code> that yields payloads published to the topic(s). Accepts a single topic or an array. The iterator's <code>return()</code> removes all listeners (call on early completion / client disconnect).</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">const</span> pubsub = <span class="kw">new</span> PubSub();
+
+<span class="com">// in a resolver:</span>
+Subscription: {
+  userCount: {
+    subscribe: () =&gt; pubsub.asyncIterator(<span class="str">'USER_COUNT'</span>),
+    resolve: () =&gt; User.countDocuments(),
+  },
+}
+
+<span class="com">// publish from anywhere:</span>
+pubsub.publish(<span class="str">'USER_COUNT'</span>, <span class="num">1</span>);</code></pre>
+  <div class="callout note">
+    <span class="label">Backpressure</span>
+    The async iterator buffers payloads in an internal queue when the consumer is slow (no backpressure
+    pressure on the emitter). Fine for the default single-instance app; use a bounded adapter for
+    high-throughput fanout.
+  </div>
+
+  <h3 id="SubscriptionServerOptions">SubscriptionServerOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>httpServer</code></td><td><code>HttpServer</code></td><td>—</td><td>The HTTP server whose <code>upgrade</code> event is intercepted.</td></tr>
+      <tr><td><code>gateway</code></td><td><code>Gateway</code></td><td>—</td><td>The gateway to subscribe through.</td></tr>
+      <tr><td><code>path?</code></td><td><code>string</code></td><td><code>'/graphql/ws'</code></td><td>WS listen path (other upgrade requests are ignored).</td></tr>
+      <tr><td><code>authService?</code></td><td><code>AuthService</code></td><td>—</td><td>Optional auth: verifies the access token from <code>connection_init</code> payload <code>token</code> or <code>?token=</code>.</td></tr>
+      <tr><td><code>context?</code></td><td><code>(init, user) =&gt; GraphQLContext | Promise&lt;GraphQLContext&gt;</code></td><td><code>{ user }</code></td><td>Build the per-connection resolver context (<code>contextValue</code> passed to <code>gateway.subscribe</code>). <code>init</code> is the <code>connection_init</code> payload.</td></tr>
+      <tr><td><code>requireAuth?</code></td><td><code>boolean</code></td><td><code>true</code> when <code>authService</code> provided</td><td>Reject unauthenticated connections (closes with <code>4401</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="SubscriptionServer">SubscriptionServer</h3>
+  <pre><code><span class="kw">class</span> SubscriptionServer {
+  constructor(opts: SubscriptionServerOptions);
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>GraphQL subscriptions over WebSocket (the <code>graphql-transport-ws</code> protocol). Attaches to
+     an HTTP server's <code>upgrade</code> event. On <code>connection_init</code> we (optionally)
+     authenticate; on <code>subscribe</code> we run the gateway's <code>subscribe()</code> and stream
+     each <code>next</code> result back until the client sends <code>complete</code> or the socket
+     closes. Handles <code>ping</code>/<code>pong</code> keepalive. Requires the
+     <code>graphql-transport-ws</code> subprotocol (rejects the upgrade with <code>400</code> otherwise).</p>
+  <pre><code><span class="kw">const</span> subs = <span class="kw">new</span> SubscriptionServer({
+  httpServer: server.httpServer,
+  gateway,
+  path: <span class="str">'/graphql/ws'</span>,
+  authService,
+  context: (_init, user) =&gt; ({ user, pubsub }),
+});
+
+<span class="com">// ...later, shutdown:</span>
+<span class="kw">await</span> subs.close();</code></pre>
+  <p>Per-subscription flow: parse the query → validate against <code>gateway.schema</code> → build
+     <code>contextValue</code> via <code>options.context(init, user)</code> → call
+     <code>gateway.subscribe({ document, variableValues, operationName, contextValue })</code> → pump
+     <code>next</code> messages until the stream ends or the client sends <code>complete</code>. On
+     socket close/error, all active iterators are returned (cleaned up).</p>
+  <div class="callout danger">
+    <span class="label">contextValue, not context</span>
+    Both <code>Gateway.execute</code> and <code>Gateway.subscribe</code> take <code>contextValue</code>
+    in their params (see <a href="#ExecuteParams">ExecuteParams</a>). The context-builder callbacks are
+    on the handler options: <code>GraphqlHandlerOptions.context</code> (HTTP) and
+    <code>SubscriptionServerOptions.context</code> (WS). They produce the <code>contextValue</code> that
+    is forwarded to the gateway.
+  </div>
+
+  <h2 id="federation">Federation</h2>
+  <p>Single-subgraph is the default (in-process <code>execute()</code> against the public schema with
+     federation directives stripped). Multi-subgraph opts into <code>createFederatedGateway</code>, which
+     composes the subgraphs and executes federated queries. The flow is:</p>
+  <pre><code><span class="kw">const</span> gateway = createFederatedGateway([users, orders]);
+<span class="com">// → composeSupergraph (ownership + @key entity sources + @provides/@requires records → supergraph SDL)
+//   → executeFederated (root pass: group top-level fields by owner + execute trimmed subqueries;
+//      iterative entity-join passes: one _entities call per missing-fields job, max 8 passes)</span>
+
+<span class="com">// inspect the fetch plan for a query (golden tests / debugging):</span>
+<span class="kw">const</span> plan = gateway.plan(parse(<span class="str">'query { me { id orders { id total } } }'</span>));</code></pre>
+
+  <h3 id="parseFederationMetadata">parseFederationMetadata(sdl)</h3>
+  <pre><code><span class="kw">function</span> parseFederationMetadata(sdl: <span class="kw">string</span>): Map&lt;<span class="kw">string</span>, TypeMeta&gt;</code></pre>
+  <p>Parse federation metadata from subgraph SDL: per type, its <code>@key</code> sets, whether it is an
+     <code>@extends</code> extension, and per field whether it is <code>@external</code>,
+     <code>@provides(fields)</code>, or <code>@requires(fields)</code>. Uses brace matching (not a full
+     AST) — sufficient for the v1 federation subset and the kind of type blocks we generate/accept.
+     Repeated <code>extend type</code> blocks for the same type merge into one <code>TypeMeta</code>.</p>
+
+  <h4 id="FieldMeta">FieldMeta</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>external</code></td><td><code>boolean</code></td><td>Field is declared <code>@external</code> (resolved by another subgraph).</td></tr>
+      <tr><td><code>provides?</code></td><td><code>string[]</code></td><td><code>@provides(fields: "...")</code> — this subgraph provides this field on an entity.</td></tr>
+      <tr><td><code>requires?</code></td><td><code>string[]</code></td><td><code>@requires(fields: "...")</code> — this field is computed from external fields.</td></tr>
+    </tbody>
+  </table>
+
+  <h4 id="TypeMeta">TypeMeta</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>isExtend</code></td><td><code>boolean</code></td><td>Type is declared with <code>extend type</code> or <code>@extends</code>.</td></tr>
+      <tr><td><code>keys</code></td><td><code>string[][]</code></td><td>Array of <code>@key</code> field-path sets (each set is an array of field names; a composite key yields <code>["id","tenant"]</code>).</td></tr>
+      <tr><td><code>fields</code></td><td><code>Map&lt;string, FieldMeta&gt;</code></td><td>Per-field federation metadata.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="composeSupergraph">composeSupergraph(subgraphs)</h3>
+  <pre><code><span class="kw">function</span> composeSupergraph(subgraphs: Subgraph[]): Supergraph</code></pre>
+  <p>Compose multiple subgraphs into a <code>Supergraph</code>: collect field ownership, entity
+     <code>@key</code> sources, <code>@provides</code> and <code>@requires</code> records, and a merged
+     public SDL. Throws if <code>subgraphs</code> is empty.</p>
+  <p><strong>Ownership rule (v1):</strong> a field is owned by a subgraph if that subgraph's SDL defines
+     the field on the type and it is NOT <code>@external</code>. The first subgraph to claim a
+     non-external field wins; a conflicting claim by a second subgraph is recorded as a composition
+     warning (real federation would arbitrate via <code>@shareable</code>/<code>@override</code> — out of
+     scope for v1). The merged SDL is built from the owning subgraph's public schema field types.</p>
+
+  <h4 id="EntitySource">EntitySource</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>subgraph</code></td><td><code>string</code></td><td>Subgraph name that can resolve the entity via <code>_entities</code>.</td></tr>
+      <tr><td><code>keyFields</code></td><td><code>string[]</code></td><td>The <code>@key</code> field path for this source.</td></tr>
+    </tbody>
+  </table>
+
+  <h4 id="RequiresRecord">RequiresRecord</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>subgraph</code></td><td><code>string</code></td><td>Subgraph that declares the <code>@requires</code>.</td></tr>
+      <tr><td><code>requiresFields</code></td><td><code>string[]</code></td><td>The external fields required to compute the field.</td></tr>
+    </tbody>
+  </table>
+
+  <h4 id="Supergraph">Supergraph</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>subgraphs</code></td><td><code>Subgraph[]</code></td><td>The input subgraphs.</td></tr>
+      <tr><td><code>ownership</code></td><td><code>Map&lt;string, Map&lt;string, string&gt;&gt;</code></td><td><code>typeName → fieldName → owning subgraph name</code>.</td></tr>
+      <tr><td><code>entities</code></td><td><code>Map&lt;string, EntitySource[]&gt;</code></td><td><code>typeName → subgraphs</code> that can resolve it via <code>_entities</code> (have <code>@key</code>).</td></tr>
+      <tr><td><code>provides</code></td><td><code>Map&lt;string, Map&lt;string, string&gt;&gt;</code></td><td><code>typeName → fieldName → subgraph</code> that <code>@provides</code> the field.</td></tr>
+      <tr><td><code>requires</code></td><td><code>Map&lt;string, Map&lt;string, RequiresRecord&gt;&gt;</code></td><td><code>typeName → fieldName → { subgraph, requiresFields }</code>.</td></tr>
+      <tr><td><code>mergedSdl</code></td><td><code>string</code></td><td>Client-facing merged SDL (no federation directives).</td></tr>
+      <tr><td><code>schema</code></td><td><code>GraphQLSchema</code></td><td>Schema built from <code>mergedSdl</code> (for query planning / type lookup only).</td></tr>
+      <tr><td><code>subgraphSchemas</code></td><td><code>Map&lt;string, GraphQLSchema&gt;</code></td><td>Per-subgraph public schemas (type info).</td></tr>
+      <tr><td><code>metadata</code></td><td><code>Map&lt;string, Map&lt;string, TypeMeta&gt;&gt;</code></td><td>Per-subgraph federation metadata (<code>subgraphName → typeName → TypeMeta</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="planQuery">planQuery(supergraph, document)</h3>
+  <pre><code><span class="kw">function</span> planQuery(supergraph: Supergraph, document: DocumentNode): FetchPlan</code></pre>
+  <p>Build a <code>FetchPlan</code> description for inspection / golden tests. This is a
+     <strong>description</strong> of the root fetches, not a separate query-planning engine —
+     <code>executeFederated</code> does the actual execution (root pass + iterative entity-join passes).
+     <code>planQuery</code> groups the operation's top-level fields by their owning subgraph and emits a
+     <code>FetchNode</code> per group with the SDL selection set. Entity-join fetches are discovered
+     dynamically during execution (they depend on the data returned), so they are not in the static
+     plan.</p>
+
+  <h4 id="FetchNode">FetchNode</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>kind</code></td><td><code>'root' | 'entities'</code></td><td>Root fetch (top-level fields) or entity fetch (<code>_entities</code> join).</td></tr>
+      <tr><td><code>subgraph</code></td><td><code>string</code></td><td>Owning subgraph name.</td></tr>
+      <tr><td><code>selection</code></td><td><code>string</code></td><td>SDL selection set this fetch executes.</td></tr>
+      <tr><td><code>typeName?</code></td><td><code>string</code></td><td>For entity fetches: the entity type name being resolved.</td></tr>
+      <tr><td><code>keyFields?</code></td><td><code>string[]</code></td><td>For entity fetches: key fields used to build representations.</td></tr>
+    </tbody>
+  </table>
+
+  <h4 id="FetchPlan">FetchPlan</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>nodes</code></td><td><code>FetchNode[]</code></td><td>The fetch nodes (root fetches from <code>planQuery</code>; entity fetches are dynamic, discovered at execution time).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="executeFederated">executeFederated(supergraph, document, variableValues, contextValue)</h3>
+  <pre><code><span class="kw">async function</span> executeFederated(
+  supergraph: Supergraph,
+  document: DocumentNode,
+  variableValues: Record&lt;<span class="kw">string</span>, <span class="kw">any</span>&gt; | <span class="kw">undefined</span>,
+  contextValue: GraphQLContext,
+): Promise&lt;ExecutionResult&gt;</code></pre>
+  <p>Execute a federated query in-process against the composed subgraphs. Algorithm:</p>
+  <ol>
+    <li><strong>Root pass</strong> — group the operation's top-level fields by their owning subgraph;
+        for each group, execute a trimmed subquery against that subgraph in-process. Trim keeps only
+        fields owned by that subgraph, plus <code>__typename</code> and entity key fields (so later
+        passes can join). Fragment spreads at root are ignored in v1.</li>
+    <li><strong>Iterative entity-join passes</strong> — scan the stitched result for entity-typed
+        objects whose requested fields are owned by <em>other</em> subgraphs; for each missing-fields
+        job, build a representation from the parent's key fields, call that subgraph's
+        <code>_entities</code> with a single representation and a trimmed subquery, then merge the
+        returned fields back by index. Repeat until no missing fields remain (handles nested joins, one
+        level per pass). <strong>Capped at 8 passes.</strong></li>
+  </ol>
+  <p>Each subgraph is executed in-process via graphql-js <code>execute</code> against the subgraph's
+     federation schema + its resolvers (with <code>createFieldResolver</code>). Entity fetches are
+     sequential — one <code>_entities</code> call per job with one representation, not batched across
+     multiple parent objects of the same type.</p>
+  <div class="callout note">
+    <span class="label">@requires</span>
+    <code>@requires</code> is supported as "fetch the required external fields first, then resolve".
+    <code>@provides</code> is recorded during composition (<code>Supergraph.provides</code>) but is
+    <strong>not</strong> used to short-circuit field fetches in <code>executeFederated</code> — the
+    executor always goes through the entity-join flow. <code>@shareable</code> arbitration and
+    <code>@override</code> are not implemented in v1.
+  </div>
+  <div class="callout warn">
+    <span class="label">Sequential, in-process</span>
+    v1 execution is sequential (no parallel fetch fan-out) and in-process (shared nothing / distributed
+    subgraphs over HTTP is designed, not built). Subscriptions are not federated in v1 — route them to
+    the owning subgraph's <code>SubscriptionServer</code>.
+  </div>
+
+  <h3 id="FederatedGateway">FederatedGateway</h3>
+  <pre><code><span class="kw">interface</span> FederatedGateway {
+  schema: Supergraph[<span class="str">'schema'</span>];
+  supergraph: Supergraph;
+  subgraphs: Subgraph[];
+  execute(params: Omit&lt;ExecuteParams, <span class="str">'schema'</span> | <span class="str">'resolvers'</span>&gt;): Promise&lt;ExecutionResult&gt;;
+  plan(document: DocumentNode): FetchPlan;
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>schema</code></td><td><code>GraphQLSchema</code></td><td>Client-facing merged schema (from <code>supergraph.schema</code>).</td></tr>
+      <tr><td><code>supergraph</code></td><td><code>Supergraph</code></td><td>The composed supergraph (ownership, entities, provides, requires, metadata).</td></tr>
+      <tr><td><code>subgraphs</code></td><td><code>Subgraph[]</code></td><td>The backing subgraphs.</td></tr>
+      <tr><td><code>execute(params)</code></td><td><code>Promise&lt;ExecutionResult&gt;</code></td><td>Run <code>executeFederated(supergraph, document, variableValues, contextValue)</code>. <code>params</code> omits <code>schema</code>/<code>resolvers</code>.</td></tr>
+      <tr><td><code>plan(document)</code></td><td><code>FetchPlan</code></td><td>Inspect the fetch plan for a query (golden tests / debugging) — delegates to <code>planQuery</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="createFederatedGateway">createFederatedGateway(subgraphs)</h3>
+  <pre><code><span class="kw">function</span> createFederatedGateway(subgraphs: Subgraph[]): FederatedGateway</code></pre>
+  <p>Compose multiple subgraphs into a federated gateway. Takes a <strong>bare array</strong> of
+     subgraphs (not <code>{ subgraphs: [...] }</code>). The gateway exposes the merged public schema and
+     executes queries via the sequential federated executor (root fetches + iterative entity-join
+     passes). Subscriptions are not federated in v1 — route them to the owning subgraph's
+     <code>SubscriptionServer</code>.</p>
+  <pre><code><span class="kw">const</span> accounts = defineSubgraph({ name: <span class="str">'accounts'</span>, typeDefs, resolvers, entityResolver });
+<span class="kw">const</span> orders = defineSubgraph({ name: <span class="str">'orders'</span>, typeDefs2, resolvers2, entityResolver2 });
+
+<span class="kw">const</span> gateway = createFederatedGateway([accounts, orders]);
+
+router.post(<span class="str">'/graphql'</span>, graphqlHttpHandler({
+  gateway,
+  context: <span class="kw">async</span> (ctx) =&gt; ({ request: ctx, user: ctx.state.user, db }),
+}));
+
+<span class="com">// inspect the fetch plan:</span>
+<span class="kw">const</span> plan = gateway.plan(parse(<span class="str">'query { me { id orders { total } } }'</span>));</code></pre>
+  <div class="callout warn">
+    <span class="label">Signature</span>
+    <code>createFederatedGateway(subgraphs: Subgraph[])</code> — a bare array, not
+    <code>{ subgraphs: [...] }</code>. This differs from <code>createGateway</code>, which takes the
+    union <code>{ subgraph } | { subgraphs }</code>.
+  </div>
+
+  <h2>Federation subset (v1)</h2>
+  <p><span class="badge full">supported</span> <code>@key</code> (single + composite, repeatable),
+     <code>@external</code>, <code>@requires</code> (fetch required external fields first, then resolve),
+     <code>@provides</code> (recorded in composition; not used to short-circuit execution),
+     <code>@extends</code>, <code>_entities</code>, <code>_service { sdl }</code>,
+     <code>@link</code> (declared, import list not enforced).</p>
+  <p><span class="badge partial">deferred</span> <code>@shareable</code> arbitration (first-owner-wins
+     instead), <code>@override</code>, <code>@inaccessible</code> enforcement, subscription federation
+     (route to the owning subgraph's <code>SubscriptionServer</code> for now), parallel fetch fan-out,
+     distributed (over-HTTP) subgraph execution.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · GraphQL API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"GraphQL - subgraph + field resolver","apiBase":"http://localhost:4000","js":"const subgraph = {\n  resolvers: {\n    Query: { me: () =\u003e ({ id: \"1\", name: \"Maya\" }) },\n    User: { name: (u) =\u003e u.name.toUpperCase() },\n  },\n};\nfunction resolveField(parent, name, resolver) {\n  const fn = resolver[name] || ((p) =\u003e p[name]);\n  return typeof fn === \"function\" ? fn(parent) : fn;\n}\nconst me = subgraph.resolvers.Query.me();\nconsole.log(\"me.name -\u003e\", resolveField(me, \"name\", subgraph.resolvers.User));\n\nconst users = [{ id: \"1\", name: \"Maya\" }, { id: \"2\", name: \"Drew\" }, { id: \"3\", name: \"Sofia\" }];\nconsole.log(\"users(limit:2):\", users.slice(0, 2).map((u) =\u003e u.name).join(\", \"));","api":{"method":"POST","path":"/graphql","body":{"query":"query { users(limit: 3) { id email } }"}}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

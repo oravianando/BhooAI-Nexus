@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>04 · GraphQL — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 04</div>
+  <h1>GraphQL <span class="sub"><code>@bhooai/nexus-graphql</code> builds on <code>graphql-js</code> with a hand-rolled federation layer — composition, supergraph SDL, a query planner, entity joins — and subscriptions over WebSocket. No Apollo.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/subgraph/federationDirectives.ts</code></td><td><code>@key</code>/<code>@external</code>/<code>@provides</code>/<code>@requires</code>/<code>@extends</code> SDL definitions.</td></tr>
+      <tr><td><code>src/subgraph/parseKeys.ts</code></td><td>Parse <code>@key(fields: "...")</code> into field paths.</td></tr>
+      <tr><td><code>src/subgraph/defineSubgraph.ts</code></td><td>Build a <code>Subgraph</code> from SDL + resolvers + key info.</td></tr>
+      <tr><td><code>src/gateway/publicSchema.ts</code></td><td>Expose the subgraph's public SDL (removes federation internals).</td></tr>
+      <tr><td><code>src/gateway/fieldResolver.ts</code></td><td>Maps GraphQL fields to resolver functions (incl. async + subscriptions).</td></tr>
+      <tr><td><code>src/gateway/createGateway.ts</code></td><td>In-process gateway — single-subgraph direct execution.</td></tr>
+      <tr><td><code>src/gateway/graphqlHttpHandler.ts</code></td><td>HTTP handler for GET/POST GraphQL requests.</td></tr>
+      <tr><td><code>src/federation/composeSupergraph.ts</code></td><td>Compose multiple subgraphs into one supergraph SDL.</td></tr>
+      <tr><td><code>src/federation/parseMetadata.ts</code></td><td>Extract entity/field metadata from subgraph SDLs.</td></tr>
+      <tr><td><code>src/federation/executor.ts</code></td><td>Query-plan executor: FetchNode DAG with <code>@key</code> entity joins.</td></tr>
+      <tr><td><code>src/federation/createFederatedGateway.ts</code></td><td>Multi-subgraph gateway (composition + planning).</td></tr>
+      <tr><td><code>src/subscriptions/PubSub.ts</code></td><td>In-process publish/subscribe for <code>userCount</code>-style events.</td></tr>
+      <tr><td><code>src/subscriptions/SubscriptionServer.ts</code></td><td>graphql-transport-ws server over the gateway.</td></tr>
+      <tr><td><code>src/types.ts</code></td><td>Shared types (Gateway, Subgraph, Resolvers, GraphQLContext).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Single-subgraph gateway (the default app shape)</h3>
+  <p><code>apps/backend</code> builds one subgraph over users and passes it straight in:</p>
+  <pre><code><span class="kw">const</span> usersSubgraph = buildUsersSubgraph();   <span class="com">// sdl + resolvers</span>
+<span class="kw">const</span> gateway = createGateway({ subgraph: usersSubgraph });
+router.post(config.graphql.path, graphqlHttpHandler({ gateway, introspection: <span class="num">true</span>, context: graphContext }));</code></pre>
+  <p>Single-subgraph mode executes directly against the subgraph's resolvers — no network hop, shared
+     in-process context. This is the <strong>no-overhead path</strong>; federation only kicks in with &gt;1 subgraph.</p>
+
+  <h3>2. The users subgraph</h3>
+  <pre><code><span class="kw">type</span> User <span class="kw">@key</span>(fields: <span class="str">"id"</span>) { id, email, name, roles, emailVerified, createdAt, updatedAt }
+<span class="kw">type</span> Query { me: User, user(id: ID!): User, users(limit: Int = <span class="num">50</span>): [User!]! }
+<span class="kw">type</span> Subscription { userCount: Int! }</code></pre>
+
+  <h3>3. Federation (multi-subgraph)</h3>
+  <p><code>composeSupergraph</code> merges subgraph SDLs into a supergraph, <code>parseMetadata</code> extracts
+     <code>@key</code> entities, and <code>executor</code> builds a <strong>FetchNode DAG</strong>: it joins
+     entities across subgraphs via <code>_entities</code> queries on <code>__typename + keyFields</code>. The
+     current planner is deliberately a correct, naive sequential executor — parallelizing it is a documented
+     next step.</p>
+
+  <h3>4. Subscriptions</h3>
+  <p><code>PubSub</code> is in-process publish/subscribe. After registration the backend publishes
+     <code>USER_COUNT</code>, and the <code>userCount</code> subscription streams it. <code>SubscriptionServer</code>
+     serves it over <code>/graphql/ws</code> using the shared auth service.</p>
+
+  <div class="callout warn">
+    <span class="label">Federation subset</span>
+    v1 supports <code>@key</code>/<code>@external</code>/<code>@provides</code>/<code>@requires</code>/<code>@extends</code>.
+    <code>@shareable</code>, <code>@override</code>, and <code>@inaccessible</code> are documented but not enforced.
+  </div>
+
+  <h2>Playground</h2>
+  <p>Sandbox: a tiny subgraph + field-resolution model. Live API: query the real gateway.</p>
+
+  <section data-playground='{
+    "title": "GraphQL — subgraph + field resolver",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: a single-subgraph gateway resolving fields\nconst subgraph = {\n  sdl: \"type User { id: ID! name: String } type Query { me: User }\",\n  resolvers: {\n    Query: { me: () => ({ id: \"1\", name: \"Maya\" }) },\n    User: { id: (u) => u.id, name: (u) => u.name.toUpperCase() },\n  },\n};\n\nfunction resolveField(parent, fieldName, resolver) {\n  const fn = (resolver[fieldName] || ((p) => p[fieldName]));\n  const value = typeof fn === \"function\" ? fn(parent) : fn;\n  return value instanceof Promise ? value.then((v) => v) : value;\n}\n\nconst me = subgraph.resolvers.Query.me();\nconsole.log(\"me.name ->\", resolveField(me, \"name\", subgraph.resolvers.User));\nconsole.log(\"me.id   ->\", resolveField(me, \"id\", subgraph.resolvers.User));\n\n// Simulate a query plan: users(limit: 2)\nconst users = [{ id: \"1\", name: \"Maya\" }, { id: \"2\", name: \"Drew\" }, { id: \"3\", name: \"Sofia\" }];\nconsole.log(\"users(limit:2) ->\", users.slice(0, 2).map((u) => u.name).join(\", \"));",
+    "api": { "method": "POST", "path": "/graphql", "body": { "query": "query { users(limit: 3) { id email } }" } }
+  }'></section>
+
+  <p class="foot"><a href="03-data.html">&larr; 03 · Data ODM</a> · <a href="index.html">Build Guide</a> · Next: <a href="05-realtime.html">05 · Realtime →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 04 GraphQL</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

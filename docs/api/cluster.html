@@ -1,0 +1,489 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cluster API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-cluster</span> Cluster / Mesh API
+    <span class="sub">Multi-host container mesh: node agents, registry, load balancer, autoscaler.</span></h1>
+
+  <p>The cluster package. A node agent runs on every machine that joins the mesh; the central side
+     holds a registry of linked nodes, a round-robin load balancer, and an autoscaler with
+     deterministic guardrails plus an optional AI advisor. Built on <code>@bhooai/nexus-core</code>'s
+     HTTP server, router, and DI container.</p>
+
+  <h2>Exports</h2>
+  <p>17 public symbols re-exported from the package entry. Option/dependency interfaces
+     (<code>AgentOptions</code>, <code>ClientOptions</code>, <code>RegistryOptions</code>,
+     <code>LoadBalancerOptions</code>, <code>AutoscalerDeps</code>, <code>AiAdvisor</code>,
+     <code>AutoscaleInput</code>, <code>DeterministicDecision</code>, <code>AiAdvisorOptions</code>,
+     <code>ClusterManagerOptions</code>) are <strong>not</strong> re-exported — their shapes are shown
+     inline on the constructors below.</p>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>types</td><td><code>NodeRole</code>, <code>NodeTier</code>, <code>NodeIdentity</code>, <code>NodeHealth</code>, <code>NodeMetricsSample</code>, <code>NodeCommand</code>, <code>NodeExecRequest</code>, <code>NodeExecResult</code>, <code>RegistryNode</code></td></tr>
+      <tr><td>classes</td><td><code>NodeAgent</code>, <code>NodeClient</code>, <code>NodeRegistry</code>, <code>LoadBalancer</code>, <code>Autoscaler</code>, <code>HttpAiAdvisor</code>, <code>ClusterManager</code></td></tr>
+      <tr><td>function</td><td><code>nodeIdFor</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Types reference</h2>
+
+  <h3 id="NodeRole">NodeRole</h3>
+  <pre><code><span class="kw">type</span> NodeRole = <span class="str">'backend'</span> | <span class="str">'files'</span> | <span class="str">'database'</span> | <span class="str">'ai'</span></code></pre>
+  <p>The service profile a node advertises. Re-exported from <code>@bhooai/nexus-core</code> (it is also
+     used by the <code>ClusterConfig</code> section). There is <strong>no</strong> <code>frontend</code> or
+     <code>graphql</code> role — the mesh only load-balances <code>backend</code> nodes.</p>
+
+  <h3 id="NodeTier">NodeTier</h3>
+  <pre><code><span class="kw">type</span> NodeTier = <span class="str">'dev'</span> | <span class="str">'standard'</span> | <span class="str">'large'</span></code></pre>
+  <p>Hardware/compute tier hint reported by a node at register time. Informational — the LB and autoscaler
+     do not currently branch on it.</p>
+
+  <h3 id="NodeIdentity">NodeIdentity</h3>
+  <p>Shape exchanged between the central and any node over HTTP (returned by <code>GET /info</code>).</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Stable node id (<code>&lt;project-root hash&gt;-&lt;role&gt;</code>, see <a href="#nodeIdFor">nodeIdFor</a>).</td></tr>
+      <tr><td><code>role</code></td><td><code>NodeRole</code></td><td>Service profile this node serves.</td></tr>
+      <tr><td><code>tier</code></td><td><code>NodeTier</code></td><td>Compute tier hint.</td></tr>
+      <tr><td><code>version</code></td><td><code>string</code></td><td>App/service version string.</td></tr>
+      <tr><td><code>baseUrl</code></td><td><code>string</code></td><td>Base URL of the node's <em>agent control API</em> (e.g. <code>http://host:7575</code>), not the role service.</td></tr>
+      <tr><td><code>services</code></td><td><code>Partial&lt;Record&lt;NodeRole, string&gt;&gt;</code></td><td>Role → service base URL map (e.g. <code>{ backend: 'http://host:4000' }</code>). The LB targets <code>services.backend</code> if present, else falls back to <code>baseUrl</code>.</td></tr>
+      <tr><td><code>capabilities</code></td><td><code>string[]</code></td><td>Capability strings the node supports — the agent advertises <code>['start','stop','restart','logs','update','metrics']</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="NodeHealth">NodeHealth</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ok</code></td><td><code>boolean</code></td><td>Overall health. When the node's own role has a service URL, this is the result of probing that service's <code>/health</code>; otherwise <code>true</code>.</td></tr>
+      <tr><td><code>time</code></td><td><code>string</code></td><td>ISO timestamp of the probe.</td></tr>
+      <tr><td><code>services</code></td><td><code>Partial&lt;Record&lt;NodeRole, boolean&gt;&gt;</code></td><td>Per-role service health map (the agent only reports its own role).</td></tr>
+      <tr><td><code>message?</code></td><td><code>string</code></td><td>Optional human-readable detail. Not set by the inbuilt agent.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="NodeMetricsSample">NodeMetricsSample</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>nodeId</code></td><td><code>string</code></td><td>Node id (matches <code>NodeIdentity.id</code>).</td></tr>
+      <tr><td><code>rps</code></td><td><code>number</code></td><td>Requests/sec over the agent process's uptime (request count ÷ uptime seconds, rounded up).</td></tr>
+      <tr><td><code>cpu</code></td><td><code>number</code></td><td>Always <code>0</code> — the agent does not measure CPU. Kept for API compatibility with the autoscaler's <code>cpuHigh</code> rail.</td></tr>
+      <tr><td><code>memoryMb</code></td><td><code>number</code></td><td>Resident set size (RSS) of the agent process in MB.</td></tr>
+      <tr><td><code>sampledAt</code></td><td><code>number</code></td><td>Epoch ms of the sample.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="NodeCommand">NodeCommand</h3>
+  <pre><code><span class="kw">type</span> NodeCommand = <span class="str">'start'</span> | <span class="str">'stop'</span> | <span class="str">'restart'</span> | <span class="str">'logs'</span> | <span class="str">'update'</span> | <span class="str">'script'</span></code></pre>
+  <p>Commands the central may send to a node's <code>/exec</code>. <strong>Note:</strong> <code>script</code>
+     is part of the <em>type</em> but the inbuilt <code>NodeAgent</code> rejects it — only
+     <code>start</code>, <code>stop</code>, <code>restart</code>, <code>logs</code>, and <code>update</code>
+     are actually allowed. <code>update</code> is an alias for <code>restart</code> (it calls
+     <code>restartService()</code> and does <strong>not</strong> pull the latest code).</p>
+
+  <h3 id="NodeExecRequest">NodeExecRequest</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>command</code></td><td><code>NodeCommand</code></td><td>The command to run.</td></tr>
+      <tr><td><code>target?</code></td><td><code>string</code></td><td>Intended for <code>script</code>: a script/bundle id to push &amp; run. Unused by the inbuilt agent.</td></tr>
+      <tr><td><code>args?</code></td><td><code>string[]</code></td><td>Optional command arguments. Passed through by <code>ClusterManager.exec</code>; ignored by the inbuilt agent's allowlisted commands.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="NodeExecResult">NodeExecResult</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ok</code></td><td><code>boolean</code></td><td><code>true</code> when the command was allow-listed and dispatched; <code>false</code> for rejected commands.</td></tr>
+      <tr><td><code>exitCode</code></td><td><code>number | null</code></td><td>Last known exit code of the role service child process, or <code>null</code> if it is still running / never started.</td></tr>
+      <tr><td><code>stdout</code></td><td><code>string</code></td><td>Tail of the service log buffer (last ~200 lines). For <code>logs</code> this is the whole result.</td></tr>
+      <tr><td><code>stderr?</code></td><td><code>string</code></td><td>Present on rejected commands (e.g. <code>command "script" not allowed</code>).</td></tr>
+      <tr><td><code>audit?</code></td><td><code>string</code></td><td>Single audit line appended by the node, e.g. <code>run "start" by central at 2026-08-10T12:00:00.000Z</code>. A <strong>string</strong>, not an array.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RegistryNode">RegistryNode</h3>
+  <p>One entry in the central registry. Persisted as JSON to <code>cluster.registryFile</code> so the mesh
+     survives restarts.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>identity</code></td><td><code>NodeIdentity</code></td><td>Last <code>/info</code> snapshot from the node.</td></tr>
+      <tr><td><code>status</code></td><td><code>'pending' | 'ready' | 'unreachable'</code></td><td><code>ready</code> when the last <code>/health</code> returned <code>ok</code>; <code>unreachable</code> after a failed poll.</td></tr>
+      <tr><td><code>registeredAt</code></td><td><code>string</code></td><td>ISO timestamp of the first successful link.</td></tr>
+      <tr><td><code>lastSeenAt</code></td><td><code>string</code></td><td>ISO timestamp of the last poll.</td></tr>
+      <tr><td><code>lastHealth?</code></td><td><code>NodeHealth</code></td><td>Last health probe result.</td></tr>
+      <tr><td><code>lastMetrics?</code></td><td><code>NodeMetricsSample</code></td><td>Last metrics sample.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Whether the LB considers this node a target. <code>scaleTo</code> / <code>setEnabled</code> toggle this; disabled ready nodes are standby for scale-up.</td></tr>
+      <tr><td><code>authToken?</code></td><td><code>string</code></td><td>Per-node pairing token used to authenticate to this node's agent. Falls back to the registry's shared token when unset (legacy behaviour).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="NodeAgent">NodeAgent class</h2>
+  <pre><code><span class="kw">class</span> NodeAgent {
+  <span class="kw">readonly</span> server: NexusServer;
+  constructor(opts: AgentOptions);
+  <span class="kw">static</span> auth(token: <span class="kw">string</span>): Middleware;
+  startService(): <span class="kw">void</span>;
+  restartService(): <span class="kw">void</span>;
+  stopService(): <span class="kw">void</span>;
+  listen(host?: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+  <span class="kw">get</span> identitySnapshot(): NodeIdentity;
+  <span class="kw">get</span> status(): <span class="kw">string</span>;
+}</code></pre>
+  <p>The control API that lives on every cluster node (default port from
+     <code>cluster.nodeAgentPort</code>, 7575). Owns the node's role service as one child process and
+     exposes <code>/health</code>, <code>/info</code>, <code>/exec</code>, <code>/metrics</code> to an
+     authenticated central. Uses the framework HTTP core so CORS, request ids, and error handling behave
+     like the rest of the framework. See <a href="node-agent.html">Node Agent API</a> for the wire shapes.</p>
+
+  <h4>AgentOptions (constructor)</h4>
+  <p>Not re-exported; shape shown inline.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>projectRoot</code></td><td><code>string</code></td><td>Working directory whose <code>node_modules</code>/cwd resolves the service command; also hashed into the node id.</td></tr>
+      <tr><td><code>role</code></td><td><code>NodeRole</code></td><td>Service profile.</td></tr>
+      <tr><td><code>tier</code></td><td><code>NodeTier</code></td><td>Compute tier hint.</td></tr>
+      <tr><td><code>port</code></td><td><code>number</code></td><td>Agent listen port (<code>cluster.nodeAgentPort</code>).</td></tr>
+      <tr><td><code>token</code></td><td><code>string</code></td><td>Shared pairing token the central must present (<code>Authorization: Bearer &lt;token&gt;</code>).</td></tr>
+      <tr><td><code>services</code></td><td><code>Partial&lt;Record&lt;NodeRole, string&gt;&gt;</code></td><td>Role → service base URL this node exposes (LB targets).</td></tr>
+      <tr><td><code>version</code></td><td><code>string</code></td><td>App version string reported on <code>/info</code>.</td></tr>
+      <tr><td><code>serviceCommand</code></td><td><code>string[]</code></td><td>Executable + args that launches the role service (e.g. <code>['npm','run','dev']</code>).</td></tr>
+      <tr><td><code>serviceEnv?</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Extra service env vars (port overrides etc.).</td></tr>
+      <tr><td><code>advertisedUrl?</code></td><td><code>string</code></td><td>Public URL central uses to reach back for health/metrics; defaults to <code>http://localhost:&lt;port&gt;</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Members</h4>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>server</code></td><td>The underlying <code>NexusServer</code> (reuse for WS / subscriptions).</td></tr>
+      <tr><td><code>static auth(token)</code></td><td>Bearer-token gate middleware for every agent route; passes through when <code>Authorization: Bearer &lt;token&gt;</code> matches, else <code>401</code>.</td></tr>
+      <tr><td><code>startService()</code></td><td>Spawn the role service if not already running. Prepends local + framework <code>node_modules/.bin</code> to <code>PATH</code>; on Windows uses a shell and <code>taskkill /T /F</code> for stop.</td></tr>
+      <tr><td><code>restartService()</code></td><td>Stop then start after a 300ms delay.</td></tr>
+      <tr><td><code>stopService()</code></td><td>Kill the child process (Windows: <code>taskkill</code>; POSIX: <code>SIGTERM</code> to the process group).</td></tr>
+      <tr><td><code>listen(host?)</code></td><td>Listen on <code>opts.port</code>; <code>host</code> defaults to <code>'0.0.0.0'</code> so the central can reach the agent across hosts.</td></tr>
+      <tr><td><code>close()</code></td><td>Stop the role service and close the HTTP server.</td></tr>
+      <tr><td><code>get identitySnapshot</code></td><td>Current <code>NodeIdentity</code>.</td></tr>
+      <tr><td><code>get status</code></td><td>Service status: <code>'stopped' | 'running' | 'errored'</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="nodeIdFor">nodeIdFor(root, role)</h3>
+  <pre><code><span class="kw">function</span> nodeIdFor(root: <span class="kw">string</span>, role: NodeRole): <span class="kw">string</span></code></pre>
+  <p>Canonical stable node id — the first 12 hex chars of <code>sha256(resolve(root) + '::' + role)</code>
+     followed by <code>-&lt;role&gt;</code> (e.g. <code>a1b2c3d4e5f6-backend</code>). Stable across restarts
+     for the same project root + role, so re-linking the same node updates the existing registry entry
+     rather than creating a duplicate.</p>
+
+  <h2 id="NodeClient">NodeClient class</h2>
+  <pre><code><span class="kw">class</span> NodeClient {
+  constructor(agentUrl: <span class="kw">string</span>, token: <span class="kw">string</span>, opts?: ClientOptions);
+  info(): Promise&lt;NodeIdentity&gt;;
+  health(): Promise&lt;NodeHealth&gt;;
+  exec(req: NodeExecRequest): Promise&lt;NodeExecResult&gt;;
+  metrics(): Promise&lt;NodeMetricsSample&gt;;
+}</code></pre>
+  <p>HTTP client a central uses against a node's agent API. All calls are bearer-authenticated with the
+     shared (or per-node) pairing token and time out after <code>timeoutMs</code> (default 5000ms). On
+     timeout the error message hints the agent may not be running.</p>
+  <h4>ClientOptions (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>timeoutMs?</code></td><td><code>number</code></td><td><code>5000</code></td><td>Timeout for any single agent call (ms).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="NodeRegistry">NodeRegistry class</h2>
+  <pre><code><span class="kw">class</span> NodeRegistry {
+  constructor(opts: RegistryOptions);
+  setToken(token: <span class="kw">string</span>): <span class="kw">void</span>;
+  list(): RegistryNode[];
+  get(id: <span class="kw">string</span>): RegistryNode | <span class="kw">undefined</span>;
+  remove(id: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  link(agentUrl: <span class="kw">string</span>, overrideRole?: NodeRole, linkToken?: <span class="kw">string</span>): Promise&lt;RegistryNode&gt;;
+  poll(id: <span class="kw">string</span>): Promise&lt;RegistryNode | <span class="kw">undefined</span>&gt;;
+  clientFor(id: <span class="kw">string</span>): NodeClient | <span class="kw">undefined</span>;
+  readyByRole(role: <span class="kw">string</span>): RegistryNode[];
+}</code></pre>
+  <p>The central's book of linked nodes, persisted to a JSON file (gitignored) so the mesh survives
+     restarts. A node is "linked" when a trusted central handshakes <code>/info</code> and
+     <code>/health</code> with the shared token, then persisted. A corrupt registry file is ignored —
+     the registry starts empty rather than crashing boot.</p>
+  <h4>RegistryOptions (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>file</code></td><td><code>string</code></td><td>Path to persist the registry (JSON). Resolved with <code>resolve</code>.</td></tr>
+      <tr><td><code>token</code></td><td><code>string</code></td><td>Shared pairing token used to authenticate to linked nodes.</td></tr>
+    </tbody>
+  </table>
+  <h4>Members</h4>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>setToken(token)</code></td><td>Update the shared pairing token at runtime (e.g. after generating a new one). Does not retro-actively change stored per-node <code>authToken</code>s.</td></tr>
+      <tr><td><code>list()</code></td><td>All nodes, sorted by role then id.</td></tr>
+      <tr><td><code>get(id)</code></td><td>Node by id, or <code>undefined</code>.</td></tr>
+      <tr><td><code>remove(id)</code></td><td>Delete a node; persists. Returns whether it existed.</td></tr>
+      <tr><td><code>link(agentUrl, overrideRole?, linkToken?)</code></td><td>Fetch <code>/info</code> + <code>/health</code> via a throwaway <code>NodeClient</code>, store the node. <code>overrideRole</code> rewrites the stored role; <code>linkToken</code> overrides the registry's shared token for this node (per-node pairing — the slave generates its own token and the master uses it). Throws on a failed handshake.</td></tr>
+      <tr><td><code>poll(id)</code></td><td>Refresh health + metrics for one node; flips <code>status</code> to <code>'unreachable'</code> on failure. Returns <code>undefined</code> if the id is unknown.</td></tr>
+      <tr><td><code>clientFor(id)</code></td><td>A <code>NodeClient</code> pointed at the node's <code>identity.baseUrl</code> using its <code>authToken</code> (or the shared token). <code>undefined</code> if not linked.</td></tr>
+      <tr><td><code>readyByRole(role)</code></td><td>All <code>enabled</code> nodes with <code>status === 'ready'</code> and the given role — the LB's target pool.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="LoadBalancer">LoadBalancer class</h2>
+  <pre><code><span class="kw">class</span> LoadBalancer {
+  constructor(opts: LoadBalancerOptions);
+  rpsSnapshot(): Record&lt;<span class="kw">string</span>, <span class="kw">number</span>&gt;;
+  handle(req: IncomingMessage, res: ServerResponse): Promise&lt;<span class="kw">void</span>&gt;;
+  countersSnapshot(): Record&lt;<span class="kw">string</span>, <span class="kw">number</span>&gt;;
+  listen(port: <span class="kw">number</span>, host = <span class="str">'0.0.0.0'</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>The central's reverse proxy on <code>cluster.lbPort</code> (default 8080). Round-robins incoming HTTP
+     across every <em>ready backend node</em> in the registry (<code>role === 'backend'</code>), streaming
+     the raw request/response (SSE, uploads, and regular JSON all pass through untouched). Stamps
+     <code>x-bhooai-node</code> on the response so you can see which node served each request. Handles
+     CORS preflight (<code>204</code>), appends <code>x-forwarded-{for,proto,host}</code>, and drops
+     <code>set-cookie</code> headers from upstream (handled by the framework's cookie layer). Returns
+     <code>503</code> when no backend node is registered and <code>502</code> on an upstream error.</p>
+  <h4>LoadBalancerOptions (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>registry</code></td><td><code>NodeRegistry</code></td><td>Required. The registry to read targets from.</td></tr>
+      <tr><td><code>port?</code></td><td><code>number</code></td><td>Listen port. <code>ClusterManager.listenLb</code> passes <code>config.lbPort</code>.</td></tr>
+      <tr><td><code>host?</code></td><td><code>string</code></td><td>Bind host. <code>ClusterManager.listenLb</code> passes <code>config.lbHost</code>.</td></tr>
+    </tbody>
+  </table>
+  <h4>Members</h4>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>rpsSnapshot()</code></td><td>Requests-per-second per node over the last 10s (the autoscaler's RPS source). Includes idle nodes at <code>0</code>.</td></tr>
+      <tr><td><code>handle(req, res)</code></td><td>Dispatch one request to the next target. Low-level — <code>ClusterManager</code> wires <code>createServer</code> to this.</td></tr>
+      <tr><td><code>countersSnapshot()</code></td><td>Raw aggregated request counters per backend node (no time windowing).</td></tr>
+      <tr><td><code>listen(port, host?)</code></td><td>Bind the proxy; <code>host</code> defaults to <code>'0.0.0.0'</code>.</td></tr>
+      <tr><td><code>close()</code></td><td>Stop the proxy server.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="Autoscaler">Autoscaler class</h2>
+  <pre><code><span class="kw">class</span> Autoscaler {
+  constructor(deps: AutoscalerDeps, cfg: ClusterConfig[<span class="str">'autoscale'</span>]);
+  tick(): Promise&lt;DeterministicDecision&gt;;
+  start(intervalMs = 10_000): <span class="kw">void</span>;
+  stop(): <span class="kw">void</span>;
+}</code></pre>
+  <p>Samples the LB's RPS histogram and node metrics, then decides scale-up / scale-down. Two layers:
+     (1) deterministic guardrails — RPS-per-node and CPU hysteresis, always active in <code>auto</code>
+     mode; (2) an optional AI advisor whose proposal is only followed when it stays inside the
+     <code>[minNodes, maxNodes]</code> rails. On AI failure / <code>null</code> / off-rail answers, the
+     deterministic rules take over, so auto mode can never breach the hard limits. <code>manual</code>
+     mode always holds.</p>
+  <h4>AutoscalerDeps (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>registry</code></td><td><code>NodeRegistry</code></td><td>Required. Source of ready nodes + last metrics.</td></tr>
+      <tr><td><code>lb</code></td><td><code>LoadBalancer</code></td><td>Required. Source of the RPS snapshot.</td></tr>
+      <tr><td><code>scaleUp?</code></td><td><code>(reason: string) =&gt; Promise&lt;void&gt;</code></td><td>Called when the autoscaler wants to add a ready node/branch.</td></tr>
+      <tr><td><code>scaleDown?</code></td><td><code>(reason: string) =&gt; Promise&lt;void&gt;</code></td><td>Called to drain + retire one backend node.</td></tr>
+      <tr><td><code>ai?</code></td><td><code>AiAdvisor</code></td><td>Optional AI decision surface.</td></tr>
+    </tbody>
+  </table>
+  <h4>AiAdvisor (interface)</h4>
+  <pre><code><span class="kw">interface</span> AiAdvisor {
+  decide(input: AutoscaleInput): Promise&lt;DeterministicDecision | <span class="kw">null</span>&gt;;
+}</code></pre>
+  <h4>AutoscaleInput</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>minNodes</code> / <code>maxNodes</code></td><td><code>number</code></td><td>Hard rails.</td></tr>
+      <tr><td><code>currentBackendNodes</code></td><td><code>number</code></td><td>Current ready backend count.</td></tr>
+      <tr><td><code>totalRps</code> / <code>perNodeRps</code></td><td><code>number</code></td><td>Aggregate and per-node RPS over the last 10s.</td></tr>
+      <tr><td><code>cpu</code></td><td><code>number | null</code></td><td>Average CPU% across ready nodes (currently always <code>0</code> — see <code>NodeMetricsSample</code>).</td></tr>
+      <tr><td><code>mode</code></td><td><code>'auto' | 'manual'</code></td><td>Autoscale mode.</td></tr>
+    </tbody>
+  </table>
+  <h4>DeterministicDecision</h4>
+  <pre><code><span class="kw">type</span> DeterministicDecision =
+  | { action: <span class="str">'scale-up'</span>; reason: <span class="kw">string</span> }
+  | { action: <span class="str">'scale-down'</span>; reason: <span class="kw">string</span> }
+  | { action: <span class="str">'hold'</span>; reason: <span class="kw">string</span> };</code></pre>
+  <h4>Members</h4>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>tick()</code></td><td>One decision cycle. Returns the action taken (or <code>{ action: 'hold', reason: 'cooldown' | 'manual mode' | 'within thresholds' }</code>). Honours <code>cooldownMs</code> between non-hold decisions.</td></tr>
+      <tr><td><code>start(intervalMs?)</code></td><td>Run <code>tick()</code> on a loop; <code>intervalMs</code> defaults to 10000ms. Idempotent — a second call while running is a no-op.</td></tr>
+      <tr><td><code>stop()</code></td><td>Stop the loop (the in-flight tick finishes).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="HttpAiAdvisor">HttpAiAdvisor class</h2>
+  <pre><code><span class="kw">class</span> HttpAiAdvisor <span class="kw">implements</span> AiAdvisor {
+  constructor(opts: AiAdvisorOptions);
+  decide(input: AutoscaleInput): Promise&lt;DeterministicDecision | <span class="kw">null</span>&gt;;
+}</code></pre>
+  <p>The "AI manages it automatically" layer. Sends the observed cluster metrics to the BhooAI Nexus AI
+     server and asks for a bounded scale action. If the AI errors or answers with anything other than
+     <code>scale-up</code> / <code>scale-down</code> / <code>hold</code>, returns <code>null</code> and the
+     caller's deterministic guardrails remain authoritative. The rail check (<code>[minNodes, maxNodes]</code>)
+     happens in the <code>Autoscaler</code>, not here.</p>
+  <h4>AiAdvisorOptions (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>serverUrl</code></td><td><code>string</code></td><td>—</td><td>AI server base URL.</td></tr>
+      <tr><td><code>timeoutMs?</code></td><td><code>number</code></td><td>—</td><td>Request timeout (ms). Passed to <code>AiClient</code>.</td></tr>
+      <tr><td><code>model?</code></td><td><code>string</code></td><td><code>'gpt-4o-mini'</code></td><td>Model for the scale decision.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="ClusterManager">ClusterManager class</h2>
+  <pre><code><span class="kw">class</span> ClusterManager {
+  <span class="kw">readonly</span> registry: NodeRegistry;
+  <span class="kw">readonly</span> lb: LoadBalancer;
+  <span class="kw">readonly</span> autoscaler: Autoscaler;
+  <span class="kw">readonly</span> config: ClusterConfig;
+  <span class="kw">readonly</span> root: <span class="kw">string</span>;
+  constructor(opts: ClusterManagerOptions);
+  link(agentUrl: <span class="kw">string</span>, token?: <span class="kw">string</span>): Promise&lt;RegistryNode&gt;;
+  unlink(id: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  list(): RegistryNode[];
+  exec(id: <span class="kw">string</span>, command: <span class="kw">string</span>, args: <span class="kw">string</span>[] = [], target?: <span class="kw">string</span>): Promise&lt;NodeExecResult&gt;;
+  rps(): Record&lt;<span class="kw">string</span>, <span class="kw">number</span>&gt;;
+  scaleTo(n: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  setEnabled(id: <span class="kw">string</span>, enabled: <span class="kw">boolean</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  startNode(id: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  stopNode(id: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  restartNode(id: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  killNode(id: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  pollAll(): Promise&lt;<span class="kw">void</span>&gt;;
+  clientFor(id: <span class="kw">string</span>): NodeClient | <span class="kw">undefined</span>;
+  listenLb(host?: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Assembles the central-side components (registry + LB + autoscaler) from config and exposes the
+     high-level mesh operations the CLI and admin UI call: link, list, exec, scale, stop, start, kill.
+     When <code>aiServerUrl</code> is provided and <code>autoscale.mode === 'auto'</code>, wires an
+     <code>HttpAiAdvisor</code> into the autoscaler; otherwise the autoscaler runs on deterministic rules
+     only. <code>scaleUp</code> / <code>scaleDown</code> are wired to internal hooks that enable/disable
+     standby backend nodes.</p>
+  <h4>ClusterManagerOptions (constructor)</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>config</code></td><td><code>ClusterConfig</code></td><td>The <code>cluster</code> section of <code>NexusConfig</code> (see <a href="core.html#ClusterConfig">ClusterConfig</a>).</td></tr>
+      <tr><td><code>root</code></td><td><code>string</code></td><td>Project root — used to resolve <code>registryFile</code> + node source roots.</td></tr>
+      <tr><td><code>aiServerUrl?</code></td><td><code>string</code></td><td>AI server URL for the autonomous advisor. Only used in <code>auto</code> mode.</td></tr>
+    </tbody>
+  </table>
+  <h4>Readonly fields</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>registry</code></td><td>The <code>NodeRegistry</code>.</td></tr>
+      <tr><td><code>lb</code></td><td>The <code>LoadBalancer</code>.</td></tr>
+      <tr><td><code>autoscaler</code></td><td>The <code>Autoscaler</code> (not started — call its <code>start()</code> via the CLI).</td></tr>
+      <tr><td><code>config</code></td><td>The <code>ClusterConfig</code> passed in.</td></tr>
+      <tr><td><code>root</code></td><td>The project root.</td></tr>
+    </tbody>
+  </table>
+  <h4>Methods</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>link(agentUrl, token?)</code></td><td>Handshake a node by agent URL and register it. Optional <code>token</code> overrides the shared cluster token for per-node pairing (slave-generated). Delegates to <code>registry.link</code>.</td></tr>
+      <tr><td><code>unlink(id)</code></td><td>Remove a node from the registry.</td></tr>
+      <tr><td><code>list()</code></td><td>All linked nodes.</td></tr>
+      <tr><td><code>exec(id, command, args?, target?)</code></td><td>Run an allowlisted command on a node through its agent. Rejects if the node is not linked.</td></tr>
+      <tr><td><code>rps()</code></td><td>Current LB RPS snapshot (per node).</td></tr>
+      <tr><td><code>scaleTo(n)</code></td><td>Scale to exactly <code>n</code> backend nodes, clamped to <code>[minNodes, maxNodes]</code>. Enables disabled ready standby nodes to grow; disables excess ready nodes to shrink. Throws if there aren't enough standby nodes.</td></tr>
+      <tr><td><code>setEnabled(id, enabled)</code></td><td>Toggle a node's <code>enabled</code> flag and re-poll it.</td></tr>
+      <tr><td><code>startNode(id)</code></td><td><code>exec('start')</code> then poll.</td></tr>
+      <tr><td><code>stopNode(id)</code></td><td><code>exec('stop')</code> then poll.</td></tr>
+      <tr><td><code>restartNode(id)</code></td><td><code>exec('restart')</code> then poll.</td></tr>
+      <tr><td><code>killNode(id)</code></td><td><code>exec('stop')</code> then poll (same as <code>stopNode</code>).</td></tr>
+      <tr><td><code>pollAll()</code></td><td>Poll every linked node once (health + metrics).</td></tr>
+      <tr><td><code>clientFor(id)</code></td><td>Persistent <code>NodeClient</code> for a node (for scripts/audit).</td></tr>
+      <tr><td><code>listenLb(host?)</code></td><td>Start the LB on <code>config.lbPort</code>; <code>host</code> defaults to <code>config.lbHost</code>. No-op when <code>config.enabled === false</code>.</td></tr>
+      <tr><td><code>close()</code></td><td>Stop the autoscaler and close the LB.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Config</h2>
+  <p>Both sides read host/port/token from the <code>cluster</code> section of <code>nexus.config.ts</code>.
+     See <a href="core.html#ClusterConfig">ClusterConfig</a> in the Core API for the full field reference
+     and <a href="core.html">ClusterAutoscaleConfig</a> for the autoscaler sub-config. The config
+     <em>defaults</em> for <code>lbHost</code> and <code>nodeAgentHost</code> are <code>'127.0.0.1'</code>
+     (loopback) — safe for single-host dev. The runtime <em>bind</em> default for
+     <code>NodeAgent.listen()</code> and <code>LoadBalancer.listen()</code> is <code>'0.0.0.0'</code>
+     (all interfaces) so the central can reach nodes across hosts; override either layer to lock down
+     exposure.</p>
+  <pre><code>cluster: {
+  enabled: <span class="num">true</span>,
+  failOpenSingleNode: <span class="num">true</span>,
+  <span class="com">// config defaults (loopback) — safe for single-host dev</span>
+  lbHost: <span class="str">'127.0.0.1'</span>, lbPort: <span class="num">8080</span>,
+  nodeAgentHost: <span class="str">'127.0.0.1'</span>, nodeAgentPort: <span class="num">7575</span>,
+  registryFile: <span class="str">'cluster.runtime.json'</span>,
+  token: <span class="str">'&lt;shared pairing secret&gt;'</span>,
+  autoscale: { enabled: <span class="num">true</span>, mode: <span class="str">'auto'</span>, minNodes: <span class="num">1</span>, maxNodes: <span class="num">4</span>,
+               cooldownMs: <span class="num">60_000</span>, cpuHigh: <span class="num">80</span>, rpsPerNodeHigh: <span class="num">15</span>, rpsPerNodeLow: <span class="num">5</span> },
+}
+<span class="com">// at runtime, agent.listen() and lb.listen() bind 0.0.0.0 unless overridden</span></code></pre>
+
+  <h2>Flow</h2>
+  <pre><code><span class="com">// node side — run this machine as part of the mesh</span>
+nexus node serve --role=backend --port=7575
+
+<span class="com">// central side — hold the registry + LB + autoscaler</span>
+nexus cluster serve
+
+<span class="com">// register a node by its agent URL (handshake + /info + /health)</span>
+nexus cluster link http://&lt;node-host&gt;:7575
+
+<span class="com">// observe / control</span>
+nexus cluster status          <span class="com">// linked nodes + LB RPS</span>
+nexus cluster scale 3         <span class="com">// target exactly 3 backend nodes</span>
+nexus cluster start|stop|restart|kill &lt;id&gt;</code></pre>
+
+  <h2>Autoscaler</h2>
+  <p>Every 10s (default) the <code>Autoscaler</code> samples the LB's RPS histogram and node metrics,
+     then acts: scale up when per-node RPS &gt; <code>rpsPerNodeHigh</code> or CPU &gt; <code>cpuHigh</code>,
+     scale down when per-node RPS &lt; <code>rpsPerNodeLow</code> (never below <code>minNodes</code>, never
+     above <code>maxNodes</code>). In <code>auto</code> mode an AI advisor may propose a move, which is
+     only accepted when it stays inside the rails; any failure or off-rail answer falls back to the
+     deterministic rules. Because <code>NodeMetricsSample.cpu</code> is always <code>0</code> in the
+     inbuilt agent, the CPU rail never triggers in practice — RPS-per-node is the effective signal.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Cluster / Mesh API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Cluster - round-robin LB","apiBase":"http://localhost:4000","js":"function makeLB() {\n  let rr = 0;\n  return (targets) =\u003e {\n    if (!targets.length) return null;\n    const t = targets[rr % targets.length];\n    rr = (rr + 1) % targets.length;\n    return t;\n  };\n}\nconst lb = makeLB();\nconst nodes = [\"node-A\",\"node-B\",\"node-C\"];\nconsole.log(\"requests -\u003e\", Array.from({ length: 7 }, () =\u003e lb(nodes)).join(\", \"));\nconsole.log(\"scale up? (rps 45, high 40):\", 45 \u003e 40);\nconsole.log(\"rps/node 80 over 2 -\u003e\", 80 / 2, \"| over 3 -\u003e\", 80 / 3);","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "name": "@bhooai/admin",
+  "version": "0.1.5",
+  "description": "BhooAI Nexus admin SPA — vendored framework package",
+  "type": "module",
+  "author": "",
+  "license": "UNLICENSED",
+  "main": "./src/App.tsx",
+  "types": "./src/App.tsx",
+  "exports": {
+    ".": "./src/App.tsx",
+    "./package.json": "./package.json",
+    "./style.css": "./src/index.css"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@bhooai/nexus-safe-goto": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.2"
+  }
+}

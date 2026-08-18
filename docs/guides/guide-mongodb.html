@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MongoDB CRUD — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>MongoDB CRUD <span class="sub">End-to-end ODM operations with <code>@bhooai/nexus-data</code> — connect, schema, model, create, read, update, delete, populate, transactions, and <code>$jsonSchema</code> validators. A from-scratch ODM on the official <code>mongodb</code> driver (no mongoose).</span></h1>
+
+  <h2>1. Connect</h2>
+  <p><code>connect(uri)</code> opens the single shared connection and registers it on the
+     <code>ConnectionManager</code>. The underlying <code>MongoClient</code> is lazy — it connects on first
+     <code>db</code> access:</p>
+  <pre><code><span class="kw">import</span> { connect, getConnection, model, Schema, transaction } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+<span class="kw">await</span> connect(config.db.uri, {
+  name: <span class="str">'myapp'</span>,
+  autoIndex: <span class="num">true</span>,
+});
+<span class="kw">await</span> getConnection().db;          <span class="com">// forces the driver to connect</span></code></pre>
+
+  <h2>2. Schema definition</h2>
+  <p>Fields declare <code>type</code>, <code>required</code>, <code>index</code>/<code>unique</code>,
+     <code>default</code>, <code>immutable</code>, and <code>ref</code> (or <code>refPath</code> for dynamic
+     refs). Schema-level options add <code>timestamps</code>, <code>collection</code>, and <code>strict</code>:</p>
+  <pre><code><span class="kw">const</span> postSchema = <span class="kw">new</span> Schema({
+  title:    { type: String, required: <span class="num">true</span>, trim: <span class="num">true</span>, maxlength: <span class="num">200</span> },
+  slug:     { type: String, required: <span class="num">true</span>, unique: <span class="num">true</span>, immutable: <span class="num">true</span> },
+  body:     { type: String, required: <span class="num">true</span> },
+  author:   { type: <span class="str">'ObjectId'</span>, ref: <span class="str">'User'</span>, required: <span class="num">true</span>, index: <span class="num">true</span> },
+  tags:     { type: [String], default: () =&gt; [] },
+  views:    { type: Number, default: <span class="num">0</span>, min: <span class="num">0</span>, immutable: <span class="num">true</span> },
+  status:   { type: String, enum: [<span class="str">'draft'</span>, <span class="str">'live'</span>, <span class="str">'archived'</span>], default: <span class="str">'draft'</span> },
+  publishedAt: { type: Date, default: <span class="kw">null</span> },
+}, { timestamps: <span class="num">true</span>, collection: <span class="str">'posts'</span>, strict: <span class="num">true</span> });</code></pre>
+
+  <div class="callout note">
+    <span class="label">immutable</span>
+    An <code>immutable</code> field can be set on <code>create</code> but never changed afterwards. Use it for
+    <code>slug</code>, <code>author</code>, or audit fields that must not drift.
+  </div>
+
+  <h2>3. Model creation</h2>
+  <pre><code><span class="kw">const</span> Post = model&lt;PostDoc&gt;(<span class="str">'Post'</span>, postSchema);
+<span class="com">// indexes are created on connect (autoIndex: true)</span></code></pre>
+
+  <h2>4. Create</h2>
+  <p><code>Model.create</code> builds <strong>new</strong> instances (<code>_isNew = true</code>), applies
+     defaults, validates, then inserts:</p>
+  <pre><code><span class="kw">const</span> [post] = <span class="kw">await</span> Post.create([{
+  title: <span class="str">'Hello Nexus'</span>,
+  slug:  <span class="str">'hello-nexus'</span>,
+  body:  <span class="str">'First post.'</span>,
+  author: userId,
+  status: <span class="str">'draft'</span>,
+}]);
+<span class="com">// post._id is now set; post.createdAt / updatedAt auto-populated</span></code></pre>
+
+  <h2>5. Read — find chain</h2>
+  <p>A fluent query builder: <code>find</code>, <code>where</code>, operators like <code>gt</code>,
+     <code>sort</code>, <code>limit</code>, <code>populate</code>, <code>lean</code>:</p>
+  <pre><code><span class="kw">const</span> top = <span class="kw">await</span> Post
+  .find({ status: <span class="str">'live'</span> })
+  .where(<span class="str">'views'</span>).gt(<span class="num">100</span>)
+  .sort(<span class="str">'-publishedAt'</span>)
+  .limit(<span class="num">10</span>)
+  .populate(<span class="str">'author'</span>, <span class="str">'name email'</span>)   <span class="com">// batched, no N+1</span>
+  .lean();                                <span class="com">// plain objects, no proxies</span></code></pre>
+
+  <h3>Read one</h3>
+  <pre><code><span class="kw">const</span> byId    = <span class="kw">await</span> Post.findById(id);              <span class="com">// 24-char hex → ObjectId</span>
+<span class="kw">const</span> bySlug  = <span class="kw">await</span> Post.findOne({ slug: <span class="str">'hello-nexus'</span> });</code></pre>
+
+  <h2>6. Update</h2>
+  <pre><code><span class="kw">await</span> Post.updateOne(
+  { _id: post._id },
+  { $set: { status: <span class="str">'live'</span>, publishedAt: <span class="kw">new</span> Date() } },
+);
+
+<span class="kw">const</span> updated = <span class="kw">await</span> Post.findByIdAndUpdate(
+  post._id,
+  { $inc: { views: <span class="num">1</span> } },                       <span class="com">// immutable: views stays a Number</span>
+  { returnDocument: <span class="str">'after'</span> },
+);</code></pre>
+
+  <h2>7. Delete</h2>
+  <pre><code><span class="kw">await</span> Post.deleteOne({ _id: post._id });
+<span class="kw">await</span> Post.findByIdAndDelete(post._id);</code></pre>
+
+  <h2>8. Populate (joins)</h2>
+  <p>Populate is batched — one extra query per relation regardless of how many docs reference it. Use a field
+     projection string to limit the joined fields:</p>
+  <pre><code><span class="kw">const</span> live = <span class="kw">await</span> Post.find({ status: <span class="str">'live'</span> }).populate(<span class="str">'author'</span>, <span class="str">'name email'</span>).lean();
+<span class="com">// live[0].author === { _id, name, email }   (not the full user doc)</span></code></pre>
+
+  <div class="callout warn">
+    <span class="label">Always lean() for serialization</span>
+    Serialize via <code>lean()</code> (queries) or <code>toObject()</code> (instances). Spreading a
+    <code>DocumentInstance</code> proxy leaks internal fields including a circular <code>_model</code>.
+  </div>
+
+  <h2>9. Transactions</h2>
+  <p><code>transaction(fn)</code> wraps the callback in a driver <code>session.withTransaction</code>. Pass the
+     session into each operation via the options. On throw the transaction aborts automatically:</p>
+  <pre><code><span class="kw">await</span> transaction(<span class="kw">async</span> (session) =&gt; {
+  <span class="kw">const</span> [p] = <span class="kw">await</span> Post.create([{ title, slug, body, author: uid }], { session });
+  <span class="kw">await</span> User.updateOne({ _id: uid }, { $inc: { postCount: <span class="num">1</span> } }, { session });
+  <span class="kw">return</span> p;
+});</code></pre>
+
+  <h2>10. $jsonSchema validators</h2>
+  <p>MongoDB collection validators enforce shape at the database layer — a backstop for direct driver writes.
+     Define them with <code>createCollection</code> and a <code>$jsonSchema</code> validator:</p>
+  <pre><code><span class="kw">await</span> db.createCollection(<span class="str">'posts'</span>, {
+  validator: {
+    $jsonSchema: {
+      bsonType: <span class="str">'object'</span>,
+      required: [<span class="str">'title'</span>, <span class="str">'slug'</span>, <span class="str">'author'</span>, <span class="str">'status'</span>],
+      properties: {
+        title:    { bsonType: <span class="str">'string'</span>, maxLength: <span class="num">200</span> },
+        slug:     { bsonType: <span class="str">'string'</span>, pattern: <span class="str">'^[a-z0-9-]+$'</span> },
+        author:   { bsonType: <span class="str">'objectId'</span> },
+        views:    { bsonType: <span class="str">'int'</span>, minimum: <span class="num">0</span> },
+        status:   { enum: [<span class="str">'draft'</span>, <span class="str">'live'</span>, <span class="str">'archived'</span>] },
+        publishedAt: { bsonType: [<span class="str">'date'</span>, <span class="str">'null'</span>] },
+      },
+    },
+  },
+  validationLevel: <span class="str">'strict'</span>,
+  validationAction: <span class="str">'error'</span>,
+});</code></pre>
+
+  <div class="callout note">
+    <span class="label">Two layers</span>
+    The ODM schema is the front gate (app-level errors, friendly messages). The <code>$jsonSchema</code>
+    validator is the back gate (any direct <code>mongo</code> shell or migration write is also constrained).
+    Use both.
+  </div>
+
+  <h2>11. Count</h2>
+  <pre><code><span class="kw">const</span> total    = <span class="kw">await</span> Post.countDocuments({ status: <span class="str">'live'</span> });
+<span class="kw">const</span> drafts   = <span class="kw">await</span> Post.countDocuments({ status: <span class="str">'draft'</span> });
+<span class="kw">const</span> byAuthor = <span class="kw">await</span> Post.countDocuments({ author: uid });</code></pre>
+
+  <h2>12. Complete example — Post model with CRUD routes</h2>
+  <p>Tie it together: schema, model, and a small router covering list / get / create / update / delete:</p>
+  <pre><code><span class="com">// postModel.ts</span>
+<span class="kw">const</span> postSchema = <span class="kw">new</span> Schema({
+  title:       { type: String, required: <span class="num">true</span>, maxlength: <span class="num">200</span> },
+  slug:        { type: String, required: <span class="num">true</span>, unique: <span class="num">true</span>, immutable: <span class="num">true</span> },
+  body:        { type: String, required: <span class="num">true</span> },
+  author:      { type: <span class="str">'ObjectId'</span>, ref: <span class="str">'User'</span>, required: <span class="num">true</span>, index: <span class="num">true</span> },
+  tags:        { type: [String], default: () =&gt; [] },
+  views:       { type: Number, default: <span class="num">0</span>, min: <span class="num">0</span>, immutable: <span class="num">true</span> },
+  status:      { type: String, enum: [<span class="str">'draft'</span>, <span class="str">'live'</span>, <span class="str">'archived'</span>], default: <span class="str">'draft'</span> },
+  publishedAt: { type: Date, default: <span class="kw">null</span> },
+}, { timestamps: <span class="num">true</span>, collection: <span class="str">'posts'</span> });
+
+postSchema.pre(<span class="str">'save'</span>, <span class="kw">function</span> () {
+  <span class="kw">if</span> (<span class="kw">this</span>.isModified(<span class="str">'title'</span>) &amp;&amp; !<span class="kw">this</span>.slug) {
+    <span class="kw">this</span>.slug = <span class="kw">this</span>.title.toLowerCase().replace(/[^a-z0-9]+/g, <span class="str">'-'</span>).replace(/^-|-$/g, <span class="str">''</span>);
+  }
+});
+
+<span class="kw">export const</span> Post = model(<span class="str">'Post'</span>, postSchema);
+
+<span class="com">// postRoutes.ts</span>
+router.get(<span class="str">'/posts'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> { status = <span class="str">'live'</span>, limit = <span class="num">20</span>, page = <span class="num">1</span> } = ctx.query;
+  <span class="kw">const</span> posts = <span class="kw">await</span> Post.find({ status })
+    .sort(<span class="str">'-publishedAt'</span>)
+    .skip((page - <span class="num">1</span>) * limit)
+    .limit(+limit)
+    .populate(<span class="str">'author'</span>, <span class="str">'name email'</span>)
+    .lean();
+  ctx.body = { posts, total: <span class="kw">await</span> Post.countDocuments({ status }) };
+});
+
+router.get(<span class="str">'/posts/:id'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> post = <span class="kw">await</span> Post.findById(ctx.params.id).populate(<span class="str">'author'</span>).lean();
+  <span class="kw">if</span> (!post) <span class="kw">throw new</span> NotFoundError(<span class="str">'post'</span>);
+  ctx.body = { post };
+});
+
+router.post(<span class="str">'/posts'</span>, requireAuth(), <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> [post] = <span class="kw">await</span> Post.create([{ ...ctx.request.body, author: ctx.state.user.id }]);
+  ctx.status = <span class="num">201</span>; ctx.body = { post: post.toObject() };
+});
+
+router.patch(<span class="str">'/posts/:id'</span>, requireAuth(), <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> post = <span class="kw">await</span> Post.findByIdAndUpdate(ctx.params.id,
+    { $set: ctx.request.body }, { returnDocument: <span class="str">'after'</span> }).lean();
+  ctx.body = { post };
+});
+
+router.delete(<span class="str">'/posts/:id'</span>, requireAuth(), requireRole(<span class="str">'admin'</span>), <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">await</span> Post.findByIdAndDelete(ctx.params.id);
+  ctx.status = <span class="num">204</span>;
+});</code></pre>
+
+  <div class="callout danger">
+    <span class="label">create() vs hydrate()</span>
+    <code>create()</code> marks documents <code>_isNew = true</code> so <code>save()</code> inserts.
+    <code>hydrate()</code> marks them persisted so <code>save()</code> updates. Never hydrate when you mean
+    create — it will silently run an update with an empty filter.
+  </div>
+
+  <p class="foot"><a href="guide-uploads.html">← Upload Files</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-graphql.html">GraphQL API →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · MongoDB CRUD</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

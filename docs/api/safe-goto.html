@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SafeGoto API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-safe-goto</span> SafeGoto API
+    <span class="sub">Safe external-link navigation for React — noopener + noreferrer, with an optional confirmation dialog.</span></h1>
+
+  <p>A React utility for safe external-link navigation. It prevents <strong>tab-nabbing</strong>
+     (the opened page can't reach back into the opener via <code>window.opener</code>) and
+     <strong>referrer leakage</strong> (the opened page can't see the admin panel URL) by always
+     opening external links with <code>noopener,noreferrer</code>. An optional confirmation dialog
+     intercepts external links so the user reviews the destination URL before leaving the app.
+     Used by the admin console.</p>
+
+  <div class="callout note">
+    <span class="label">Security rationale</span>
+    <code>noopener</code> prevents the opened page from accessing <code>window.opener</code>
+    (tab-nabbing — a malicious page could otherwise redirect or script the opener tab).<br>
+    <code>noreferrer</code> prevents referrer leakage — the opened page can't read the
+    <code>Referer</code> header and learn the admin panel URL. Both are always applied by
+    <code>openSafe</code> and by the dialog's "Continue" action.
+  </div>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>types</td><td><code>SafeGotoOptions</code></td></tr>
+      <tr><td>registry</td><td><code>registerSafeGoto</code>, <code>unregisterSafeGoto</code></td></tr>
+      <tr><td>navigation</td><td><code>safeGoto</code>, <code>openSafe</code>, <code>isExternalUrl</code>, <code>interceptExternalLinks</code></td></tr>
+      <tr><td>components</td><td><code>SafeGotoDialog</code>, <code>SafeGotoLink</code></td></tr>
+      <tr><td>default</td><td><code>default</code> (= <code>SafeGotoDialog</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { SafeGotoDialog, SafeGotoLink, safeGoto, interceptExternalLinks } <span class="kw">from</span> <span class="str">'@bhooai/nexus-safe-goto'</span>;
+
+<span class="com">// 1. Mount the dialog ONCE at the app root.</span>
+<span class="kw">function</span> App() {
+  <span class="kw">return</span> (
+    &lt;&gt;
+      &lt;SafeGotoDialog /&gt;
+      &lt;Routes /&gt;
+    &lt;/&gt;
+  );
+}
+
+<span class="com">// 2a. Use the link component (renders an &lt;a&gt;).</span>
+&lt;SafeGotoLink href=<span class="str">"https://openai.com"</span>&gt;OpenAI&lt;/SafeGotoLink&gt;
+
+<span class="com">// 2b. Or trigger programmatically.</span>
+&lt;button onClick={() =&gt; safeGoto(<span class="str">"https://openai.com"</span>)}&gt;Go&lt;/button&gt;
+
+<span class="com">// 2c. Or intercept ALL external &lt;a&gt; clicks via a delegated handler.</span>
+&lt;div onClick={interceptExternalLinks}&gt;
+  {userGeneratedContentWithAnchors}
+&lt;/div&gt;</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Fallback when no dialog is mounted</span>
+    If <code>SafeGotoDialog</code> is <strong>not</strong> mounted, <code>safeGoto(url)</code> falls back
+    to <code>openSafe(url)</code> — a direct <code>window.open(url, '_blank', 'noopener,noreferrer')</code>.
+    The link still opens safely (noopener + noreferrer), just without the confirmation prompt. Mount the
+    dialog at the app root to get the confirmation UX.
+  </div>
+
+  <h2>Types</h2>
+
+  <h3 id="SafeGotoOptions">SafeGotoOptions</h3>
+  <pre><code><span class="kw">interface</span> SafeGotoOptions {
+  label?: <span class="kw">string</span>;
+  message?: <span class="kw">string</span>;
+}</code></pre>
+  <p>Options for the confirmation dialog. Passed to <code>safeGoto</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>label?</code></td><td><code>string</code></td><td>hostname of the URL</td><td>Label shown in the dialog (defaults to the URL's hostname).</td></tr>
+      <tr><td><code>message?</code></td><td><code>string</code></td><td>built-in warning</td><td>Optional message override shown in the dialog body.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Registry</h2>
+  <p>A module-level singleton holds the dialog's state setter. <code>SafeGotoDialog</code> registers on
+     mount and unregisters on unmount; <code>safeGoto</code> calls the registered setter to show the
+     dialog. You normally don't call these directly — the dialog wires them for you.</p>
+
+  <h3 id="registerSafeGoto">registerSafeGoto(setter)</h3>
+  <pre><code><span class="kw">function</span> registerSafeGoto(setter: (nav: { url: <span class="kw">string</span>; label: <span class="kw">string</span>; message?: <span class="kw">string</span> } | <span class="kw">null</span>) =&gt; <span class="kw">void</span>): <span class="kw">void</span></code></pre>
+  <p>Register the dialog's state setter. Called by <code>&lt;SafeGotoDialog /&gt;</code> on mount via
+     <code>useEffect</code>. After this, <code>safeGoto()</code> will route requests to the mounted dialog
+     instead of opening directly.</p>
+
+  <h3 id="unregisterSafeGoto">unregisterSafeGoto()</h3>
+  <pre><code><span class="kw">function</span> unregisterSafeGoto(): <span class="kw">void</span></code></pre>
+  <p>Clear the registered setter. Called by <code>&lt;SafeGotoDialog /&gt;</code> on unmount (the
+     <code>useEffect</code> cleanup). After this, <code>safeGoto()</code> falls back to
+     <code>openSafe</code>.</p>
+
+  <h2>Navigation</h2>
+
+  <h3 id="safeGoto">safeGoto(url, opts?)</h3>
+  <pre><code><span class="kw">function</span> safeGoto(url: <span class="kw">string</span>, opts: SafeGotoOptions = {}): <span class="kw">void</span></code></pre>
+  <p>Trigger the safe-goto confirmation dialog for an external URL. If a dialog is mounted (via
+     <code>registerSafeGoto</code>), it opens the modal with the URL and a "Stay here" / "Continue to
+     {hostname}" choice. If <strong>no</strong> dialog is mounted, falls back to
+     <code>window.open(url, '_blank', 'noopener,noreferrer')</code> directly.</p>
+  <pre><code>safeGoto(<span class="str">"https://openai.com"</span>);
+safeGoto(<span class="str">"https://openai.com"</span>, { label: <span class="str">"OpenAI"</span>, message: <span class="str">"You are leaving the admin console."</span> });</code></pre>
+
+  <h3 id="openSafe">openSafe(url)</h3>
+  <pre><code><span class="kw">function</span> openSafe(url: <span class="kw">string</span>): <span class="kw">void</span></code></pre>
+  <p>Open a URL safely — always <code>noopener</code> + <code>noreferrer</code>. This is the primitive
+     the dialog's "Continue" button calls, and the fallback <code>safeGoto</code> uses when no dialog is
+     mounted. Use it directly when you want to open an external link <em>without</em> the confirmation
+     prompt but still want the security protections.</p>
+  <pre><code>openSafe(<span class="str">"https://openai.com"</span>); <span class="com">// window.open(url, '_blank', 'noopener,noreferrer')</span></code></pre>
+
+  <h3 id="isExternalUrl">isExternalUrl(url)</h3>
+  <pre><code><span class="kw">function</span> isExternalUrl(url: <span class="kw">string</span>): <span class="kw">boolean</span></code></pre>
+  <p>True if the URL's origin differs from <code>window.location.origin</code>; <code>false</code> on
+     parse error. Resolves relative URLs against the current page before comparing, so
+     <code>"/admin"</code> is internal while <code>"https://other.com/x"</code> is external.</p>
+  <pre><code>isExternalUrl(<span class="str">"https://openai.com"</span>);   <span class="com">// true</span>
+isExternalUrl(<span class="str">"/admin/users"</span>);        <span class="com">// false</span>
+isExternalUrl(<span class="str">"not a url"</span>);           <span class="com">// false (parse error)</span></code></pre>
+
+  <h3 id="interceptExternalLinks">interceptExternalLinks(e)</h3>
+  <pre><code><span class="kw">function</span> interceptExternalLinks(e: React.MouseEvent): <span class="kw">void</span></code></pre>
+  <p>A click handler that intercepts external <code>&lt;a&gt;</code> clicks and routes them through
+     <code>safeGoto</code>. Attach it to a container element (delegated handler) and any
+     <code>http(s)</code> external anchor inside will be intercepted. Internal links, non-anchor clicks,
+     and non-http(s) links (e.g. <code>mailto:</code>, <code>#anchors</code>) pass through untouched.</p>
+  <pre><code>&lt;div onClick={interceptExternalLinks}&gt;
+  {renderedMarkdownWithAnchors}
+&lt;/div&gt;</code></pre>
+  <p>Logic: finds the closest <code>&lt;a&gt;</code> ancestor of the click target; if its
+     <code>href</code> starts with <code>http://</code> or <code>https://</code> and
+     <code>isExternalUrl(href)</code> is true, calls <code>e.preventDefault()</code> then
+     <code>safeGoto(href)</code>. Otherwise lets the browser handle the click normally.</p>
+
+  <h2>Components</h2>
+
+  <h3 id="SafeGotoDialog">SafeGotoDialog</h3>
+  <pre><code><span class="kw">function</span> SafeGotoDialog(): JSX.Element | <span class="kw">null</span></code></pre>
+  <p>The confirmation dialog. Mount <strong>once</strong> at the app root. On mount it calls
+     <code>registerSafeGoto(setPending)</code>; on unmount it calls <code>unregisterSafeGoto()</code>. When
+     <code>safeGoto()</code> fires, the dialog receives the pending navigation and renders an overlay
+     modal with the destination URL, a security warning, and two actions:</p>
+  <ul>
+    <li><strong>Stay here</strong> — cancels (clears pending state, closes the dialog).</li>
+    <li><strong>Continue to {hostname} →</strong> — calls <code>openSafe(url)</code> then closes.</li>
+  </ul>
+  <p>Returns <code>null</code> when there's no pending navigation, so it renders nothing until triggered.
+     Clicking the overlay backdrop cancels. CSS classes used: <code>safe-goto-overlay</code>,
+     <code>safe-goto-dialog</code>, <code>safe-goto-icon-wrap</code>, <code>safe-goto-icon</code>,
+     <code>safe-goto-body</code>, <code>safe-goto-title</code>, <code>safe-goto-msg</code>,
+     <code>safe-goto-url</code>, <code>safe-goto-shield</code>, <code>safe-goto-warning</code>,
+     <code>safe-goto-actions</code>, <code>glass-chip-btn</code>, <code>glass-btn-primary</code>.</p>
+  <pre><code><span class="kw">import</span> SafeGotoDialog <span class="kw">from</span> <span class="str">'@bhooai/nexus-safe-goto'</span>; <span class="com">// default export</span>
+
+<span class="kw">function</span> App() {
+  <span class="kw">return</span> (
+    &lt;&gt;
+      &lt;SafeGotoDialog /&gt;
+      &lt;Router /&gt;
+    &lt;/&gt;
+  );
+}</code></pre>
+
+  <h3 id="SafeGotoLink">SafeGotoLink</h3>
+  <pre><code><span class="kw">function</span> SafeGotoLink(props: {
+  href: <span class="kw">string</span>;
+  children: React.ReactNode;
+  className?: <span class="kw">string</span>;
+}): JSX.Element</code></pre>
+  <p>A safe external link. Renders an <code>&lt;a&gt;</code> whose <code>onClick</code> calls
+     <code>e.preventDefault()</code> then <code>safeGoto(href)</code>, so the browser's default
+     navigation is replaced with the confirmation dialog. The <code>href</code> attribute is still set
+     (so middle-click / right-click / copy-link still work, and the anchor is crawlable). Default class
+     is <code>safe-goto-link</code>; pass <code>className</code> to override. The <code>title</code>
+     attribute is set to <code>"Open {hostname} in a new tab (safe)"</code>.</p>
+  <table>
+    <thead><tr><th>Prop</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>href</code></td><td><code>string</code></td><td>—</td><td>Destination URL.</td></tr>
+      <tr><td><code>children</code></td><td><code>React.ReactNode</code></td><td>—</td><td>Link content.</td></tr>
+      <tr><td><code>className?</code></td><td><code>string</code></td><td><code>'safe-goto-link'</code></td><td>CSS class for the <code>&lt;a&gt;</code>.</td></tr>
+    </tbody>
+  </table>
+  <pre><code>&lt;SafeGotoLink href=<span class="str">"https://openai.com"</span>&gt;OpenAI&lt;/SafeGotoLink&gt;
+&lt;SafeGotoLink href=<span class="str">"https://openai.com"</span> className=<span class="str">"my-link"</span>&gt;OpenAI&lt;/SafeGotoLink&gt;</code></pre>
+
+  <h2>Default export</h2>
+  <p>The default export is <code>SafeGotoDialog</code>.</p>
+  <pre><code><span class="kw">import</span> SafeGotoDialog <span class="kw">from</span> <span class="str">'@bhooai/nexus-safe-goto'</span>;
+<span class="com">// same as: import { SafeGotoDialog } from '@bhooai/nexus-safe-goto';</span></code></pre>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · SafeGoto API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"SafeGoto - isExternalUrl + registry/fallback","js":"// SafeGoto is a React utility, but its core logic is plain JS.\n// isExternalUrl mirrors the real package: only http(s) links whose origin\n// differs from the current page count as external. (In the package it reads\n// window.location.origin; we pass it in here so the logic is visible inside\n// the playground sandbox, where window.location is about:srcdoc.)\nfunction isExternalUrl(url, currentOrigin) {\n  try {\n    if (!/^https?:\\/\\//i.test(url)) return false;\n    const u = new URL(url, currentOrigin);\n    return u.origin !== currentOrigin;\n  } catch {\n    return false;\n  }\n}\nconst here = \"http://localhost:4000\";\nconsole.log(\"https://openai.com ->\", isExternalUrl(\"https://openai.com\", here));\nconsole.log(\"/admin/users       ->\", isExternalUrl(\"/admin/users\", here));\nconsole.log(\"same origin        ->\", isExternalUrl(here + \"/x\", here));\nconsole.log(\"mailto:hi@x.io     ->\", isExternalUrl(\"mailto:hi@x.io\", here));\nconsole.log(\"not a url          ->\", isExternalUrl(\"not a url\", here));\n\n// hostnameOf — extract hostname for the dialog label.\nfunction hostnameOf(url) { try { return new URL(url).hostname; } catch { return url; } }\nconsole.log(\"hostname           ->\", hostnameOf(\"https://openai.com/docs\"));\n\n// The registry: safeGoto routes to the mounted dialog, else falls back to openSafe.\nlet mountedSetter = null;\nfunction registerSafeGoto(setter) { mountedSetter = setter; }\nfunction unregisterSafeGoto() { mountedSetter = null; }\nfunction openSafe(url) { console.log(\"  openSafe -> window.open\", url, \"(noopener,noreferrer)\"); }\nfunction safeGoto(url, opts) {\n  opts = opts || {};\n  if (!mountedSetter) { console.log(\"  safeGoto: no dialog -> fallback\"); openSafe(url); return; }\n  mountedSetter({ url: url, label: opts.label || hostnameOf(url), message: opts.message });\n}\n\nconsole.log(\"\\n-- no dialog mounted --\");\nsafeGoto(\"https://openai.com\");\n\nconsole.log(\"-- dialog mounted --\");\nregisterSafeGoto(function (nav) { console.log(\"  dialog shows:\", JSON.stringify(nav)); });\nsafeGoto(\"https://openai.com\", { message: \"Leaving the admin console.\" });\nunregisterSafeGoto();\n\n// interceptExternalLinks only intercepts external http(s) <a> clicks.\nfunction shouldIntercept(href, currentOrigin) {\n  if (!href.startsWith(\"http://\") && !href.startsWith(\"https://\")) return false;\n  return isExternalUrl(href, currentOrigin);\n}\nconsole.log(\"\\nintercept https://openai.com ->\", shouldIntercept(\"https://openai.com\", here));\nconsole.log(\"intercept /admin/users       ->\", shouldIntercept(\"/admin/users\", here));\nconsole.log(\"intercept mailto:hi@x.io     ->\", shouldIntercept(\"mailto:hi@x.io\", here));"}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

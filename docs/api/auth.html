@@ -1,0 +1,697 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Auth &amp; Security API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-auth</span> Auth &amp; Security API
+    <span class="sub">CORS, CSRF, headers, rate limiting, JWT, sessions, RBAC, OAuth.</span></h1>
+
+  <p>One cohesive security + identity unit: CORS, CSRF, security headers, rate limiting, password
+     hashing, JWT, sessions with refresh-token rotation + theft detection, RBAC, and Google/Facebook
+     OAuth (PKCE). Built on <code>@bhooai/nexus-core</code> middleware.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>CORS</td><td><code>CorsOptions</code>, <code>cors()</code></td></tr>
+      <tr><td>CSRF</td><td><code>CsrfOptions</code>, <code>csrf()</code>, <code>issueCsrfToken()</code>, <code>checkWsUpgrade()</code></td></tr>
+      <tr><td>Headers</td><td><code>SecurityHeadersOptions</code>, <code>securityHeaders()</code></td></tr>
+      <tr><td>Rate limit</td><td><code>RateLimitOptions</code>, <code>RateLimitStore</code>, <code>memoryStore()</code>, <code>rateLimit()</code></td></tr>
+      <tr><td>Password</td><td><code>hashPassword()</code>, <code>verifyPassword()</code>, <code>isBcryptHash()</code></td></tr>
+      <tr><td>JWT</td><td><code>TokenPayload</code>, <code>JwtOptions</code>, <code>signAccessToken()</code>, <code>signRefreshToken()</code>, <code>verifyToken()</code></td></tr>
+      <tr><td>Session</td><td><code>Session</code>, <code>SessionStore</code>, <code>MemorySessionStore</code></td></tr>
+      <tr><td>RBAC</td><td><code>RoleRegistry</code>, <code>RoleDefinition</code>, <code>AuthUser</code>, <code>getUser()</code>, <code>requireAuth()</code>, <code>requireRole()</code>, <code>requirePermission()</code></td></tr>
+      <tr><td>OAuth</td><td><code>OAuthProfile</code>, <code>GoogleOAuthConfig</code>, <code>FacebookOAuthConfig</code>, <code>OAuthStateStore</code>, <code>MemoryOAuthStateStore</code>, <code>generateState()</code>, <code>generatePkceVerifier()</code>, <code>computePkceChallenge()</code>, <code>buildGoogleAuthUrl()</code>, <code>exchangeGoogleCode()</code>, <code>fetchGoogleProfile()</code>, <code>buildFacebookAuthUrl()</code>, <code>exchangeFacebookCode()</code>, <code>fetchFacebookProfile()</code></td></tr>
+      <tr><td>AuthService</td><td><code>AuthService</code>, <code>TokenPair</code>, <code>LoginInput</code></td></tr>
+      <tr><td>Middleware</td><td><code>AuthCookieOptions</code>, <code>readCookieValue()</code>, <code>setAuthCookies()</code>, <code>clearAuthCookies()</code>, <code>AuthTokenOptions</code>, <code>authToken()</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>AuthService</h2>
+  <p>High-level auth orchestrator. The app verifies credentials (via <code>verifyPassword</code> +
+     its user store) and calls <code>login()</code> to mint a session and token pair. Refresh tokens
+     are rotated on every refresh and bound to a session <strong>family</strong>; reuse of a
+     previously-rotated token revokes the whole family (refresh-token theft detection).</p>
+
+  <pre><code><span class="kw">const</span> auth = <span class="kw">new</span> AuthService(
+  { secret, algorithm: <span class="str">'HS256'</span>, issuer, audience, accessTtl: <span class="num">900</span>, refreshTtl: <span class="num">604800</span> },
+  <span class="kw">new</span> MemorySessionStore(), <span class="com">// or your Redis-backed SessionStore</span>
+);
+
+<span class="kw">const</span> pair = <span class="kw">await</span> auth.login({ userId, roles, meta: { ip } });
+<span class="com">// pair = { accessToken, refreshToken, sessionId, refreshExpiresAt }</span>
+
+<span class="kw">const</span> claims = <span class="kw">await</span> auth.verifyAccessToken(token);
+<span class="kw">const</span> fresh = <span class="kw">await</span> auth.refresh(refreshToken); <span class="com">// rotation + reuse detection</span>
+<span class="kw">await</span> auth.logout(sessionId);
+<span class="kw">await</span> auth.logoutAll(userId);</code></pre>
+
+  <h3 id="AuthService-constructor">constructor(jwt, sessions)</h3>
+  <pre><code><span class="kw">constructor</span>(jwt: JwtOptions, sessions: SessionStore)</code></pre>
+  <p>The JWT options (secret, TTLs, issuer/audience) and a session store (in-memory or Redis-backed).
+     TTLs are <strong>numbers of seconds</strong>, not duration strings.</p>
+
+  <h3 id="AuthService-login">login(input)</h3>
+  <pre><code><span class="kw">async</span> login(input: LoginInput): Promise&lt;TokenPair&gt;</code></pre>
+  <p>Create a session in the store and return a fresh access + refresh token pair bound to it.</p>
+
+  <h3 id="AuthService-refresh">refresh(refreshToken)</h3>
+  <pre><code><span class="kw">async</span> refresh(refreshToken: <span class="kw">string</span>): Promise&lt;TokenPair&gt;</code></pre>
+  <p>Verify a refresh token, rotate it (new <code>jti</code>), and return a fresh pair. If the
+     presented token's <code>jti</code> no longer matches the session's <code>currentJti</code>, the
+     token has been reused after rotation → the <strong>entire session family is revoked</strong> and
+     an <code>AuthenticationError('Refresh token reuse detected; session revoked')</code> is thrown.</p>
+  <div class="callout note">
+    <span class="label">Reuse detection</span>
+    Each refresh mints a new <code>jti</code> and records it on the session. A stolen,
+    already-rotated token presented <em>after</em> the legitimate user has refreshed trips the
+    mismatch and burns the whole family — the attacker and the victim must both re-authenticate.
+  </div>
+
+  <h3 id="AuthService-logout">logout(sessionId)</h3>
+  <pre><code><span class="kw">async</span> logout(sessionId: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>End a single session (logout).</p>
+
+  <h3 id="AuthService-logoutAll">logoutAll(userId)</h3>
+  <pre><code><span class="kw">async</span> logoutAll(userId: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>End every session for a user (logout everywhere).</p>
+
+  <h3 id="AuthService-verifyAccessToken">verifyAccessToken(accessToken)</h3>
+  <pre><code><span class="kw">async</span> verifyAccessToken(accessToken: <span class="kw">string</span>): Promise&lt;TokenPayload&gt;</code></pre>
+  <p>Verify an access token and return its payload (used by the <code>authToken</code> middleware).
+     Throws <code>AuthenticationError</code> if the token is invalid/expired or not an access token.</p>
+
+  <h3>TokenPair</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>accessToken</code></td><td><code>string</code></td><td>Short-lived JWT access token.</td></tr>
+      <tr><td><code>refreshToken</code></td><td><code>string</code></td><td>Rotating JWT refresh token (bound to the session's <code>currentJti</code>).</td></tr>
+      <tr><td><code>sessionId</code></td><td><code>string</code></td><td>Session id the pair belongs to.</td></tr>
+      <tr><td><code>refreshExpiresAt</code></td><td><code>number</code> (ms epoch)</td><td>Refresh-token expiry timestamp (used for cookie <code>Max-Age</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>LoginInput</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>userId</code></td><td><code>string</code></td><td>Subject (user id) for the session + JWT <code>sub</code>.</td></tr>
+      <tr><td><code>roles</code></td><td><code>string[]</code></td><td>Roles snapshot at session creation (for quick auth without a DB hit).</td></tr>
+      <tr><td><code>meta?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Optional metadata stored on the session (ip, userAgent, …).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>JWT</h2>
+
+  <h3>TokenPayload</h3>
+  <pre><code><span class="kw">interface</span> TokenPayload <span class="kw">extends</span> JWTPayload {
+  sub: <span class="kw">string</span>;            <span class="com">// subject (user id)</span>
+  roles?: <span class="kw">string</span>[];        <span class="com">// roles attached to the subject</span>
+  kind?: <span class="str">'access'</span> | <span class="str">'refresh'</span>;  <span class="com">// token kind discriminator</span>
+  sid?: <span class="kw">string</span>;            <span class="com">// session id (refresh tokens)</span>
+}</code></pre>
+  <p>Extends <code>jose</code>'s <code>JWTPayload</code> (<code>iss</code>, <code>aud</code>,
+     <code>exp</code>, <code>iat</code>, <code>jti</code>, …).</p>
+
+  <h3>JwtOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>secret</code></td><td><code>string | Uint8Array</code></td><td>—</td><td>Signing secret (required).</td></tr>
+      <tr><td><code>algorithm?</code></td><td><code>'HS256' | 'HS384' | 'HS512'</code></td><td><code>'HS256'</code></td><td>Signing algorithm.</td></tr>
+      <tr><td><code>issuer?</code></td><td><code>string</code></td><td>—</td><td>JWT issuer (<code>iss</code>).</td></tr>
+      <tr><td><code>audience?</code></td><td><code>string</code></td><td>—</td><td>JWT audience (<code>aud</code>).</td></tr>
+      <tr><td><code>accessTtl?</code></td><td><code>number</code> (seconds)</td><td><code>900</code> (15 min)</td><td>Access-token TTL in <strong>seconds</strong>.</td></tr>
+      <tr><td><code>refreshTtl?</code></td><td><code>number</code> (seconds)</td><td><code>604800</code> (7 days)</td><td>Refresh-token TTL in <strong>seconds</strong>.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <span class="label">TTLs are numbers (seconds)</span>
+    <code>accessTtl</code> / <code>refreshTtl</code> are <strong>numbers of seconds</strong>, not duration
+    strings. Pass e.g. <code>900</code> or <code>60 * 15</code>, not <code>'15m'</code>. The default
+    <code>refreshTtl</code> is <strong>7 days</strong> (<code>604800</code>), not 30 days.
+  </div>
+
+  <h3 id="signAccessToken">signAccessToken(subject, roles, opts, sid?)</h3>
+  <pre><code><span class="kw">async function</span> signAccessToken(
+  subject: <span class="kw">string</span>, roles: <span class="kw">string</span>[], opts: JwtOptions, sid?: <span class="kw">string</span>
+): Promise&lt;<span class="kw">string</span>&gt;</code></pre>
+  <p>Sign an access token for a subject with roles, optionally bound to a session id. TTL from
+     <code>opts.accessTtl</code> (default 15 min).</p>
+
+  <h3 id="signRefreshToken">signRefreshToken(subject, sid, roles, opts)</h3>
+  <pre><code><span class="kw">async function</span> signRefreshToken(
+  subject: <span class="kw">string</span>, sid: <span class="kw">string</span>, roles: <span class="kw">string</span>[], opts: JwtOptions
+): Promise&lt;<span class="kw">string</span>&gt;</code></pre>
+  <p>Sign a refresh token bound to a session id. TTL from <code>opts.refreshTtl</code> (default 7 days).
+     <code>AuthService</code> uses its own internal signer that also injects a <code>jti</code> for reuse
+     detection; this standalone helper omits the <code>jti</code> (use the <code>AuthService</code> for
+     rotating refresh tokens).</p>
+
+  <h3 id="verifyToken">verifyToken(token, opts)</h3>
+  <pre><code><span class="kw">async function</span> verifyToken(token: <span class="kw">string</span>, opts: JwtOptions): Promise&lt;TokenPayload&gt;</code></pre>
+  <p>Verify a token's signature, issuer, and audience; return its payload. Throws on
+     invalid/expired tokens. Used by <code>AuthService.verifyAccessToken</code> and
+     <code>AuthService.refresh</code>.</p>
+
+  <h2>Session</h2>
+
+  <h3>Session</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Session id.</td></tr>
+      <tr><td><code>userId</code></td><td><code>string</code></td><td>User id this session belongs to.</td></tr>
+      <tr><td><code>roles</code></td><td><code>string[]</code></td><td>Roles snapshot at session creation.</td></tr>
+      <tr><td><code>familyId</code></td><td><code>string</code></td><td>Refresh-token family id — used to detect reuse after rotation.</td></tr>
+      <tr><td><code>currentJti?</code></td><td><code>string</code></td><td>The current refresh token's <code>jti</code> (so a reused/old refresh token is detectable).</td></tr>
+      <tr><td><code>createdAt</code></td><td><code>number</code> (ms)</td><td>Creation timestamp.</td></tr>
+      <tr><td><code>updatedAt</code></td><td><code>number</code> (ms)</td><td>Last-seen timestamp.</td></tr>
+      <tr><td><code>meta?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Optional metadata (ip, userAgent).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>SessionStore</h3>
+  <pre><code><span class="kw">interface</span> SessionStore {
+  create(userId: <span class="kw">string</span>, roles: <span class="kw">string</span>[], meta?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): Promise&lt;Session&gt;;
+  get(id: <span class="kw">string</span>): Promise&lt;Session | <span class="kw">null</span>&gt;;
+  update(id: <span class="kw">string</span>, patch: Partial&lt;Session&gt;): Promise&lt;<span class="kw">void</span>&gt;;
+  destroy(id: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  destroyFamily(familyId: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  destroyAllForUser(userId: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Session store abstraction. <code>MemorySessionStore</code> is the default (tests / single
+     process); a Redis-backed implementation lives in <code>nexus-cache</code> for horizontal scaling.
+     <code>destroyFamily</code> backs refresh-token reuse detection; <code>destroyAllForUser</code>
+     backs <code>logoutAll</code>.</p>
+
+  <h3 id="MemorySessionStore">MemorySessionStore</h3>
+  <pre><code><span class="kw">class</span> MemorySessionStore <span class="kw">implements</span> SessionStore {
+  create(userId, roles, meta?): Promise&lt;Session&gt;;
+  get(id): Promise&lt;Session | <span class="kw">null</span>&gt;;
+  update(id, patch): Promise&lt;<span class="kw">void</span>&gt;;
+  destroy(id): Promise&lt;<span class="kw">void</span>&gt;;
+  destroyFamily(familyId): Promise&lt;<span class="kw">void</span>&gt;;
+  destroyAllForUser(userId): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>In-memory <code>SessionStore</code> backed by <code>Map</code>s, with secondary indexes by
+     <code>familyId</code> and <code>userId</code> for <code>destroyFamily</code> /
+     <code>destroyAllForUser</code>. Fine for tests and single-process deployments.</p>
+
+  <h2>CSRF</h2>
+  <p>Double-submit cookie pattern plus an origin/referer check on unsafe methods. Safe methods
+     (<code>GET</code>, <code>HEAD</code>, <code>OPTIONS</code>, <code>TRACE</code>) are exempt; on
+     safe requests a token cookie is set (reused across concurrent safe requests to avoid rotation
+     races) and exposed via <code>ctx.state.csrfToken</code>. On unsafe requests, the header token
+     must equal the cookie token.</p>
+
+  <h3>CsrfOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cookieName?</code></td><td><code>string</code></td><td><code>'nexus_csrf'</code></td><td>Cookie name holding the double-submit token.</td></tr>
+      <tr><td><code>tokenName?</code></td><td><code>string</code></td><td><code>'x-csrf-token'</code></td><td>Header / body field name carrying the token on unsafe requests.</td></tr>
+      <tr><td><code>trustedOrigins?</code></td><td><code>string[]</code></td><td><code>[]</code></td><td>Trusted origin hosts for the origin/referer check. If omitted, the origin check is skipped.</td></tr>
+      <tr><td><code>safeMethods?</code></td><td><code>string[]</code></td><td><code>['GET','HEAD','OPTIONS','TRACE']</code></td><td>Methods exempt from CSRF.</td></tr>
+      <tr><td><code>cookie?</code></td><td><code>{ path?, secure?, sameSite?, domain? }</code></td><td><code>{ path:'/', sameSite:'lax', secure:false }</code></td><td>Cookie attributes.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="csrf">csrf(options?)</h3>
+  <pre><code><span class="kw">function</span> csrf(options: CsrfOptions = {}): Middleware</code></pre>
+  <p>The CSRF middleware. Handles HTTP requests only. Unsafe requests require a matching
+     <code>x-csrf-token</code> header (or body field) equal to the cookie token, and (when
+     <code>trustedOrigins</code> is non-empty) an <code>Origin</code> (or <code>Referer</code>) that
+     matches a trusted origin.</p>
+  <pre><code>router.use(csrf({ trustedOrigins: [origin] }));
+<span class="com">// safe GETs set ctx.state.csrfToken + the nexus_csrf cookie</span>
+router.get(<span class="str">'/csrf-token'</span>, (ctx) =&gt; ctx.json({ token: ctx.state.csrfToken }));</code></pre>
+  <div class="callout danger">
+    <span class="label">WS upgrades are NOT covered</span>
+    <code>csrf()</code> only handles HTTP requests. WebSocket upgrade requests have no CORS
+    preflight and bypass the HTTP middleware pipeline — to enforce CSRF + origin on the WS upgrade,
+    call <code>checkWsUpgrade()</code> explicitly in your <code>upgrade</code> handler.
+  </div>
+  <div class="callout note">
+    <span class="label">Loopback origins ignore the port</span>
+    <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> match any trusted loopback
+    origin <strong>regardless of port</strong>. Docker / port-forwarding commonly remaps host ports
+    (e.g. container <code>:3001</code> published on the host as <code>:3011</code>), so a strict
+    <code>host:port</code> match would wrongly reject the admin/frontend dev servers. Non-loopback
+    origins must match a trusted entry exactly (<code>host</code>, full origin, or a prefix).
+  </div>
+
+  <h3 id="issueCsrfToken">issueCsrfToken(ctx, options?)</h3>
+  <pre><code><span class="kw">function</span> issueCsrfToken(ctx: RequestContext, options: CsrfOptions = {}): <span class="kw">string</span></code></pre>
+  <p>Helper for handlers/endpoints to mint a fresh CSRF token (e.g. a <code>/csrf-token</code> route).
+     Sets the <code>HttpOnly</code> cookie and returns the token so the handler can echo it to the
+     client.</p>
+  <pre><code>router.get(<span class="str">'/csrf-token'</span>, (ctx) =&gt; {
+  <span class="kw">const</span> token = issueCsrfToken(ctx, { cookieName: <span class="str">'nexus_csrf'</span> });
+  ctx.json({ token }); <span class="com">// also sets the HttpOnly cookie</span>
+});</code></pre>
+  <div class="callout warn">
+    <span class="label">trustedOrigins is a no-op here</span>
+    <code>issueCsrfToken</code> only reads <code>cookieName</code> / <code>cookie</code> from the
+    options. Passing <code>trustedOrigins</code> has <strong>no effect</strong> on token issuance —
+    the origin check lives in the <code>csrf()</code> middleware, not in the issuer.
+  </div>
+
+  <h3 id="checkWsUpgrade">checkWsUpgrade(headers, options?)</h3>
+  <pre><code><span class="kw">function</span> checkWsUpgrade(
+  headers: Record&lt;<span class="kw">string</span>, <span class="kw">string</span> | <span class="kw">string</span>[] | <span class="kw">undefined</span>&gt;,
+  options: CsrfOptions = {},
+): <span class="kw">void</span></code></pre>
+  <p>CSRF + origin check for the WebSocket upgrade request. WS upgrades have no CORS preflight and
+     bypass the HTTP middleware pipeline, so <code>csrf()</code> does <strong>not</strong> cover them
+     — call this explicitly in your <code>upgrade</code> handler. Throws
+     <code>AuthenticationError</code> on a bad origin or a token mismatch.</p>
+  <p>Origin: if <code>trustedOrigins</code> is non-empty, the <code>Origin</code> header must match a
+     trusted origin (same loopback-port rule as <code>csrf()</code>). Token: the CSRF cookie token
+     must equal the first <code>Sec-WebSocket-Protocol</code> subprotocol value (the client sends the
+     token as the subprotocol).</p>
+  <pre><code>httpServer.on(<span class="str">'upgrade'</span>, (req, socket, head) =&gt; {
+  <span class="kw">try</span> {
+    checkWsUpgrade(req.headers, { trustedOrigins, cookieName: <span class="str">'nexus_csrf'</span> });
+    wss.handleUpgrade(req, socket, head, (ws) =&gt; { ... });
+  } <span class="kw">catch</span> {
+    socket.destroy();
+  }
+});</code></pre>
+
+  <h2>CORS</h2>
+
+  <h3>CorsOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>origin?</code></td><td><code>string | string[] | boolean</code></td><td><code>true</code></td><td>Allowed origin(s): a string, an array, or <code>true</code> to reflect any origin.</td></tr>
+      <tr><td><code>methods?</code></td><td><code>string[]</code></td><td><code>['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD']</code></td><td>Allowed methods.</td></tr>
+      <tr><td><code>allowedHeaders?</code></td><td><code>string[]</code></td><td>— (reflects preflight request headers)</td><td>Allowed request headers.</td></tr>
+      <tr><td><code>exposedHeaders?</code></td><td><code>string[]</code></td><td>—</td><td>Headers exposed to the browser.</td></tr>
+      <tr><td><code>credentials?</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Allow cookies / credentials. When <code>true</code>, origin cannot be <code>"*"</code>.</td></tr>
+      <tr><td><code>maxAge?</code></td><td><code>number</code> (seconds)</td><td><code>600</code></td><td>Preflight cache max age.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="cors">cors(options?)</h3>
+  <pre><code><span class="kw">function</span> cors(options: CorsOptions = {}): Middleware</code></pre>
+  <p>Inbuilt CORS middleware. Owns the <code>OPTIONS</code> preflight path entirely (short-circuits
+     with <code>204</code>), sets <code>Vary: Origin</code> for correct cache behavior, and enforces
+     the credentialed rule (no wildcard origin when credentials are enabled).</p>
+  <pre><code>router.use(cors({
+  origin: [<span class="str">'https://app.example.com'</span>, <span class="str">'https://admin.example.com'</span>],
+  credentials: <span class="kw">true</span>,
+  allowedHeaders: [<span class="str">'authorization'</span>, <span class="str">'x-csrf-token'</span>, <span class="str">'content-type'</span>],
+}));</code></pre>
+
+  <h2>Headers</h2>
+
+  <h3>SecurityHeadersOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>hstsMaxAge?</code></td><td><code>number</code> (seconds)</td><td><code>15552000</code> (180 days)</td><td>HSTS max age (<code>0</code> disables HSTS).</td></tr>
+      <tr><td><code>hstsIncludeSubdomains?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Include subdomains in HSTS.</td></tr>
+      <tr><td><code>hstsPreload?</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Enable HSTS preload.</td></tr>
+      <tr><td><code>csp?</code></td><td><code>string</code></td><td><code>"default-src 'self'"</code></td><td>Content-Security-Policy directive string.</td></tr>
+      <tr><td><code>referrerPolicy?</code></td><td><code>string</code></td><td><code>'no-referrer'</code></td><td>Referrer-Policy.</td></tr>
+      <tr><td><code>noSniff?</code></td><td><code>boolean</code></td><td><code>true</code></td><td><code>X-Content-Type-Options: nosniff</code>.</td></tr>
+      <tr><td><code>frameOptions?</code></td><td><code>'DENY' | 'SAMEORIGIN' | false</code></td><td><code>'SAMEORIGIN'</code></td><td><code>X-Frame-Options</code> (superseded by CSP <code>frame-ancestors</code> when present).</td></tr>
+      <tr><td><code>coop?</code></td><td><code>string</code></td><td><code>'same-origin'</code></td><td>Cross-Origin-Opener-Policy.</td></tr>
+      <tr><td><code>corp?</code></td><td><code>string</code></td><td><code>'same-origin'</code></td><td>Cross-Origin-Resource-Policy.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="securityHeaders">securityHeaders(options?)</h3>
+  <pre><code><span class="kw">function</span> securityHeaders(options: SecurityHeadersOptions = {}): Middleware</code></pre>
+  <p>Helmet-equivalent security headers, applied to every response. Also sets
+     <code>x-xss-protection: 0</code> (disabled in favor of CSP).</p>
+  <pre><code>router.use(securityHeaders({
+  csp: <span class="str">"default-src 'self'; script-src 'self'; object-src 'none'"</span>,
+  hstsMaxAge: <span class="num">31536000</span>, hstsPreload: <span class="kw">true</span>,
+}));</code></pre>
+
+  <h2>Rate limiting</h2>
+
+  <h3>RateLimitOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>windowMs</code></td><td><code>number</code> (ms)</td><td>—</td><td>Time window (required).</td></tr>
+      <tr><td><code>max</code></td><td><code>number</code></td><td>—</td><td>Max requests per window per key (required).</td></tr>
+      <tr><td><code>keyGenerator?</code></td><td><code>(ctx) =&gt; string</code></td><td>client IP (<code>x-forwarded-for</code> or socket)</td><td>Function to derive the rate-limit key.</td></tr>
+      <tr><td><code>message?</code></td><td><code>string</code></td><td><code>'Too many requests'</code></td><td>Message returned when limited.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>RateLimitStore</h3>
+  <pre><code><span class="kw">interface</span> RateLimitStore {
+  hit(key: <span class="kw">string</span>, windowMs: <span class="kw">number</span>): Promise&lt;{ count: <span class="kw">number</span>; resetAt: <span class="kw">number</span> }&gt;;
+}</code></pre>
+  <p>Pluggable store — the default is in-memory; a Redis-backed store (in <code>nexus-cache</code>)
+     supports horizontal scaling.</p>
+
+  <h3 id="memoryStore">memoryStore()</h3>
+  <pre><code><span class="kw">function</span> memoryStore(): RateLimitStore</code></pre>
+  <p>Build an in-memory fixed-window store backed by a <code>Map</code>. Buckets reset when the
+     window elapses.</p>
+
+  <h3 id="rateLimit">rateLimit(options)</h3>
+  <pre><code><span class="kw">function</span> rateLimit(options: RateLimitOptions): Middleware</code></pre>
+  <p>Inbuilt fixed-window rate limiter. Sets the standard <code>rate-limit-limit</code>,
+     <code>rate-limit-remaining</code>, and <code>rate-limit-reset</code> headers on every response,
+     and <code>retry-after</code> when limited. Throws
+     <code>AuthenticationError(message)</code> (status 429-ish shape via <code>onError</code>) when the
+     count exceeds <code>max</code>.</p>
+  <pre><code>router.use(rateLimit({ windowMs: <span class="num">60_000</span>, max: <span class="num">100</span> }));
+<span class="com">// per-user key:</span>
+router.post(<span class="str">'/login'</span>, loginHandler, [
+  rateLimit({ windowMs: <span class="num">15_000</span>, max: <span class="num">5</span>, keyGenerator: (ctx) =&gt; ctx.body?.email ?? ctx.req.socket.remoteAddress }),
+]);</code></pre>
+
+  <h2>Password</h2>
+  <p>Hashing via <code>bcryptjs</code> (pure-JavaScript, API-compatible with the native <code>bcrypt</code>
+     binding). The pure-JS implementation is chosen deliberately so the framework builds on Windows
+     without node-gyp / native toolchains.</p>
+
+  <h3 id="hashPassword">hashPassword(plaintext, rounds?)</h3>
+  <pre><code><span class="kw">async function</span> hashPassword(plaintext: <span class="kw">string</span>, rounds = <span class="num">12</span>): Promise&lt;<span class="kw">string</span>&gt;</code></pre>
+  <p>Hash a plaintext password with a salt cost of <code>rounds</code> (default <code>12</code>).
+     Throws if <code>plaintext</code> is empty or not a string.</p>
+
+  <h3 id="verifyPassword">verifyPassword(plaintext, hash)</h3>
+  <pre><code><span class="kw">async function</span> verifyPassword(plaintext: <span class="kw">string</span>, hash: <span class="kw">string</span>): Promise&lt;<span class="kw">boolean</span>&gt;</code></pre>
+  <p>Verify a plaintext password against a previously-hashed value. Returns <code>false</code> (never
+     throws) on a mismatch or malformed hash.</p>
+
+  <h3 id="isBcryptHash">isBcryptHash(hash)</h3>
+  <pre><code><span class="kw">function</span> isBcryptHash(hash: <span class="kw">string</span>): <span class="kw">boolean</span></code></pre>
+  <p>True if <code>hash</code> looks like a bcrypt hash (<code>/^\$2[abxy]\$\d{2}\$/</code>) — used to
+     detect legacy / plaintext-stored passwords before rehashing.</p>
+  <pre><code><span class="kw">if</span> (!isBcryptHash(user.password)) {
+  user.password = <span class="kw">await</span> hashPassword(plain); <span class="com">// lazy upgrade</span>
+}</code></pre>
+
+  <h2>RBAC</h2>
+  <p>A <code>RoleRegistry</code> maps role names to a set of permissions; roles can inherit from
+     other roles via the <code>inherits</code> option. <code>permissionsFor(role)</code> resolves the
+     full transitive permission set.</p>
+
+  <h3>RoleDefinition</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>permissions?</code></td><td><code>string[]</code></td><td>Permissions granted by the role.</td></tr>
+      <tr><td><code>inherits?</code></td><td><code>string[]</code></td><td>Other roles whose permissions are inherited (transitive).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RoleRegistry">RoleRegistry</h3>
+  <pre><code><span class="kw">class</span> RoleRegistry {
+  define(name: <span class="kw">string</span>, def: RoleDefinition): <span class="kw">this</span>;
+  defineAll(map: Record&lt;<span class="kw">string</span>, RoleDefinition&gt;): <span class="kw">this</span>;
+  permissionsFor(role: <span class="kw">string</span>, seen?: Set&lt;<span class="kw">string</span>&gt;): Set&lt;<span class="kw">string</span>&gt;;
+  can(role: <span class="kw">string</span>, permission: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  canAny(roles: <span class="kw">string</span>[], permission: <span class="kw">string</span>): <span class="kw">boolean</span>;
+}</code></pre>
+  <ul>
+    <li><code>define(name, def)</code> — register one role; chainable.</li>
+    <li><code>defineAll(map)</code> — register many roles from a record; chainable.</li>
+    <li><code>permissionsFor(role)</code> — resolve the full transitive permission set for a role
+        (cycle-safe via a <code>seen</code> set).</li>
+    <li><code>can(role, permission)</code> — true if the role grants the permission (transitively).</li>
+    <li><code>canAny(roles, permission)</code> — true if <em>any</em> of the user's roles grants the permission.</li>
+  </ul>
+  <pre><code><span class="kw">const</span> registry = <span class="kw">new</span> RoleRegistry().defineAll({
+  viewer:  { permissions: [<span class="str">'read'</span>] },
+  editor:  { permissions: [<span class="str">'write'</span>], inherits: [<span class="str">'viewer'</span>] },
+  admin:   { permissions: [<span class="str">'delete'</span>, <span class="str">'manage-users'</span>], inherits: [<span class="str">'editor'</span>] },
+});
+registry.can(<span class="str">'editor'</span>, <span class="str">'read'</span>);    <span class="com">// true (inherited)</span>
+registry.canAny([<span class="str">'editor'</span>], <span class="str">'delete'</span>); <span class="com">// false</span></code></pre>
+
+  <h3>AuthUser</h3>
+  <pre><code><span class="kw">interface</span> AuthUser {
+  id: <span class="kw">string</span>;
+  roles: <span class="kw">string</span>[];
+  [key: <span class="kw">string</span>]: <span class="kw">unknown</span>;
+}</code></pre>
+  <p>The shape of an authenticated principal stored on <code>ctx.state.user</code> by
+     <code>authToken</code>.</p>
+
+  <h3 id="getUser">getUser(ctx)</h3>
+  <pre><code><span class="kw">function</span> getUser(ctx: RequestContext): AuthUser</code></pre>
+  <p>Read the authenticated user from <code>ctx.state.user</code>, throwing
+     <code>AuthenticationError</code> (401) if absent.</p>
+
+  <h3 id="requireAuth">requireAuth()</h3>
+  <pre><code><span class="kw">function</span> requireAuth(): Middleware</code></pre>
+  <p>Middleware that requires an authenticated user (sets nothing; pairs with
+     <code>authToken</code>). Throws <code>AuthenticationError</code> if
+     <code>ctx.state.user</code> is unset.</p>
+
+  <h3 id="requireRole">requireRole(...roles)</h3>
+  <pre><code><span class="kw">function</span> requireRole(...roles: <span class="kw">string</span>[]): Middleware</code></pre>
+  <p>Middleware factory — <strong>variadic</strong>: pass one or more roles. Requires the user to hold
+     at least one of them; otherwise throws <code>AuthorizationError</code> (403).</p>
+  <pre><code>router.get(<span class="str">'/admin'</span>, adminHandler, [authToken(auth), requireRole(<span class="str">'admin'</span>)]);
+router.post(<span class="str">'/content'</span>, writeHandler, [authToken(auth), requireRole(<span class="str">'editor'</span>, <span class="str">'admin'</span>)]);</code></pre>
+
+  <h3 id="requirePermission">requirePermission(registry, permission)</h3>
+  <pre><code><span class="kw">function</span> requirePermission(registry: RoleRegistry, permission: <span class="kw">string</span>): Middleware</code></pre>
+  <p>Middleware factory — takes <strong>two</strong> arguments: a <code>RoleRegistry</code> and the
+     permission to check. Requires that <em>any</em> of the user's roles grants the permission (via
+     <code>registry.canAny</code>); otherwise throws <code>AuthorizationError</code> (403).</p>
+  <pre><code>router.delete(<span class="str">'/users/:id'</span>, deleteUser, [
+  authToken(auth),
+  requirePermission(registry, <span class="str">'manage-users'</span>),
+]);</code></pre>
+
+  <h2>OAuth</h2>
+  <p>Google (with PKCE) and Facebook OAuth flows. Each provider has a <code>build*AuthUrl</code>,
+     <code>exchange*Code</code>, and <code>fetch*Profile</code> helper; all return a normalized
+     <code>OAuthProfile</code>.</p>
+
+  <h3>OAuthProfile</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider</code></td><td><code>'google' | 'facebook'</code></td><td>Which provider produced the profile.</td></tr>
+      <tr><td><code>providerUserId</code></td><td><code>string</code></td><td>Stable per-provider user id (the provider's own subject id).</td></tr>
+      <tr><td><code>email?</code></td><td><code>string</code></td><td>Email (if the scope granted it).</td></tr>
+      <tr><td><code>emailVerified?</code></td><td><code>boolean</code></td><td>Email-verified flag.</td></tr>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>Display name.</td></tr>
+      <tr><td><code>givenName?</code></td><td><code>string</code></td><td>Given / first name.</td></tr>
+      <tr><td><code>familyName?</code></td><td><code>string</code></td><td>Family / last name.</td></tr>
+      <tr><td><code>avatarUrl?</code></td><td><code>string</code></td><td>Avatar URL.</td></tr>
+      <tr><td><code>raw</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Raw provider response (for custom fields).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>GoogleOAuthConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>clientId</code></td><td><code>string</code></td><td>—</td><td>OAuth client id.</td></tr>
+      <tr><td><code>clientSecret</code></td><td><code>string</code></td><td>—</td><td>OAuth client secret.</td></tr>
+      <tr><td><code>redirectUri</code></td><td><code>string</code></td><td>—</td><td>Redirect URI registered in the Google console.</td></tr>
+      <tr><td><code>scope?</code></td><td><code>string[]</code></td><td><code>['openid','email','profile']</code></td><td>OAuth scopes.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>FacebookOAuthConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>clientId</code></td><td><code>string</code></td><td>—</td><td>OAuth client id.</td></tr>
+      <tr><td><code>clientSecret</code></td><td><code>string</code></td><td>—</td><td>OAuth client secret.</td></tr>
+      <tr><td><code>redirectUri</code></td><td><code>string</code></td><td>—</td><td>Redirect URI registered in the Facebook console.</td></tr>
+      <tr><td><code>scope?</code></td><td><code>string[]</code></td><td><code>['email']</code></td><td>OAuth scopes (joined with <code>,</code>).</td></tr>
+      <tr><td><code>apiVersion?</code></td><td><code>string</code></td><td><code>'v19.0'</code></td><td>Graph API version.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>OAuthStateStore</h3>
+  <pre><code><span class="kw">interface</span> OAuthStateStore {
+  set(state: <span class="kw">string</span>, data: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;, ttlMs: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  consume(state: <span class="kw">string</span>): Promise&lt;Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; | <span class="kw">null</span>&gt;;
+}</code></pre>
+  <p>Short-lived store mapping <code>state</code> → flow context (verifier, redirect target, …).
+     <code>consume</code> is single-use (deletes the entry) and returns <code>null</code> if expired
+     or missing. The default in-memory impl is fine for a single process; a Redis-backed impl is used
+     for multi-instance deployments.</p>
+
+  <h3 id="MemoryOAuthStateStore">MemoryOAuthStateStore</h3>
+  <pre><code><span class="kw">class</span> MemoryOAuthStateStore <span class="kw">implements</span> OAuthStateStore {
+  set(state, data, ttlMs): Promise&lt;<span class="kw">void</span>&gt;;
+  consume(state): Promise&lt;Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; | <span class="kw">null</span>&gt;;
+}</code></pre>
+  <p>In-memory <code>OAuthStateStore</code> backed by a <code>Map</code> with per-entry
+     <code>expiresAt</code>. <code>consume</code> deletes the entry and returns <code>null</code> on
+     expiry.</p>
+
+  <h3 id="generateState">generateState()</h3>
+  <pre><code><span class="kw">function</span> generateState(): <span class="kw">string</span></code></pre>
+  <p>Random URL-safe string for the OAuth <code>state</code> param (CSRF for the redirect).</p>
+
+  <h3 id="generatePkceVerifier">generatePkceVerifier()</h3>
+  <pre><code><span class="kw">function</span> generatePkceVerifier(): <span class="kw">string</span></code></pre>
+  <p>Generate a PKCE <code>code_verifier</code> (43–128 chars, unreserved chars).</p>
+
+  <h3 id="computePkceChallenge">computePkceChallenge(verifier)</h3>
+  <pre><code><span class="kw">function</span> computePkceChallenge(verifier: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>S256 <code>code_challenge</code> for a verifier (<code>base64url(sha256(verifier))</code>).</p>
+
+  <h3 id="buildGoogleAuthUrl">buildGoogleAuthUrl(config, opts)</h3>
+  <pre><code><span class="kw">function</span> buildGoogleAuthUrl(
+  config: GoogleOAuthConfig,
+  opts: { state: <span class="kw">string</span>; verifier: <span class="kw">string</span> },
+): <span class="kw">string</span></code></pre>
+  <p>Build the Google consent URL with PKCE (<code>code_challenge_method: S256</code>),
+     <code>access_type: offline</code>, and <code>prompt: consent</code>. Redirect the user here to
+     start the flow.</p>
+
+  <h3 id="exchangeGoogleCode">exchangeGoogleCode(code, config, verifier)</h3>
+  <pre><code><span class="kw">async function</span> exchangeGoogleCode(
+  code: <span class="kw">string</span>, config: GoogleOAuthConfig, verifier: <span class="kw">string</span>,
+): Promise&lt;{ accessToken: <span class="kw">string</span>; refreshToken?: <span class="kw">string</span>; idToken?: <span class="kw">string</span>; expiresAt: <span class="kw">number</span> }&gt;</code></pre>
+  <p>Exchange the authorization <code>code</code> for Google tokens using the PKCE verifier. Returns
+     the access token, optional refresh/id token, and an <code>expiresAt</code> (ms epoch). Throws on
+     a non-2xx response.</p>
+
+  <h3 id="fetchGoogleProfile">fetchGoogleProfile(accessToken)</h3>
+  <pre><code><span class="kw">async function</span> fetchGoogleProfile(accessToken: <span class="kw">string</span>): Promise&lt;OAuthProfile&gt;</code></pre>
+  <p>Fetch the Google userinfo profile (<code>openidconnect.googleapis.com/v1/userinfo</code>) and
+     normalize it to <code>OAuthProfile</code>.</p>
+
+  <h3 id="buildFacebookAuthUrl">buildFacebookAuthUrl(config, state)</h3>
+  <pre><code><span class="kw">function</span> buildFacebookAuthUrl(config: FacebookOAuthConfig, state: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Build the Facebook consent URL. <strong>Note the different signature from Google</strong>: Facebook
+     takes only <code>state</code> (no PKCE verifier — Facebook OAuth does not support PKCE), and
+     scopes are joined with <code>,</code> rather than a space.</p>
+
+  <h3 id="exchangeFacebookCode">exchangeFacebookCode(code, config)</h3>
+  <pre><code><span class="kw">async function</span> exchangeFacebookCode(
+  code: <span class="kw">string</span>, config: FacebookOAuthConfig,
+): Promise&lt;{ accessToken: <span class="kw">string</span>; expiresAt: <span class="kw">number</span> }&gt;</code></pre>
+  <p>Exchange the authorization <code>code</code> for a Facebook access token. <strong>No
+     <code>verifier</code> argument</strong> (unlike Google). Returns the access token and
+     <code>expiresAt</code> (ms epoch); Facebook does not return a refresh token in this flow.</p>
+
+  <h3 id="fetchFacebookProfile">fetchFacebookProfile(accessToken, apiVersion?)</h3>
+  <pre><code><span class="kw">async function</span> fetchFacebookProfile(accessToken: <span class="kw">string</span>, apiVersion = <span class="str">'v19.0'</span>): Promise&lt;OAuthProfile&gt;</code></pre>
+  <p>Fetch the Facebook <code>/me</code> profile (<code>id,name,email,first_name,last_name,picture</code>)
+     and normalize it to <code>OAuthProfile</code>. <strong>Extra <code>apiVersion</code> argument</strong>
+     (defaults to <code>'v19.0'</code>) not present on the Google helper. Email-verified is treated as
+     true when an email is present (Facebook marks email-verified accounts).</p>
+
+  <h3>Full Google flow example</h3>
+  <pre><code><span class="kw">const</span> google: GoogleOAuthConfig = {
+  clientId, clientSecret,
+  redirectUri: <span class="str">'http://localhost:4000/auth/google/callback'</span>,
+  scope: [<span class="str">'openid'</span>, <span class="str">'email'</span>, <span class="str">'profile'</span>],
+};
+<span class="kw">const</span> stateStore = <span class="kw">new</span> MemoryOAuthStateStore();
+
+<span class="com">// 1. start</span>
+router.get(<span class="str">'/auth/google'</span>, (ctx) =&gt; {
+  <span class="kw">const</span> state = generateState();
+  <span class="kw">const</span> verifier = generatePkceVerifier();
+  <span class="kw">await</span> stateStore.set(state, { provider: <span class="str">'google'</span>, verifier, redirect: ctx.query.redirect }, <span class="num">300_000</span>);
+  ctx.redirect(buildGoogleAuthUrl(google, { state, verifier }));
+});
+
+<span class="com">// 2. callback</span>
+router.get(<span class="str">'/auth/google/callback'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> flow = <span class="kw">await</span> stateStore.consume(ctx.query.state);
+  <span class="kw">if</span> (!flow) <span class="kw">throw new</span> AuthenticationError(<span class="str">'Invalid state'</span>);
+  <span class="kw">const</span> tokens = <span class="kw">await</span> exchangeGoogleCode(ctx.query.code, google, flow.verifier);
+  <span class="kw">const</span> profile = <span class="kw">await</span> fetchGoogleProfile(tokens.accessToken);
+  <span class="com">// → upsert user, call auth.login({ userId, roles }), setAuthCookies(ctx, pair, …)</span>
+});</code></pre>
+  <div class="callout note">
+    <span class="label">Facebook flow is the same shape, minus PKCE</span>
+    Replace the start step with <code>ctx.redirect(buildFacebookAuthUrl(fb, state))</code> and the
+    callback with <code>exchangeFacebookCode(code, fb)</code> → <code>fetchFacebookProfile(token)</code>.
+    No verifier, no <code>code_challenge</code>.
+  </div>
+
+  <h2>Middleware</h2>
+
+  <h3>AuthCookieOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>accessTokenName?</code></td><td><code>string</code></td><td><code>'nexus_at'</code></td><td>Access-token cookie name.</td></tr>
+      <tr><td><code>refreshTokenName?</code></td><td><code>string</code></td><td><code>'nexus_rt'</code></td><td>Refresh-token cookie name.</td></tr>
+      <tr><td><code>path?</code></td><td><code>string</code></td><td><code>'/'</code></td><td>Cookie path.</td></tr>
+      <tr><td><code>secure?</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Mark cookies <code>Secure</code>.</td></tr>
+      <tr><td><code>sameSite?</code></td><td><code>'strict' | 'lax' | 'none'</code></td><td><code>'lax'</code></td><td>SameSite attribute.</td></tr>
+      <tr><td><code>domain?</code></td><td><code>string</code></td><td>—</td><td>Cookie domain.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="readCookieValue">readCookieValue(ctx, name)</h3>
+  <pre><code><span class="kw">function</span> readCookieValue(ctx: RequestContext, name: <span class="kw">string</span>): <span class="kw">string</span> | <span class="kw">undefined</span></code></pre>
+  <p>Read a cookie value from the request's <code>cookie</code> header. Returns <code>undefined</code>
+     if absent.</p>
+
+  <h3 id="setAuthCookies">setAuthCookies(ctx, pair, opts?)</h3>
+  <pre><code><span class="kw">function</span> setAuthCookies(ctx: RequestContext, pair: TokenPair, opts: AuthCookieOptions = {}): <span class="kw">void</span></code></pre>
+  <p>Set the access + refresh tokens as <code>HttpOnly</code> cookies (for cookie-based sessions). The
+     refresh cookie gets a <code>Max-Age</code> derived from <code>pair.refreshExpiresAt</code>.</p>
+  <pre><code><span class="kw">const</span> pair = <span class="kw">await</span> auth.login({ userId, roles });
+setAuthCookies(ctx, pair, { secure: config.env === <span class="str">'production'</span>, sameSite: <span class="str">'lax'</span> });
+ctx.json({ sessionId: pair.sessionId });</code></pre>
+
+  <h3 id="clearAuthCookies">clearAuthCookies(ctx, opts?)</h3>
+  <pre><code><span class="kw">function</span> clearAuthCookies(ctx: RequestContext, opts: AuthCookieOptions = {}): <span class="kw">void</span></code></pre>
+  <p>Clear the auth cookies (logout) by setting them with <code>Max-Age=0</code>.</p>
+
+  <h3>AuthTokenOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cookieName?</code></td><td><code>string</code></td><td><code>'nexus_at'</code></td><td>Cookie name for the access token (cookie-mode).</td></tr>
+      <tr><td><code>allowCookie?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>If <code>false</code>, only the <code>Authorization</code> header is accepted (no cookie).</td></tr>
+      <tr><td><code>required?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>If <code>true</code>, missing/invalid tokens throw 401; if <code>false</code>, the middleware is optional (no user set).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="authToken">authToken(service, options?)</h3>
+  <pre><code><span class="kw">function</span> authToken(service: AuthService, options: AuthTokenOptions = {}): Middleware</code></pre>
+  <p>Authenticate the request by verifying a bearer access token from the <code>Authorization</code>
+     header or (optionally) an <code>HttpOnly</code> cookie. On success,
+     <code>ctx.state.user = { id, roles, …payload }</code> is set for downstream
+     <code>requireAuth</code> / <code>requireRole</code> / <code>requirePermission</code> middleware.</p>
+  <div class="callout warn">
+    <span class="label">Signature</span>
+    <code>authToken(service: AuthService, options: AuthTokenOptions)</code> — the <strong>first</strong>
+    argument is the <code>AuthService</code> instance; options are the second.
+  </div>
+  <pre><code>router.get(<span class="str">'/me'</span>, meHandler, [
+  authToken(auth, { cookieName: config.auth.cookieName, allowCookie: <span class="kw">true</span>, required: <span class="kw">true</span> }),
+  requireRole(<span class="str">'admin'</span>),
+]);
+
+<span class="com">// optional auth: populate ctx.state.user if a token is present, else continue</span>
+router.get(<span class="str">'/public-feed'</span>, feedHandler, [authToken(auth, { required: <span class="kw">false</span> })]);</code></pre>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Auth API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Auth - CSRF + token rotation","apiBase":"http://localhost:4000","js":"const csrfOk = (cookie, sent) =\u003e !!cookie \u0026\u0026 !!sent \u0026\u0026 cookie === sent;\nconsole.log(\"valid:\", csrfOk(\"abc\", \"abc\"));\nconsole.log(\"mismatch:\", csrfOk(\"abc\", \"xyz\"));\n\nfunction refresh(session, presentedJti) {\n  if (session.currentJti \u0026\u0026 presentedJti !== session.currentJti) return { ok: false, reason: \"REUSE DETECTED\" };\n  session.currentJti = \"jti-\" + Math.random().toString(36).slice(2);\n  return { ok: true };\n}\nconst s = { currentJti: \"jti-1\" };\nconsole.log(\"fresh:\", refresh(s, \"jti-1\"));\nconsole.log(\"replay old:\", refresh(s, \"jti-1\"));","api":{"method":"POST","path":"/auth/login","body":{"email":"demo@nexus.local","password":"password"}}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

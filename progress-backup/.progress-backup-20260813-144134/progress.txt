@@ -1,0 +1,88 @@
+SESSION PROGRESS — BhooAI Nexus (frontend docs UI + docs content)
+
+========================================================================
+Status: all changes verified — `npx tsc --noEmit -p apps/frontend/tsconfig.json`
+        passes and `npx vite build apps/frontend` builds clean.
+
+NO GIT REPO EXISTS in the tree — nothing has been committed.
+
+------------------------------------------------------------------------
+1) DOCS CONTENT (docs/api/*.html)
+   - Rewrote all API doc pages as complete field-by-field references,
+     fixing factual errors (JWT TTLs in seconds, TokenPair.sessionId,
+     requirePermission(registry, perm), checkWsUpgrade, NodeTier
+     = dev|standard|large, hire threshold basis, etc.).
+   - Created NEW pages: admin.html (nexus-admin client exports) and
+     safe-goto.html (SafeGoto / openSafe / SafeGotoDialog / ...).
+   - CLI stubs (build/test/plugin/add) labeled "not yet implemented".
+   - docs/assets/nav.js = canonical shared NAV (used by Docs.tsx at
+     runtime); docs/assets/docs.js mirrors it (keep in sync).
+   - core.html removed nonexistent HttpError/ForbiddenError, fixed the
+     "No server.use()" callout, added loadConfigAuto/config helpers/
+     Container/HTTP helpers + full config + errors references.
+
+2) DOCS VIEWER IN USER-FACING FRONTEND (apps/frontend)
+   - Docs.tsx: fetch + DOMParser + dangerouslySetInnerHTML renderer;
+     fetches /docs/assets/nav.js at runtime; scroll-spy via
+     IntersectionObserver; in-page .html link interception (#anchors too);
+     playground re-init (window.NexusPlayground.initAll);
+     "/" focuses search, Escape clears.
+   - App.tsx: View = 'app' | 'docs'; docs view renders <Docs onBack=
+     () => setView('app')>. Header redesigned: standalone site-header
+     REMOVED; brand + topbar live inside the docs shell now.
+   - Backend serves docs: apps/backend/src/main.ts adds
+     serveStatic(docsDir, { prefix: '/docs' }); vite proxy '/docs' ->
+     backend; serveDocs vite plugin removed (docs no longer in dist/).
+   - docs.d.ts: ambient Window.NexusPlayground declaration.
+
+3) HEADER (docs shell, admin-panel style)
+   - Single cohesive topbar (sticky top:0): hamburger (mobile) + tab
+     strip + "LOCAL DOCS" live pill + "← Back to app" button.
+   - Sidebar head = brand lockup (logo + "DOCS / API reference" +
+     ↗ new-tab + × close).
+   - Sticky fixed: .docs-shell { overflow: visible } lifts the
+     site-shell overflow:hidden that disabled position:sticky.
+   - backdrop-filter moved to .docs-topbar::before (NOT on the sticky
+     element) — fixes Chrome bug where sticky + backdrop-filter drops
+     the header at zoom != 100% (e.g. 300%).
+
+4) TABS
+   - Multi-tab strip in the topbar (.docs-tabbar / .docs-window-tab).
+   - closeTab enforces minimum one open tab (disabled when length <= 1).
+   - Every sidebar nav item has a "+" new-tab button; clicking a nav
+     item navigates the current tab / reuses an open tab.
+
+5) RESPONSIVE / MOBILE
+   - FIXED CASCADE BUG: media queries were defined BEFORE base .docs-sidebar /
+     .docs-mobile-menu / .docs-topbar, so equal-specificity base styles won
+     and the drawer NEVER activated (sidebar stuck open + no hamburger).
+     All docs media queries (1280/900/760/560) moved to the END of the
+     docs CSS section (index.css ~line 611+). Drawer + toggle now work.
+   - <=900px: sidebar = fixed slide-in drawer (translateX, .is-open),
+     backdrop overlay, hamburger in topbar, × to close; closes on nav/
+     section click, backdrop tap, or Escape.
+   - <=900px: docs-view width matches .site-container breakpoints
+     (min(100% - 32px, 720px)); <=1280 uses 94vw -> wait, base now
+     1280px / calc(100% - 64px) centered so sidebar aligns with the app
+     navbar's left edge; content column centered.
+   - <=900px: background-attachment: scroll + near-opaque topbar
+     (rgba(4,14,29,.96)) to kill the "gap on top" artifact; main-col
+     margin-top/padding-top 0.
+   - <=760px: topbar compacts, live pill hides, back button right.
+   - <=560px: view/content/sidebar-head scale down.
+
+------------------------------------------------------------------------
+FILES TOUCHED THIS SESSION
+   apps/frontend/src/components/Docs.tsx
+   apps/frontend/src/App.tsx
+   apps/frontend/src/index.css
+   apps/frontend/src/docs.d.ts (earlier session)
+   apps/frontend/vite.config.ts (earlier session)
+   apps/backend/src/main.ts (earlier session)
+   docs/assets/nav.js, docs/assets/docs.js (earlier)
+   docs/api/*.html (all pages, earlier)
+
+NEXT STEPS / NOTES
+   - Runtime verification of backend-served /docs through the vite
+     proxy still pending (backend :4000 + frontend :3000 running).
+   - No git history — consider `git init` + initial commit.

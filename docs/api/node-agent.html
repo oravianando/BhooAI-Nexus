@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Node Agent API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <span class="eyebrow">API Reference</span>
+  <h1>Node Agent API
+    <span class="sub">The control API that runs on every cluster node (default port <code>7575</code>), driven by the central <code>ClusterManager</code> via Bearer auth.</span></h1>
+
+  <p>The <code>NodeAgent</code> class is exported from <span class="badge core">@bhooai/nexus-cluster</span>
+     (it is also documented from the cluster side in <a href="cluster.html#NodeAgent">Cluster API →
+     NodeAgent</a>). It runs on every node that participates in the cluster mesh. The central side
+     (registry + load balancer + autoscaler) talks to each node's agent over a small HTTP API to
+     discover identity, probe health, sample metrics, and execute lifecycle commands. The agent owns
+     the node's role service as one child process and enforces a command allowlist.</p>
+
+  <h2>Binding &amp; auth</h2>
+  <table>
+    <thead><tr><th>Aspect</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Host</td><td><code>0.0.0.0</code> by default at runtime (<code>NodeAgent.listen()</code> binds all interfaces so the central can reach it across hosts). The config default for <code>cluster.nodeAgentHost</code> is <code>'127.0.0.1'</code> — override either layer to lock down exposure.</td></tr>
+      <tr><td>Port</td><td><code>cluster.nodeAgentPort</code> — default <code>7575</code>; pass <code>--port=7576</code> to override per-node</td></tr>
+      <tr><td>Auth</td><td>Every route requires <code>Authorization: Bearer &lt;token&gt;</code> where the token matches <code>cluster.token</code> from <code>nexus.config.ts</code> (or a per-node slave-generated token). Missing/wrong token → <code>401</code>.</td></tr>
+      <tr><td>Role</td><td>The node's role (<code>backend</code>, <code>files</code>, <code>database</code>, or <code>ai</code>) is set with <code>--role=&lt;role&gt;</code> at serve time</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout danger">
+    <span class="label">Shared pairing secret</span>
+    The agent runs on <code>cluster.nodeAgentPort</code> (default <code>7575</code>). Start it with
+    <code>nexus node serve --role=backend --port=7576</code>. The Bearer token <strong>must</strong>
+    match the <code>cluster.token</code> in <code>nexus.config.ts</code> — anyone holding that token
+    can start/stop/update services on the node, so rotate it and keep it out of the repo.
+  </div>
+
+  <h2>Endpoints</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Response</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/info</code></td><td>Bearer</td><td><code>NodeIdentity</code></td><td>Node identity — the registry stores this on a successful <code>/admin/cluster/link</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/health</code></td><td>Bearer</td><td><code>NodeHealth</code></td><td>Probes the role service's <code>/health</code> endpoint (if a URL is advertised); reports <code>true</code>/<code>false</code> per role service</td></tr>
+      <tr><td><code>GET</code></td><td><code>/metrics</code></td><td>Bearer</td><td><code>NodeMetricsSample</code></td><td>Current metrics sample — feeds the autoscaler's scale-up/down decisions</td></tr>
+      <tr><td><code>POST</code></td><td><code>/exec</code></td><td>Bearer</td><td><code>NodeExecResult</code></td><td>Execute an allow-listed command: <code>start</code> / <code>stop</code> / <code>restart</code> / <code>logs</code> / <code>update</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Response shapes</h2>
+
+  <h3>/info (NodeIdentity)</h3>
+  <pre><code>{
+  id: <span class="str">'a1b2c3d4e5f6-backend'</span>,        <span class="com">// first 12 hex of sha256(root::role) + "-" + role</span>
+  role: <span class="str">'backend'</span>,                     <span class="com">// 'backend' | 'files' | 'database' | 'ai'</span>
+  tier: <span class="str">'standard'</span>,                    <span class="com">// 'dev' | 'standard' | 'large'</span>
+  version: <span class="str">'0.1.0'</span>,
+  baseUrl: <span class="str">'http://node-7:7575'</span>,        <span class="com">// agent control API URL (NOT the role service)</span>
+  services: {                            <span class="com">// role -&gt; service base URL map</span>
+    backend: <span class="str">'http://node-7:4000'</span>,
+  },
+  capabilities: [<span class="str">'start'</span>, <span class="str">'stop'</span>, <span class="str">'restart'</span>, <span class="str">'logs'</span>, <span class="str">'update'</span>, <span class="str">'metrics'</span>]
+}</code></pre>
+  <div class="callout note">
+    <span class="label">services is a role→URL map</span>
+    <code>services</code> is a <code>Partial&lt;Record&lt;NodeRole, string&gt;&gt;</code> mapping each
+    role this node serves to that service's base URL — <strong>not</strong> an array of role strings.
+    The LB targets <code>services.backend</code> if present, else falls back to <code>baseUrl</code>.
+  </div>
+
+  <h3>/health (NodeHealth)</h3>
+  <pre><code>{
+  ok: <span class="num">true</span>,
+  time: <span class="str">'2026-08-10T12:00:00.000Z'</span>,
+  services: { backend: <span class="num">true</span> },         <span class="com">// role -&gt; boolean (only the node's own role)</span>
+  <span class="com">// message?: 'optional human-readable detail'  // not set by the inbuilt agent</span>
+}</code></pre>
+
+  <h3>/metrics (NodeMetricsSample)</h3>
+  <pre><code>{
+  nodeId: <span class="str">'a1b2c3d4e5f6-backend'</span>,
+  rps: <span class="num">12</span>,                              <span class="com">// request count / uptime seconds (rounded up)</span>
+  cpu: <span class="num">0</span>,                               <span class="com">// always 0 — the agent does not measure CPU</span>
+  memoryMb: <span class="num">482</span>,                       <span class="com">// agent process RSS in MB</span>
+  sampledAt: <span class="num">1715000000000</span>                <span class="com">// epoch ms</span>
+}</code></pre>
+  <div class="callout warn">
+    <span class="label">cpu is always 0</span>
+    The inbuilt agent hard-codes <code>cpu: 0</code> in <code>NodeMetricsSample</code> — it never
+    measures CPU. The field is kept for API compatibility with the autoscaler's <code>cpuHigh</code>
+    rail, which therefore never triggers in practice. RPS-per-node is the effective scale signal.
+  </div>
+
+  <h3>/exec (NodeExecResult)</h3>
+  <pre><code><span class="com">// request: NodeExecRequest</span>
+<span class="com">// { command: 'start' | 'stop' | 'restart' | 'logs' | 'update', target?, args? }</span>
+{
+  ok: <span class="num">true</span>,
+  exitCode: <span class="kw">null</span>,                        <span class="com">// last child exit code, or null if running</span>
+  stdout: <span class="str">'started npm run dev\n…'</span>,        <span class="com">// tail of the service log buffer (last ~200 lines)</span>
+  audit: <span class="str">'run "start" by central at 2026-08-10T12:00:00.000Z'</span>  <span class="com">// a STRING, not an array</span>
+  <span class="com">// stderr?: 'only present on rejected commands'</span>
+}</code></pre>
+  <p>On a rejected command (<code>ok: false</code>, HTTP 400) the response includes <code>stderr</code>:</p>
+  <pre><code>{
+  ok: <span class="num">false</span>,
+  exitCode: <span class="num">1</span>,
+  stdout: <span class="str">''</span>,
+  stderr: <span class="str">'command "script" not allowed'</span>,
+  audit: <span class="str">'run "script" by central at 2026-08-10T12:00:00.000Z'</span>
+}</code></pre>
+
+  <h2>Usage</h2>
+  <pre><code><span class="com">// node side — start this machine as part of the mesh</span>
+nexus node serve --role=backend --port=7576
+
+<span class="com">// central side — register the node by its agent URL</span>
+nexus cluster link http://&lt;node-host&gt;:7576
+
+<span class="com">// direct agent call (as the central does internally)</span>
+<span class="kw">const</span> token = config.cluster.token;
+<span class="kw">const</span> h = { Authorization: <span class="str">`Bearer ${token}`</span> };
+
+<span class="kw">const</span> info = <span class="kw">await</span> fetch(<span class="str">`http://&lt;node&gt;:7576/info`</span>, { headers: h }).then(r =&gt; r.json());
+<span class="kw">const</span> metrics = <span class="kw">await</span> fetch(<span class="str">`http://&lt;node&gt;:7576/metrics`</span>, { headers: h }).then(r =&gt; r.json());
+
+<span class="kw">await</span> fetch(<span class="str">`http://&lt;node&gt;:7576/exec`</span>, {
+  method: <span class="str">'POST'</span>, headers: { ...h, <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: JSON.stringify({ command: <span class="str">'restart'</span> }),
+}).then(r =&gt; r.json());</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Allow-listed commands only</span>
+    <code>/exec</code> accepts exactly <code>start</code>, <code>stop</code>, <code>restart</code>,
+    <code>logs</code>, and <code>update</code> at runtime. Any other value is rejected with an error
+    (HTTP 400) — there is no arbitrary shell escape hatch.
+    <code>update</code> is an <strong>alias for <code>restart</code></strong> — it calls
+    <code>restartService()</code> and does <strong>not</strong> pull the latest code.
+    The <code>NodeCommand</code> type also includes <code>'script'</code>, but the inbuilt agent
+    rejects <code>script</code> at runtime; <code>NodeExecRequest.target</code> / <code>args</code>
+    are accepted by the type but ignored by the allowlisted commands.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Node Agent API &nbsp;·&nbsp; <a href="supervisor.html">← Supervisor API</a> &nbsp; <a href="cluster.html">Cluster API →</a></div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Node Agent - bearer gate + autoscale rails","apiBase":"http://localhost:4000","js":"const SHARED = \"pair-secret\";\nfunction gate(headers) {\n  const a = headers.Authorization || \"\";\n  return a === \"Bearer \" + SHARED ? \"allow\" : \"reject 401\";\n}\nconsole.log(\"matching token:\", gate({ Authorization: \"Bearer \" + SHARED }));\nconsole.log(\"wrong token:\", gate({ Authorization: \"Bearer nope\" }));\nconsole.log(\"missing:\", gate({}));\n\nconst ALLOW = new Set([\"start\",\"stop\",\"restart\",\"logs\",\"update\"]);\nconsole.log(\"exec restart:\", ALLOW.has(\"restart\") ? \"ok\" : \"reject\");\nconsole.log(\"exec script (typed but rejected):\", ALLOW.has(\"script\") ? \"ok\" : \"reject\");\nconsole.log(\"exec rm -rf:\", ALLOW.has(\"rm -rf\") ? \"ok\" : \"reject\");\n\nconst rails = { minNodes: 1, maxNodes: 4, rpsPerNodeHigh: 15, rpsPerNodeLow: 5 };\nfunction decide(rps, nodes) {\n  const per = rps / nodes;\n  if (per \u003e rails.rpsPerNodeHigh \u0026\u0026 nodes \u003c rails.maxNodes) return \"scale-up\";\n  if (per \u003c rails.rpsPerNodeLow \u0026\u0026 nodes \u003e rails.minNodes) return \"scale-down\";\n  return \"hold\";\n}\nconsole.log(\"45 rps / 2 nodes:\", decide(45, 2));\nconsole.log(\"8 rps / 3 nodes:\", decide(8, 3));\nconsole.log(\"30 rps / 4 nodes (cap):\", decide(30, 4));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

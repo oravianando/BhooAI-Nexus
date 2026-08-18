@@ -1,0 +1,15 @@
+{
+  "name": "@bhooai/nexus-safe-goto",
+  "version": "1.0.5",
+  "description": "Safe external link navigation for the BhooAI Nexus admin panel — intercepts external URLs, shows a confirmation dialog, and opens with noopener/noreferrer to prevent tab-nabbing and phishing.",
+  "type": "module",
+  "main": "src/index.tsx",
+  "exports": {
+    ".": {
+      "import": "./src/index.tsx"
+    }
+  },
+  "dependencies": {
+    "react": "^18.0.0"
+  }
+}

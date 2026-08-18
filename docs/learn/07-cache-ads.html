@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>07 · Cache · Ads — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 07</div>
+  <h1>Cache · Ads <span class="sub"><code>@bhooai/nexus-cache</code> — a lazy Redis wrapper, a Redis-backed rate limiter, and pub/sub. <code>@bhooai/nexus-ads</code> — a REST Google Ads client with a GAQL query builder.</span></h1>
+
+  <h2>File map — nexus-cache</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/Cache.ts</code></td><td>Redis cache wrapper (lazy connect, prefix, get/set/del, TTL).</td></tr>
+      <tr><td><code>src/RateLimiter.ts</code></td><td>Sliding-window rate limiting over Redis (survives restarts).</td></tr>
+      <tr><td><code>src/PubSub.ts</code></td><td>Redis pub/sub with a dedicated subscriber client.</td></tr>
+      <tr><td><code>src/types.ts</code></td><td>Options + entry/rule types.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>File map — nexus-ads</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/GoogleAdsClient.ts</code></td><td>REST client for the Google Ads API (OAuth + calls).</td></tr>
+      <tr><td><code>src/GaqlBuilder.ts</code></td><td>Fluent builder producing GAQL query strings.</td></tr>
+      <tr><td><code>src/fetchTransport.ts</code></td><td>Default fetch-based HTTP transport.</td></tr>
+      <tr><td><code>src/types.ts</code></td><td>Config + transport types.</td></tr>
+      <tr><td><code>src/index.ts</code></td><td>Barrel + <code>createGoogleAds(config)</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Lazy Redis cache</h3>
+  <p>The cache connects <em>lazily</em> on first use (<code>ensureConnected</code>), so a backend boots fine
+     even when Redis is down — operations throw only when actually used:</p>
+  <pre><code><span class="kw">async</span> ensureConnected() {
+  <span class="kw">if</span> (<span class="kw">this</span>.client.isOpen) <span class="kw">return</span>;
+  <span class="kw">if</span> (!<span class="kw">this</span>.connectPromise) <span class="kw">this</span>.connectPromise = <span class="kw">this</span>.client.connect();
+  <span class="kw">try</span> { <span class="kw">await this</span>.connectPromise; }
+  <span class="kw">catch</span> (err) { <span class="kw">this</span>.connectPromise = <span class="kw">null</span>; <span class="kw">throw</span> err; }  <span class="com">// allow retry</span>
+}</code></pre>
+  <p>Values are JSON-encoded; keys pass through <code>key(name)</code> for a namespace prefix.</p>
+
+  <h3>2. Rate limiter + pub/sub</h3>
+  <p><code>RateLimiter</code> implements sliding-window limits over Redis — the production upgrade to the
+     in-memory <code>rateLimit</code> middleware in <code>nexus-auth</code>. <code>PubSub</code> uses a
+     dedicated subscriber client so it never blocks normal cache traffic.</p>
+
+  <h3>3. GAQL builder</h3>
+  <pre><code><span class="kw">const</span> query = <span class="kw">new</span> GaqlBuilder()
+  .select(<span class="str">'campaign.id'</span>, <span class="str">'campaign.name'</span>, <span class="str">'campaign.status'</span>)
+  .from(<span class="str">'campaign'</span>)
+  .where(<span class="str">"campaign.status = 'ENABLED'"</span>)
+  .orderBy(<span class="str">'campaign.id'</span>)
+  .limit(<span class="num">50</span>)
+  .build();
+<span class="com">// SELECT campaign.id, campaign.name, campaign.status FROM campaign</span>
+<span class="com">// WHERE campaign.status = 'ENABLED' ORDER BY campaign.id LIMIT 50</span></code></pre>
+
+  <h2>Playground</h2>
+  <p>Sandbox: a GAQL builder + a mini Redis-ish get/set with TTL. Live API: hit the backend health (cache
+     is lazy, so no direct endpoint).</p>
+
+  <section data-playground='{
+    "title": "Cache + Ads — GAQL + TTL cache",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: GAQL builder\nfunction build({ select, from, where, orderBy, limit }) {\n  let q = \"SELECT \" + select.join(\", \") + \" FROM \" + from;\n  if (where.length) q += \" WHERE \" + where.join(\" AND \");\n  if (orderBy) q += \" ORDER BY \" + orderBy.field + \" \" + orderBy.dir;\n  if (limit != null) q += \" LIMIT \" + limit;\n  return q;\n}\nconsole.log(build({ select: [\"campaign.id\", \"campaign.name\"], from: \"campaign\", where: [\"campaign.status = 'ENABLED'\"], orderBy: { field: \"campaign.id\", dir: \"ASC\" }, limit: 50 }));\n\n// Model: cache with TTL (logical expiry)\nfunction makeCache() {\n  const store = new Map();\n  return {\n    set(k, v, ttlSec) { store.set(k, { v, exp: Date.now() + (ttlSec || 0) * 1000 }); },\n    get(k) { const e = store.get(k); if (!e) return undefined; if (e.exp < Date.now()) { store.delete(k); return undefined; } return e.v; },\n  };\n}\nconst cache = makeCache();\ncache.set(\"theme\", { name: \"void\" }, 10);\nconsole.log(\"cache hit:\", cache.get(\"theme\"));\ncache.set(\"expired\", 1, -1);\nconsole.log(\"expired miss:\", cache.get(\"expired\"));\n\n// Model: cache-aside pattern\nasync function getUser(id, fetcher) {\n  const hit = cache.get(\"user:\" + id);\n  if (hit !== undefined) return { source: \"cache\", user: hit };\n  const user = await fetcher(id);\n  cache.set(\"user:\" + id, user, 60);\n  return { source: \"db\", user };\n}\ngetUser(7, async () => ({ name: \"Maya\" })).then((r) => console.log(r.source, r.user.name));\ngetUser(7, async () => ({ name: \"Maya\" })).then((r) => console.log(r.source, r.user.name));",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <p class="foot"><a href="06-payments-email-crypto.html">&larr; 06 · Payments · Email · Crypto</a> · <a href="index.html">Build Guide</a> · Next: <a href="08-ai.html">08 · AI Server →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 07 Cache · Ads</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

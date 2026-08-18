@@ -1,0 +1,310 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crypto API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-crypto</span> Crypto API
+    <span class="sub">Keypairs, self-signed X.509, PKCS#10 CSRs (hand-rolled DER), and HTTPS/mTLS helpers.</span></h1>
+
+  <p>The crypto package. Generates RSA/EC keypairs, builds self-signed X.509 v3 certificates and PKCS#10
+     Certificate Signing Requests with a hand-rolled ASN.1/DER encoder (no <code>node-forge</code>), and
+     provides small HTTPS/mTLS helpers. Everything signs with SHA-256 via <code>node:crypto</code>.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>keypair</td><td><code>generateKeyPair</code>, <code>exportPublicKeyPem</code>, <code>exportPrivateKeyPem</code>, <code>KeyPairResult</code>, <code>KeyPairOptions</code></td></tr>
+      <tr><td>x509</td><td><code>createSelfSignedCertificate</code>, <code>pemEncode</code>, <code>X509Options</code>, <code>X509Result</code></td></tr>
+      <tr><td>csr</td><td><code>createCsr</code>, <code>CsrExtension</code>, <code>CsrOptions</code>, <code>CsrResult</code></td></tr>
+      <tr><td>https</td><td><code>createHttpsAgent</code>, <code>createTlsConfig</code>, <code>HttpsAgentOptions</code>, <code>TlsConfigOptions</code></td></tr>
+      <tr><td>der (types/encoders)</td><td><code>Byte</code>, <code>encodeLen</code>, <code>tag</code>, <code>INTEGER</code>, <code>BIT_STRING</code>, <code>OCTET_STRING</code>, <code>NULL</code>, <code>BOOLEAN</code>, <code>oidFromString</code>, <code>OID</code>, <code>SEQUENCE</code>, <code>SET</code>, <code>UTCTime</code>, <code>GeneralizedTime</code>, <code>PrintableString</code>, <code>UTF8String</code>, <code>IA5String</code>, <code>toBuffer</code>, <code>hex</code></td></tr>
+      <tr><td>der (OID constants)</td><td><code>RSA_ENCRYPTION</code>, <code>SHA256_WITH_RSA</code>, <code>EC_PUBLIC_KEY</code>, <code>ECDSA_P256</code>, <code>PRIME256V1</code>, <code>COMMON_NAME</code>, <code>ORG</code>, <code>COUNTRY</code>, <code>EXTENSION_REQUEST</code>, <code>CHALLENGE_PASSWORD</code></td></tr>
+      <tr><td>der (alg id builders)</td><td><code>sha256WithRsaAlgId</code>, <code>ecdsaP256AlgId</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Why hand-rolled?</span>
+    <code>node:crypto</code> can create keypairs and parse certificates, but it <strong>cannot create CSRs</strong>.
+    Rather than pull in <code>node-forge</code>, Nexus ships a minimal ASN.1/DER encoder (~260 lines). The CSR
+    includes <code>challengePassword</code> + <code>extensionRequest</code> attributes and PEM-encodes with the
+    standard <code>CERTIFICATE REQUEST</code> label. Certificates (not CSRs) are parseable by Node's
+    <code>X509Certificate</code>; the private key PEM round-trips through <code>createPrivateKey</code>.
+  </div>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { generateKeyPair, createSelfSignedCertificate, createCsr } <span class="kw">from</span> <span class="str">'@bhooai/nexus-crypto'</span>;
+
+<span class="kw">const</span> kp = generateKeyPair(<span class="str">'rsa'</span>, { modulusLength: <span class="num">2048</span> });
+<span class="kw">const</span> cert = createSelfSignedCertificate({ keyPair: kp, commonName: <span class="str">'localhost'</span> });
+<span class="kw">const</span> csr = createCsr({
+  keyPair: kp,
+  commonName: <span class="str">'localhost'</span>,
+  organization: <span class="str">'BhooAI'</span>,
+  country: <span class="str">'IN'</span>,
+  challengePassword: <span class="str">'verify-me'</span>,
+});
+
+cert.pem;       <span class="com">// PEM certificate (-----BEGIN CERTIFICATE-----)</span>
+kp.pem.private; <span class="com">// PKCS#8 private key PEM</span>
+kp.pem.public;  <span class="com">// SPKI public key PEM</span>
+csr.pem;        <span class="com">// PEM CSR (-----BEGIN CERTIFICATE REQUEST-----)</span></code></pre>
+
+  <p>The backend exposes certificate/CSR creation at <code>POST /certs/self-signed</code>
+     (CSRF-protected), with optional <code>{ csr: true }</code> to also return a CSR.</p>
+
+  <h2>Keypairs</h2>
+
+  <h3 id="generateKeyPair">generateKeyPair(type, opts?)</h3>
+  <pre><code><span class="kw">function</span> generateKeyPair(
+  type: <span class="str">'rsa'</span> | <span class="str">'ec'</span>,
+  opts?: KeyPairOptions,
+): KeyPairResult</code></pre>
+  <p>Generate an RSA or EC keypair via <code>crypto.generateKeyPairSync</code>. Returns DER buffers
+     (SPKI public, PKCS#8 private) plus PEM strings. RSA defaults to 2048-bit; EC defaults to
+     <code>prime256v1</code> (P-256). <code>modulusLength</code> applies only to <code>'rsa'</code>;
+     <code>namedCurve</code> applies only to <code>'ec'</code>.</p>
+  <pre><code><span class="kw">const</span> rsa = generateKeyPair(<span class="str">'rsa'</span>, { modulusLength: <span class="num">4096</span> });
+<span class="kw">const</span> ec  = generateKeyPair(<span class="str">'ec'</span>,  { namedCurve: <span class="str">'prime256v1'</span> });
+
+rsa.publicKey;  <span class="com">// Buffer — SPKI DER</span>
+rsa.privateKey; <span class="com">// Buffer — PKCS#8 DER</span>
+rsa.pem.public; rsa.pem.private;</code></pre>
+  <h4>KeyPairOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>modulusLength?</code></td><td><code>number</code></td><td><code>2048</code></td><td>RSA key size in bits. Used only when <code>type: 'rsa'</code>.</td></tr>
+      <tr><td><code>namedCurve?</code></td><td><code>string</code></td><td><code>'prime256v1'</code></td><td>EC curve name. Used only when <code>type: 'ec'</code>.</td></tr>
+    </tbody>
+  </table>
+  <h4>KeyPairResult</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>publicKey</code></td><td><code>Buffer</code></td><td>SPKI DER public key.</td></tr>
+      <tr><td><code>privateKey</code></td><td><code>Buffer</code></td><td>PKCS#8 DER private key.</td></tr>
+      <tr><td><code>pem.public</code></td><td><code>string</code></td><td>SPKI public key PEM.</td></tr>
+      <tr><td><code>pem.private</code></td><td><code>string</code></td><td>PKCS#8 private key PEM.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="exportPublicKeyPem">exportPublicKeyPem(key)</h3>
+  <pre><code><span class="kw">function</span> exportPublicKeyPem(key: crypto.KeyObject): <span class="kw">string</span></code></pre>
+  <p>Export a <code>KeyObject</code> as an SPKI PEM string. Used by <code>generateKeyPair</code>; exposed for
+     callers that hold their own <code>KeyObject</code>.</p>
+
+  <h3 id="exportPrivateKeyPem">exportPrivateKeyPem(key)</h3>
+  <pre><code><span class="kw">function</span> exportPrivateKeyPem(key: crypto.KeyObject): <span class="kw">string</span></code></pre>
+  <p>Export a <code>KeyObject</code> as a PKCS#8 PEM string.</p>
+
+  <h2>X.509 self-signed certificates</h2>
+
+  <h3 id="createSelfSignedCertificate">createSelfSignedCertificate(opts)</h3>
+  <pre><code><span class="kw">function</span> createSelfSignedCertificate(opts: X509Options): X509Result</code></pre>
+  <p>Build a self-signed X.509 v3 certificate by hand: assembles a TBSCertificate DER, signs it with the
+     private key (SHA-256), and wraps it as <code>SEQUENCE { tbs, sigAlgId, signature }</code>. Detects
+     RSA vs EC from the key and picks the matching algorithm identifier. No extensions are added (a v3
+     cert with no extensions is still valid DER). The resulting <code>cert</code> buffer is parseable by
+     Node's <code>X509Certificate</code>.</p>
+  <pre><code><span class="kw">const</span> kp = generateKeyPair(<span class="str">'rsa'</span>);
+<span class="kw">const</span> { cert, pem } = createSelfSignedCertificate({
+  keyPair: kp,
+  commonName: <span class="str">'localhost'</span>,
+  organization: <span class="str">'BhooAI'</span>,
+  country: <span class="str">'IN'</span>,
+  notBefore: <span class="kw">new</span> Date(),
+  notAfter: <span class="kw">new</span> Date(Date.now() + <span class="num">90</span> * <span class="num">24</span> * <span class="num">60</span> * <span class="num">60</span> * <span class="num">1000</span>),
+  serial: <span class="num">0x1</span>,
+});
+
+<span class="kw">import</span> { X509Certificate } <span class="kw">from</span> <span class="str">'node:crypto'</span>;
+<span class="kw">new</span> X509Certificate(cert).subjectAltName; <span class="com">// parseable</span></code></pre>
+  <h4>X509Options</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>keyPair</code></td><td><code>{ publicKey: Buffer; privateKey: Buffer }</code></td><td>—</td><td>Keypair from <code>generateKeyPair</code> (DER buffers).</td></tr>
+      <tr><td><code>commonName</code></td><td><code>string</code></td><td>—</td><td>Subject CN.</td></tr>
+      <tr><td><code>organization?</code></td><td><code>string</code></td><td>—</td><td>Subject O (organizationalName).</td></tr>
+      <tr><td><code>country?</code></td><td><code>string</code></td><td>—</td><td>Subject C (countryName).</td></tr>
+      <tr><td><code>notBefore?</code></td><td><code>Date</code></td><td><code>new Date()</code></td><td>Validity start. Encoded as UTCTime (1950–2049) or GeneralizedTime (≥ 2050).</td></tr>
+      <tr><td><code>notAfter?</code></td><td><code>Date</code></td><td><code>notBefore + 365 days</code></td><td>Validity end.</td></tr>
+      <tr><td><code>serial?</code></td><td><code>number</code></td><td><code>1</code></td><td>Certificate serial number.</td></tr>
+    </tbody>
+  </table>
+  <h4>X509Result</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cert</code></td><td><code>Buffer</code></td><td>DER certificate.</td></tr>
+      <tr><td><code>pem</code></td><td><code>string</code></td><td>PEM (<code>-----BEGIN CERTIFICATE-----</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="pemEncode">pemEncode(der, label)</h3>
+  <pre><code><span class="kw">function</span> pemEncode(der: Buffer, label: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Wrap a DER buffer as a PEM string with the given label, base64-encoded at 64 columns. Used by both
+     the certificate and CSR builders; exposed for any other DER-to-PEM need.</p>
+
+  <h2>PKCS#10 Certificate Signing Requests</h2>
+
+  <h3 id="createCsr">createCsr(opts)</h3>
+  <pre><code><span class="kw">function</span> createCsr(opts: CsrOptions): CsrResult</code></pre>
+  <p>Create a PKCS#10 CSR by hand: assembles CertificationRequestInfo DER, signs it with the private key
+     (SHA-256), and wraps it as <code>SEQUENCE { cri, sigAlgId, signature }</code>. Supports an optional
+     <code>challengePassword</code> attribute and an <code>extensionRequest</code> attribute carrying
+     arbitrary extensions (e.g. <code>subjectAltName</code>). PEM label is <code>CERTIFICATE REQUEST</code>.</p>
+  <pre><code><span class="kw">const</span> { csr, pem } = createCsr({
+  keyPair: kp,
+  commonName: <span class="str">'localhost'</span>,
+  organization: <span class="str">'BhooAI'</span>,
+  country: <span class="str">'IN'</span>,
+  challengePassword: <span class="str">'prove-ownership'</span>,
+  extensions: [
+    { type: <span class="str">'2.5.29.17'</span>, value: Buffer.from(<span class="str">'...DER...'</span>) },        <span class="com">// subjectAltName</span>
+    { type: <span class="str">'2.5.29.15'</span>, value: Buffer.from(<span class="str">'...DER...'</span>), critical: <span class="kw">true</span> },
+  ],
+});</code></pre>
+  <div class="callout warn">
+    <span class="label">Extensions are raw DER</span>
+    Each extension's <code>value</code> is embedded verbatim as an <code>OCTET_STRING</code>. The caller is
+    responsible for encoding the extension <em>value</em> DER (e.g. a GeneralNames sequence for
+    <code>subjectAltName</code>). <code>createCsr</code> only wraps it in the <code>Extension</code> +
+    <code>extensionRequest</code> structures.
+  </div>
+  <h4>CsrOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>keyPair</code></td><td><code>{ publicKey: Buffer; privateKey: Buffer }</code></td><td>—</td><td>Keypair from <code>generateKeyPair</code> (DER buffers).</td></tr>
+      <tr><td><code>commonName</code></td><td><code>string</code></td><td>—</td><td>Subject CN.</td></tr>
+      <tr><td><code>organization?</code></td><td><code>string</code></td><td>—</td><td>Subject O.</td></tr>
+      <tr><td><code>country?</code></td><td><code>string</code></td><td>—</td><td>Subject C.</td></tr>
+      <tr><td><code>challengePassword?</code></td><td><code>string</code></td><td>—</td><td>Optional PKCS#9 <code>challengePassword</code> attribute (UTF8String).</td></tr>
+      <tr><td><code>extensions?</code></td><td><code>CsrExtension[]</code></td><td><code>[]</code></td><td>Extensions carried in an <code>extensionRequest</code> attribute.</td></tr>
+    </tbody>
+  </table>
+  <h4>CsrExtension</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>type</code></td><td><code>string</code></td><td>Extension OID in dotted form (e.g. <code>'2.5.29.17'</code>).</td></tr>
+      <tr><td><code>value</code></td><td><code>Buffer</code></td><td>Extension value DER, embedded as <code>OCTET_STRING</code>.</td></tr>
+      <tr><td><code>critical?</code></td><td><code>boolean</code></td><td>If true, marks the extension critical.</td></tr>
+    </tbody>
+  </table>
+  <h4>CsrResult</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>csr</code></td><td><code>Buffer</code></td><td>DER CSR.</td></tr>
+      <tr><td><code>pem</code></td><td><code>string</code></td><td>PEM (<code>-----BEGIN CERTIFICATE REQUEST-----</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>HTTPS / mTLS helpers</h2>
+
+  <h3 id="createHttpsAgent">createHttpsAgent(opts)</h3>
+  <pre><code><span class="kw">function</span> createHttpsAgent(opts: HttpsAgentOptions): https.Agent</code></pre>
+  <p>Create an <code>https.Agent</code> configured for mutual TLS on the client side. Defaults
+     <code>rejectUnauthorized</code> to <code>true</code>.</p>
+  <h4>HttpsAgentOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cert</code></td><td><code>Buffer</code></td><td>—</td><td>Client certificate DER/PEM.</td></tr>
+      <tr><td><code>key</code></td><td><code>Buffer</code></td><td>—</td><td>Client private key DER/PEM.</td></tr>
+      <tr><td><code>ca?</code></td><td><code>Buffer</code></td><td>—</td><td>CA to verify the server.</td></tr>
+      <tr><td><code>rejectUnauthorized?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Forwarded to <code>tls.connect</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="createTlsConfig">createTlsConfig(opts)</h3>
+  <pre><code><span class="kw">function</span> createTlsConfig(opts: TlsConfigOptions): { cert: Buffer; key: Buffer; ca?: Buffer }</code></pre>
+  <p>Return the <code>{ cert, key, ca? }</code> object for <code>https.createServer</code>.
+     Omits <code>ca</code> when not supplied so the server doesn't receive an <code>undefined</code> field.</p>
+  <h4>TlsConfigOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cert</code></td><td><code>Buffer</code></td><td>Server certificate.</td></tr>
+      <tr><td><code>key</code></td><td><code>Buffer</code></td><td>Server private key.</td></tr>
+      <tr><td><code>ca?</code></td><td><code>Buffer</code></td><td>Optional CA for client-cert verification (mTLS).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>DER / ASN.1 encoder</h2>
+  <p>A minimal hand-rolled DER encoder (~260 lines, no external deps). Works in arrays of byte values
+     (<code>number[]</code>) and flattens to a <code>Buffer</code> at the end via <code>toBuffer</code>.
+     Sufficient to encode X.509 TBSCertificates and PKCS#10 CSRs.</p>
+
+  <h3>Working type &amp; primitives</h3>
+  <table>
+    <thead><tr><th>Export</th><th>Signature</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>Byte</code></td><td><code>type Byte = number[]</code></td><td>Working byte array used throughout.</td></tr>
+      <tr><td><code>encodeLen</code></td><td><code>(n: number) =&gt; number[]</code></td><td>DER length: short form for &lt; 128, long form otherwise. Throws on negative/too large.</td></tr>
+      <tr><td><code>tag</code></td><td><code>(tagByte: number, content: number[]) =&gt; number[]</code></td><td>Wrap content with a tag byte + DER length.</td></tr>
+      <tr><td><code>INTEGER</code></td><td><code>(n: number | bigint) =&gt; number[]</code></td><td>INTEGER from a non-negative or negative value (two's complement for negatives).</td></tr>
+      <tr><td><code>BIT_STRING</code></td><td><code>(content: number[], unusedBits = 0) =&gt; number[]</code></td><td>BIT STRING with a leading unused-bits byte.</td></tr>
+      <tr><td><code>OCTET_STRING</code></td><td><code>(content: number[]) =&gt; number[]</code></td><td>OCTET STRING.</td></tr>
+      <tr><td><code>NULL</code></td><td><code>() =&gt; number[]</code></td><td>NULL (empty content).</td></tr>
+      <tr><td><code>BOOLEAN</code></td><td><code>(value: boolean) =&gt; number[]</code></td><td><code>0x00</code> for false, <code>0xff</code> for true.</td></tr>
+      <tr><td><code>oidFromString</code></td><td><code>(s: string) =&gt; number[]</code></td><td>Parse a dotted OID string into an arc array.</td></tr>
+      <tr><td><code>OID</code></td><td><code>(arcs: number[]) =&gt; number[]</code></td><td>OID encoder: first two arcs packed as <code>40*a+b</code>, rest base-128 with continuation.</td></tr>
+      <tr><td><code>SEQUENCE</code></td><td><code>(...items: Byte[]) =&gt; Byte</code></td><td>SEQUENCE OF (constructed).</td></tr>
+      <tr><td><code>SET</code></td><td><code>(...items: Byte[]) =&gt; Byte</code></td><td>SET OF (constructed).</td></tr>
+      <tr><td><code>UTCTime</code></td><td><code>(date: Date) =&gt; number[]</code></td><td><code>YYMMDDHHMMSSZ</code> (years 1950–2049).</td></tr>
+      <tr><td><code>GeneralizedTime</code></td><td><code>(date: Date) =&gt; number[]</code></td><td><code>YYYYMMDDHHMMSSZ</code> (years ≥ 2050).</td></tr>
+      <tr><td><code>PrintableString</code></td><td><code>(s: string) =&gt; number[]</code></td><td>ASCII string (used for CN/O/C).</td></tr>
+      <tr><td><code>UTF8String</code></td><td><code>(s: string) =&gt; number[]</code></td><td>UTF-8 string (used for <code>challengePassword</code>).</td></tr>
+      <tr><td><code>IA5String</code></td><td><code>(s: string) =&gt; number[]</code></td><td>ASCII (IA5) string.</td></tr>
+      <tr><td><code>toBuffer</code></td><td><code>(bytes: number[]) =&gt; Buffer</code></td><td>Flatten a byte array into a <code>Buffer</code>.</td></tr>
+      <tr><td><code>hex</code></td><td><code>(bytes: number[]) =&gt; string</code></td><td>Debug helper: render bytes as space-separated hex.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>OID constants</h3>
+  <p>All OID constants are pre-encoded (already tagged, ready to embed).</p>
+  <table>
+    <thead><tr><th>Constant</th><th>OID</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>RSA_ENCRYPTION</code></td><td><code>1.2.840.113549.1.1.1</code></td><td>rsaEncryption.</td></tr>
+      <tr><td><code>SHA256_WITH_RSA</code></td><td><code>1.2.840.113549.1.1.11</code></td><td>sha256WithRSAEncryption.</td></tr>
+      <tr><td><code>EC_PUBLIC_KEY</code></td><td><code>1.2.840.10045.2.1</code></td><td>id-ecPublicKey.</td></tr>
+      <tr><td><code>ECDSA_P256</code></td><td><code>1.2.840.10045.4.3.2</code></td><td>ecdsa-with-SHA256.</td></tr>
+      <tr><td><code>PRIME256V1</code></td><td><code>1.2.840.10045.3.1.7</code></td><td>prime256v1 curve.</td></tr>
+      <tr><td><code>COMMON_NAME</code></td><td><code>2.5.4.3</code></td><td>commonName attribute.</td></tr>
+      <tr><td><code>ORG</code></td><td><code>2.5.4.10</code></td><td>organizationName attribute.</td></tr>
+      <tr><td><code>COUNTRY</code></td><td><code>2.5.4.6</code></td><td>countryName attribute.</td></tr>
+      <tr><td><code>EXTENSION_REQUEST</code></td><td><code>1.2.840.113549.1.9.14</code></td><td>PKCS#9 extensionRequest attribute.</td></tr>
+      <tr><td><code>CHALLENGE_PASSWORD</code></td><td><code>1.2.840.113549.1.9.7</code></td><td>PKCS#9 challengePassword attribute.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Algorithm identifier builders</h3>
+  <table>
+    <thead><tr><th>Export</th><th>Signature</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>sha256WithRsaAlgId</code></td><td><code>() =&gt; number[]</code></td><td><code>SEQUENCE { SHA256_WITH_RSA, NULL }</code> — RSA-SHA256 AlgorithmIdentifier.</td></tr>
+      <tr><td><code>ecdsaP256AlgId</code></td><td><code>() =&gt; number[]</code></td><td><code>SEQUENCE { ECDSA_P256 }</code> — ECDSA P-256 AlgorithmIdentifier.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Crypto API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Crypto - FNV-1a toy hash (non-cryptographic)","apiBase":"http://localhost:4000","js":"// Toy FNV-1a hash as a deterministic digest stand-in. This is NOT cryptography —\n// do not use it for signatures or security. It mirrors how a CSR/cert is a deterministic\n// function of its inputs (key + subject + attributes).\nfunction hash(key, msg) {\n  let h = 2166136261;\n  const s = key + \"|\" + msg;\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }\n  return (h >>> 0).toString(16);\n}\nconst sig1 = hash(\"webhook-secret\", \"raw-body\");\nconst sig2 = hash(\"webhook-secret\", \"raw-body\");\nconst sig3 = hash(\"other\", \"raw-body\");\nconsole.log(\"same input, same digest:\", sig1 === sig2);\nconsole.log(\"different key, diff digest:\", sig1 !== sig3);\nconsole.log(\"digest:\", sig1.slice(0, 8) + \"...\");","api":{"method":"POST","path":"/certs/self-signed","body":{"commonName":"localhost"}}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

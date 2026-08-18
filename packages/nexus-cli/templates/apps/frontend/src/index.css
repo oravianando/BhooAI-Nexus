@@ -1,0 +1,44 @@
+@import '@bhooai/nexus-postcss/theme.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Example: using Nexus design tokens + Tailwind utilities together.
+ *
+ * The theme.css @import above defines CSS custom properties on :root:
+ *   --nexus-bg, --nexus-ink, --nexus-muted, --nexus-surface,
+ *   --nexus-border, --nexus-accent, --nexus-radius, --nexus-mesh, …
+ *
+ * Override any token in your own :root to retheme the whole app:
+ */
+
+:root {
+  /* --nexus-accent: #ff6b6b;  /* uncomment to retheme the accent */
+}
+
+/* Example: a glass-surface card built from Nexus tokens. */
+.nexus-card {
+  background: var(--nexus-surface);
+  border: 1px solid var(--nexus-border);
+  border-radius: var(--nexus-radius);
+  color: var(--nexus-ink);
+  padding: 1.5rem;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Example: ambient mesh background (gradient field behind your app). */
+.nexus-mesh-bg {
+  background: var(--nexus-mesh), var(--nexus-bg);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* Example: accent-colored link / button using a token. */
+.nexus-link {
+  color: var(--nexus-accent);
+  text-decoration: none;
+}
+.nexus-link:hover { text-decoration: underline; }

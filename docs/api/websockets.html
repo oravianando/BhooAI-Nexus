@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebSockets — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <span class="eyebrow">API Reference</span>
+  <h1>WebSockets
+    <span class="sub">Two WebSocket endpoints: the realtime room/SFU server on <code>/ws</code> and the GraphQL subscription server on <code>/graphql/ws</code>.</span></h1>
+
+  <p>Nexus multiplexes two WebSocket services over the same <code>node:http</code> server that the
+     REST API uses. Both are mounted via <code>noServer</code> upgrade handling so they can share port
+     <code>4000</code> (or whatever <code>server.port</code> is configured to) with the HTTP router.</p>
+
+  <h2>Realtime WebSocket — ws://host/ws</h2>
+  <p>The <code>RealtimeServer</code> from <span class="badge core">@bhooai/nexus-realtime</span> powers
+     rooms, WebRTC signaling, the mediasoup SFU, and cross-instance Redis fanout. See the
+     <a href="realtime.html">Realtime API</a> page for the full class reference
+     (<code>RealtimeServer</code>, <code>RedisPubSubAdapter</code>, <code>MediasoupAdapter</code>) and
+     the exported types (<code>Connection</code>, <code>ClientMessage</code>, <code>ServerMessage</code>,
+     <code>MediaAction</code>).</p>
+  <table>
+    <thead><tr><th>Aspect</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>URL</td><td><code>ws://&lt;host&gt;/ws</code> (upgrade handled by <code>RealtimeServer</code>, default <code>RealtimeServerOptions.path</code>)</td></tr>
+      <tr><td>Auth</td><td>Access token via <code>?token=&lt;accessToken&gt;</code> query param, or sent as the first entry of <code>Sec-WebSocket-Protocol</code>; verified by <code>RealtimeServerOptions.authService</code></td></tr>
+      <tr><td>CSRF</td><td>Optional origin check when <code>RealtimeServerOptions.csrfOptions</code> is set (typically <code>config.ws.requireCsrf ? { trustedOrigins }</code>)</td></tr>
+      <tr><td>Framing</td><td>JSON text frames; one <code>ClientMessage</code> / <code>ServerMessage</code> per frame, <code>{ type, ... }</code></td></tr>
+      <tr><td>Fanout</td><td><code>RealtimeServerOptions.adapter</code> — defaults to <code>MemoryPubSubAdapter</code>; pass a <code>RedisPubSubAdapter</code> to mirror <code>join</code>/<code>leave</code>/<code>broadcast</code> across instances</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Client → Server (<code>ClientMessage</code>)</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ping</code></td><td>—</td><td>Server replies <code>pong</code> (keepalive)</td></tr>
+      <tr><td><code>join</code></td><td><code>{ room }</code></td><td>Join a room; server replies <code>joined</code> with peers</td></tr>
+      <tr><td><code>leave</code></td><td><code>{ room }</code></td><td>Leave a room; server replies <code>left</code></td></tr>
+      <tr><td><code>offer</code> / <code>answer</code> / <code>candidate</code></td><td><code>{ to, sdp } | { to, candidate }</code></td><td>WebRTC signaling relayed to the target peer</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>{ room, event, data }</code></td><td>Fan out an event to every other peer in the room</td></tr>
+      <tr><td><code>media</code></td><td><code>{ action, payload }</code></td><td>mediasoup SFU request (request/response, 8s timeout)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Server → Client (<code>ServerMessage</code>)</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>pong</code></td><td>—</td><td>Reply to <code>ping</code></td></tr>
+      <tr><td><code>error</code></td><td><code>{ message, code? }</code></td><td>Any malformed / unauthorized message</td></tr>
+      <tr><td><code>joined</code></td><td><code>{ room, peers }</code></td><td>You joined <code>room</code>; <code>peers</code> = other members</td></tr>
+      <tr><td><code>left</code></td><td><code>{ room }</code></td><td>You left the room</td></tr>
+      <tr><td><code>peer-joined</code> / <code>peer-left</code></td><td><code>{ room, peer }</code></td><td>Another peer joined/left a room you're in (never echoed to the originator)</td></tr>
+      <tr><td><code>offer</code> / <code>answer</code> / <code>candidate</code></td><td><code>{ from, sdp } | { from, candidate }</code></td><td>Incoming WebRTC signaling from another peer</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>{ room, from, event, data }</code></td><td>A peer (not you) broadcast an event to the room</td></tr>
+      <tr><td><code>media</code></td><td><code>{ action, payload }</code></td><td>mediasoup SFU response</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Connection example</h3>
+  <pre><code><span class="kw">const</span> token = <span class="str">'&lt;accessToken&gt;'</span>;
+<span class="kw">const</span> ws = <span class="kw">new</span> WebSocket(`ws:<span class="com">//localhost:4000/ws?token=${token}`);</span>
+ws.addEventListener(<span class="str">'open'</span>, () =&gt; {
+  ws.send(JSON.stringify({ type: <span class="str">'join'</span>, room: <span class="str">'lobby'</span> }));
+});
+ws.addEventListener(<span class="str">'message'</span>, (e) =&gt; {
+  <span class="kw">const</span> msg = JSON.parse(e.data);
+  <span class="kw">if</span> (msg.type === <span class="str">'joined'</span>) console.log(<span class="str">'peers:'</span>, msg.peers);
+  <span class="kw">if</span> (msg.type === <span class="str">'broadcast'</span>) console.log(msg.from, msg.event, msg.data);
+});
+<span class="com">// broadcast to the room</span>
+ws.send(JSON.stringify({ type: <span class="str">'broadcast'</span>, room: <span class="str">'lobby'</span>, event: <span class="str">'chat'</span>, data: { text: <span class="str">'hi'</span> } }));</code></pre>
+
+  <div class="callout note">
+    <span class="label">No echo to self</span>
+    <code>deliverRoom</code> skips the originator, so you never receive your own
+    <code>peer-joined</code> / <code>peer-left</code> / <code>broadcast</code>. Cross-instance signaling
+    (offer/answer/candidate) is published to a <code>conn:&lt;to&gt;</code> Redis channel when the
+    target peer is on another instance.
+  </div>
+
+  <h2>GraphQL Subscriptions — ws://host/graphql/ws</h2>
+  <p>The subscription transport from <span class="badge core">@bhooai/nexus-graphql</span> implements
+     the <code>graphql-transport-ws</code> protocol (the one used by Apollo, urql, and graphql-ws).</p>
+  <table>
+    <thead><tr><th>Aspect</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>URL</td><td><code>ws://&lt;host&gt;/graphql/ws</code></td></tr>
+      <tr><td>Subprotocol</td><td><strong>Must</strong> offer <code>graphql-transport-ws</code> as a <code>Sec-WebSocket-Protocol</code> entry, otherwise the server closes with <code>400</code></td></tr>
+      <tr><td>Auth</td><td>Token in the <code>connection_init</code> payload (<code>{ token: '&lt;accessToken&gt;' }</code>), or <code>?token=&lt;accessToken&gt;</code> query</td></tr>
+      <tr><td>Lifecycle</td><td><code>connection_init</code> → <code>connection_ack</code> → many <code>subscribe</code> / <code>next</code> → <code>complete</code> / <code>ping</code> / <code>pong</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Client → Server</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>connection_init</code></td><td><code>{ payload? }</code></td><td>Send auth/headers (<code>payload.token</code>); server replies <code>connection_ack</code></td></tr>
+      <tr><td><code>subscribe</code></td><td><code>{ id, payload: { query, variables?, operationName? } }</code></td><td>Start a subscription; server streams <code>next</code> events with the same <code>id</code></td></tr>
+      <tr><td><code>complete</code></td><td><code>{ id }</code></td><td>Client cancels the subscription</td></tr>
+      <tr><td><code>ping</code></td><td><code>{ payload? }</code></td><td>Keepalive probe</td></tr>
+      <tr><td><code>pong</code></td><td><code>{ payload? }</code></td><td>Reply to a server <code>ping</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Server → Client</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>connection_ack</code></td><td><code>{ payload? }</code></td><td>Handshake accepted</td></tr>
+      <tr><td><code>next</code></td><td><code>{ id, payload }</code></td><td>A subscription yielded a value</td></tr>
+      <tr><td><code>error</code></td><td><code>{ id, payload }</code></td><td>Subscription errored (parse / validation / resolver)</td></tr>
+      <tr><td><code>complete</code></td><td><code>{ id }</code></td><td>Subscription ended (server-side complete)</td></tr>
+      <tr><td><code>pong</code></td><td><code>{ payload? }</code></td><td>Reply to a client <code>ping</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Subscription example</h3>
+  <pre><code><span class="kw">import</span> { createClient } <span class="kw">from</span> <span class="str">'graphql-ws'</span>;
+
+<span class="kw">const</span> client = createClient({
+  url: <span class="str">'ws://localhost:4000/graphql/ws'</span>,
+  connectionParams: () =&gt; ({ token: accessToken }),
+});
+
+<span class="kw">const</span> unsubscribe = client.subscribe(
+  {
+    query: <span class="str">`subscription { messageAdded(room: "lobby") { id text from } }`</span>,
+    variables: {},
+  },
+  {
+    next: (data) =&gt; console.log(<span class="str">'event'</span>, data),
+    error: (err) =&gt; console.error(<span class="str">'ws error'</span>, err),
+    complete: () =&gt; console.log(<span class="str">'stream closed'</span>),
+  },
+);
+
+<span class="com">// later: unsubscribe() to send `complete` and tear it down</span></code></pre>
+
+  <div class="callout warn">
+    <span class="label">Subprotocol required</span>
+    If your client connects without offering <code>graphql-transport-ws</code> in
+    <code>Sec-WebSocket-Protocol</code>, the server responds with HTTP <code>400</code> on the
+    upgrade. Most GraphQL WS clients do this automatically — raw <code>WebSocket</code> users must
+    pass it as the second argument: <code>new WebSocket(url, 'graphql-transport-ws')</code>.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · WebSockets &nbsp;·&nbsp; <a href="http-endpoints.html">← HTTP Endpoints</a> &nbsp; <a href="supervisor.html">Supervisor API →</a></div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"WebSockets - rooms + graphql-transport-ws","apiBase":"http://localhost:4000","js":"function createRoom() {\n  const members = new Set();\n  const log = [];\n  return {\n    join: (id) =\u003e { members.add(id); log.push(id + \" joined\"); },\n    broadcast: (a, m) =\u003e { for (const x of members) if (x !== a) log.push(x + \" \u003c- \" + a + \": \" + m); },\n    log,\n  };\n}\nconst room = createRoom();\nroom.join(\"conn:1\"); room.join(\"conn:2\");\nroom.broadcast(\"conn:1\", \"hello\");\nconsole.log(room.log.join(\"\\n\"));\n\nconst proto = \"graphql-transport-ws\";\nconsole.log(\"server accepts:\", [\"graphql-ws\", proto].includes(proto) ? \"yes\" : \"400\");\nconsole.log(\"raw client must pass:\", proto);","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

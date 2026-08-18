@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+nexus.runtime.json
+.nexus-sync.json
+cluster.runtime.json
+logs/
+certs/
+uploads/*
+!uploads/.gitkeep
+__pycache__/
+.venv/

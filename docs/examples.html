@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Examples — BhooAI Nexus Docs</title>
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1>Examples <span class="sub">Recipes for the most common Nexus tasks.</span></h1>
+  <p>These snippets are accurate to the shipped APIs. They assume the framework packages are resolvable
+     (inside the monorepo, or once <code>@bhooai/nexus-*</code> are published).</p>
+
+  <h2>Step-by-step Guides</h2>
+  <p>New to Nexus? Start with the <a href="guides/guide-empty-project.html">From Empty Project</a> guide
+     and work through the flow that matches your use case.</p>
+  <div class="grid">
+    <a class="card" href="guides/guide-empty-project.html"><h4>From Empty Project</h4><p><code>nexus init</code>, config, .env, boot, add routes and modules.</p></a>
+    <a class="card" href="guides/guide-auth.html"><h4>Login &amp; Auth Flow</h4><p>CSRF, register, login, JWT tokens, protect routes, OAuth, Postman.</p></a>
+    <a class="card" href="guides/guide-websocket.html"><h4>WebSocket Chat</h4><p>Realtime server, browser client, rooms, broadcast, WebRTC signaling.</p></a>
+    <a class="card" href="guides/guide-email.html"><h4>Send Email</h4><p>SMTP config, templates, welcome + password reset emails.</p></a>
+    <a class="card" href="guides/guide-payments.html"><h4>Payments Integration</h4><p>Razorpay/PayPal, create order, checkout redirect, webhook, capture.</p></a>
+    <a class="card" href="guides/guide-ai-chat.html"><h4>AI Chat Streaming</h4><p>SSE streaming, 20 providers, Together AI SDK, Ollama, chat playground.</p></a>
+    <a class="card" href="guides/guide-uploads.html"><h4>Upload Files</h4><p>Multipart form data, file limits, static serving, CSRF flow.</p></a>
+    <a class="card" href="guides/guide-mongodb.html"><h4>MongoDB CRUD</h4><p>Schema, model, find, populate, transactions, $jsonSchema validators.</p></a>
+    <a class="card" href="guides/guide-graphql.html"><h4>GraphQL API</h4><p>Subgraphs, resolvers, gateway, subscriptions, federation.</p></a>
+    <a class="card" href="guides/guide-cluster.html"><h4>Cluster Setup</h4><p>Master/slave, node agent, link nodes, load balancer, autoscaler.</p></a>
+  </div>
+
+  <h2>Boot a backend with the security stack</h2>
+  <p>The minimum runnable server: health, CSRF, and an echo route.</p>
+  <pre><code><span class="kw">import</span> { loadConfig, Router, NexusServer, bodyParser } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+<span class="kw">import</span> { cors, csrf, securityHeaders, rateLimit, issueCsrfToken } <span class="kw">from</span> <span class="str">'@bhooai/nexus-auth'</span>;
+<span class="kw">import</span> { Logger } <span class="kw">from</span> <span class="str">'@bhooai/nexus-telemetry'</span>;
+
+<span class="kw">const</span> config = <span class="kw">await</span> loadConfig({ root: process.cwd() });
+<span class="kw">const</span> log = <span class="kw">new</span> Logger({ level: config.logging.level, console: <span class="num">true</span> });
+<span class="kw">const</span> trustedOrigins = [
+  <span class="str">`http://localhost:${config.server.port}`</span>,
+  <span class="str">`http://127.0.0.1:${config.server.port}`</span>,
+   <span class="str">'http://localhost:3000'</span>,
+];
+
+<span class="kw">const</span> router = <span class="kw">new</span> Router();
+router.get(<span class="str">'/health'</span>, (ctx) =&gt; ctx.json({ status: <span class="str">'ok'</span> }));
+router.get(<span class="str">'/csrf-token'</span>, (ctx) =&gt; ctx.json({ token: issueCsrfToken(ctx, { trustedOrigins }) }));
+router.post(<span class="str">'/echo'</span>, (ctx) =&gt; ctx.json({ received: ctx.body }));
+
+<span class="kw">const</span> server = <span class="kw">new</span> NexusServer({
+  router,
+  middleware: [
+    securityHeaders(),
+    cors({ origin: <span class="num">true</span>, credentials: <span class="num">true</span> }),
+    bodyParser(config.server.bodyLimit),
+    csrf({ trustedOrigins }),
+    rateLimit({ windowMs: <span class="num">60_000</span>, max: <span class="num">300</span> }),
+  ],
+});
+<span class="kw">await</span> server.listen(config.server.port, config.server.host);</code></pre>
+  <div class="callout note">
+    <span class="label">CSRF</span>
+    <code>POST /echo</code> requires an <code>Origin</code> header matching a trusted origin <em>and</em> an
+    <code>x-csrf-token</code> matching the <code>nexus_csrf</code> cookie from <code>GET /csrf-token</code>.
+  </div>
+
+  <h2>Upload a file to <code>/uploads</code></h2>
+  <p>The core upload helper stores multipart files under the project-local <code>uploads/</code> directory
+     and returns generated public filenames. Keep the static middleware before the body parser so GETs do not
+     consume a request body.</p>
+  <pre><code><span class="kw">import</span> { join } <span class="kw">from</span> <span class="str">'node:path'</span>;
+<span class="kw">import</span> { registerUploadRoutes, serveStatic } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+
+<span class="kw">const</span> uploadsDir = join(process.cwd(), config.uploads.dir);
+registerUploadRoutes(router, {
+  directory: uploadsDir,
+  path: <span class="str">'/uploads'</span>,
+  maxFileSize: config.uploads.maxFileSize,
+  maxFiles: config.uploads.maxFiles,
+  allowedTypes: [<span class="str">'image/png'</span>, <span class="str">'image/jpeg'</span>],
+});
+
+<span class="kw">const</span> server = <span class="kw">new</span> NexusServer({
+  router,
+  middleware: [
+    serveStatic(uploadsDir, { prefix: <span class="str">'/uploads'</span> }),
+    bodyParser(config.server.bodyLimit),
+    csrf({ trustedOrigins }),
+  ],
+});</code></pre>
+  <pre><code><span class="com">// Browser: do not set Content-Type manually; FormData supplies the boundary.</span>
+<span class="kw">const</span> csrf = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'include'</span> }).then((r) =&gt; r.json());
+<span class="kw">const</span> form = <span class="kw">new</span> FormData();
+form.append(<span class="str">'file'</span>, input.files[<span class="num">0</span>]);
+<span class="kw">const</span> result = <span class="kw">await</span> fetch(<span class="str">'/uploads'</span>, {
+  method: <span class="str">'POST'</span>, body: form, credentials: <span class="str">'include'</span>,
+  headers: { <span class="str">'x-csrf-token'</span>: csrf.token },
+}).then((r) =&gt; r.json());</code></pre>
+  <div class="callout warn">
+    <span class="label">Limits</span>
+    The default request envelope is 12 MiB and the default individual file limit is 10 MiB. Configure
+    <code>server.bodyLimit</code>, <code>uploads.maxFileSize</code>, <code>uploads.maxFiles</code>, and
+    <code>uploads.allowedTypes</code> together for larger or restricted uploads.
+  </div>
+
+  <h2>Define an ODM model and query</h2>
+  <pre><code><span class="kw">import</span> { connect, model, Schema, transaction } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+connect(<span class="str">'mongodb://localhost:27017/app'</span>);
+
+<span class="kw">const</span> Post = model(<span class="str">'Post'</span>, <span class="kw">new</span> Schema({
+  title:   { type: String, required: <span class="num">true</span>, index: <span class="num">true</span> },
+  author:  { type: <span class="str">'ObjectId'</span>, ref: <span class="str">'User'</span>, required: <span class="num">true</span> },
+  tags:    { type: [String], default: [] },
+  views:   { type: Number, default: <span class="num">0</span>, immutable: <span class="num">true</span> <span class="com">// can't be set after create</span> },
+  live:    { type: Boolean, default: <span class="num">true</span> },
+}, { timestamps: <span class="num">true</span> }));
+
+<span class="com">// chainable + thenable query</span>
+<span class="kw">const</span> hot = <span class="kw">await</span> Post.find({ live: <span class="num">true</span> })
+  .where(<span class="str">'views'</span>).gt(<span class="num">100</span>)
+  .sort(<span class="str">'-createdAt'</span>)
+  .limit(<span class="num">10</span>)
+  .populate(<span class="str">'author'</span>, <span class="str">'name email'</span>)
+  .lean();
+
+<span class="com">// a transaction</span>
+<span class="kw">await</span> transaction(<span class="kw">async</span> (session) =&gt; {
+  <span class="kw">const</span> post = <span class="kw">await</span> Post.create([{ title: <span class="str">'Hello'</span>, author: userId }], { session });
+  <span class="kw">await</span> Post.updateOne({ _id: post[<span class="num">0</span>]._id }, { $push: { tags: <span class="str">'intro'</span> } }, { session });
+});</code></pre>
+
+  <h2>Define a GraphQL subgraph</h2>
+  <pre><code><span class="kw">import</span> { defineSubgraph, createGateway, graphqlHttpHandler } <span class="kw">from</span> <span class="str">'@bhooai/nexus-graphql'</span>;
+<span class="kw">import</span> { model } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+<span class="kw">const</span> Todo = model(<span class="str">'Todo'</span>, /* schema */);
+
+<span class="kw">const</span> subgraph = defineSubgraph({
+  typeDefs: <span class="str">`
+    type Todo @key(fields: "id") { id: ID! title: String! done: Boolean! }
+    type Query { todos: [Todo!]! todo(id: ID!): Todo }
+  `</span>,
+  resolvers: {
+    Query: {
+      todos: () =&gt; Todo.find().lean(),
+      todo: (_p, { id }) =&gt; Todo.findById(id).lean(),
+    },
+    Todo: {
+      __resolveReference: (rep) =&gt; Todo.findById(rep.id).lean(),
+    },
+  },
+});
+
+<span class="kw">const</span> gateway = createGateway({ subgraph });
+router.post(<span class="str">'/graphql'</span>, graphqlHttpHandler({ gateway, context: <span class="kw">async</span> (ctx) =&gt; ({ request: ctx }) }));</code></pre>
+
+  <h2>Auth: register, login, protect a route</h2>
+  <pre><code><span class="kw">import</span> { AuthService, MemorySessionStore, authToken, requireRole, setAuthCookies } <span class="kw">from</span> <span class="str">'@bhooai/nexus-auth'</span>;
+
+<span class="kw">const</span> auth = <span class="kw">new</span> AuthService({ secret: config.auth.jwt.secret, accessTtl: <span class="str">'15m'</span>, refreshTtl: <span class="str">'30d'</span> }, <span class="kw">new</span> MemorySessionStore());
+
+router.post(<span class="str">'/login'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="com">// verify password, load user…</span>
+  <span class="kw">const</span> pair = <span class="kw">await</span> auth.login({ userId: String(user._id), roles: user.roles });
+  setAuthCookies(ctx, pair, { accessTokenName: config.auth.cookieName, refreshTokenName: config.auth.refreshCookieName });
+  ctx.json({ accessToken: pair.accessToken });
+});
+
+<span class="com">// protected route — middleware is the 3rd arg as an array, runs before the handler</span>
+router.get(<span class="str">'/me'</span>, (ctx) =&gt; ctx.json({ id: ctx.state.user.id, roles: ctx.state.user.roles }),
+  [authToken(auth, { cookieName: config.auth.cookieName, allowCookie: <span class="num">true</span> }), requireRole(<span class="str">'user'</span>)]);</code></pre>
+
+  <h2>Create a payment order</h2>
+  <pre><code><span class="kw">import</span> { createPayments } <span class="kw">from</span> <span class="str">'@bhooai/nexus-payments'</span>;
+
+ <span class="kw">const</span> payments = createPayments(config.payments); <span class="com">// keys in .env activate providers</span>
+
+router.post(<span class="str">'/payments/order'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> { provider, amount, currency } = ctx.body;
+  <span class="kw">const</span> gateway = payments.get(provider); <span class="com">// throws when disabled</span>
+  <span class="kw">const</span> order = <span class="kw">await</span> gateway.createOrder({ amount, currency });
+  ctx.json(order); <span class="com">// redirect or use the returned provider order id</span>
+}, [authToken(auth, { cookieName: config.auth.cookieName, allowCookie: <span class="num">true</span> })]);</code></pre>
+
+  <h2>Send a templated email</h2>
+  <pre><code><span class="kw">import</span> { createEmail, TemplateEngine } <span class="kw">from</span> <span class="str">'@bhooai/nexus-email'</span>;
+
+<span class="kw">const</span> templates = <span class="kw">new</span> TemplateEngine();
+templates.register(<span class="str">'welcome'</span>, <span class="str">'&lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;&lt;p&gt;Verify {{email}}.&lt;/p&gt;'</span>);
+<span class="kw">const</span> email = createEmail(config.email, { templates });
+
+<span class="kw">await</span> email.send({ to: <span class="str">'ravi@x.com'</span>, template: <span class="str">'welcome'</span>, vars: { name: <span class="str">'Ravi'</span>, email: <span class="str">'ravi@x.com'</span> } });</code></pre>
+
+  <h2>Generate a self-signed cert + CSR</h2>
+  <pre><code><span class="kw">import</span> { generateKeyPair, createSelfSignedCertificate, createCsr } <span class="kw">from</span> <span class="str">'@bhooai/nexus-crypto'</span>;
+
+<span class="kw">const</span> kp = generateKeyPair(<span class="str">'rsa'</span>, { modulusLength: <span class="num">2048</span> });
+<span class="kw">const</span> cert = createSelfSignedCertificate({ keyPair: kp, commonName: <span class="str">'localhost'</span> });
+<span class="kw">const</span> csr = createCsr({ keyPair: kp, commonName: <span class="str">'localhost'</span>, organization: <span class="str">'BhooAI'</span> });
+console.log(cert.pem, kp.pem.private, csr.pem);</code></pre>
+
+  <h2>Redis cache-aside</h2>
+  <pre><code><span class="kw">import</span> { Cache } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cache'</span>;
+<span class="kw">const</span> cache = <span class="kw">new</span> Cache({ url: <span class="str">'redis://localhost:6379'</span>, keyPrefix: <span class="str">'app'</span> });
+
+<span class="kw">const</span> user = <span class="kw">await</span> cache.cacheAside(<span class="str">`user:${id}`</span>, <span class="kw">async</span> () =&gt; User.findById(id).lean(), { ttl: <span class="num">60</span> });</code></pre>
+
+  <h2>Stream an AI chat (Node proxy re-emits SSE)</h2>
+  <pre><code><span class="kw">import</span> { AiClient } <span class="kw">from</span> <span class="str">'@bhooai/nexus-ai-client'</span>;
+<span class="kw">const</span> ai = <span class="kw">new</span> AiClient({ serverUrl: config.ai.serverUrl, timeoutMs: config.ai.timeoutMs });
+
+router.post(<span class="str">'/ai/chat'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  ctx.res.writeHead(<span class="num">200</span>, { <span class="str">'content-type'</span>: <span class="str">'text/event-stream'</span> });
+  <span class="kw">for await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> ai.chatStream(ctx.body)) {
+    ctx.res.write(<span class="str">`data: ${JSON.stringify(chunk)}\n\n`</span>);
+  }
+  ctx.res.write(<span class="str">'data: [DONE]\n\n'</span>);
+  ctx.res.end();
+});</code></pre>
+
+  <h2>A plugin manifest</h2>
+  <pre><code><span class="com">// plugins/analytics/plugin.json</span>
+{
+  <span class="str">"name"</span>: <span class="str">"analytics"</span>,
+  <span class="str">"version"</span>: <span class="str">"1.0.0"</span>,
+  <span class="str">"entry"</span>: <span class="str">"index.js"</span>,
+  <span class="str">"mode"</span>: <span class="str">"trusted"</span>,
+  <span class="str">"capabilities"</span>: [<span class="str">"http"</span>, <span class="str">"events"</span>, <span class="str">"admin"</span>],
+  <span class="str">"hooks"</span>: [<span class="str">"init"</span>, <span class="str">"start"</span>, <span class="str">"stop"</span>],
+  <span class="str">"dependencies"</span>: []
+}</code></pre>
+  <pre><code><span class="com">// plugins/analytics/index.js</span>
+<span class="kw">export default</span> {
+  <span class="kw">async</span> start(ctx) {
+    ctx.http.addRoute(<span class="str">'GET'</span>, <span class="str">'/analytics/hit'</span>, (r) =&gt; r.json({ ok: <span class="num">true</span> }));
+    ctx.admin.registerPage({ id: <span class="str">'analytics'</span>, label: <span class="str">'Analytics'</span>, group: <span class="str">'Insights'</span> });
+    ctx.events.on(<span class="str">'user:created'</span>, () =&gt; ctx.log.info(<span class="str">'new user'</span>));
+  },
+};</code></pre>
+
+  <div class="foot">BhooAI Nexus · Examples</div>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

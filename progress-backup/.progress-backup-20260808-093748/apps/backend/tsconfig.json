@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": true
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../packages/nexus-core" },
+    { "path": "../../packages/nexus-auth" },
+    { "path": "../../packages/nexus-telemetry" },
+    { "path": "../../packages/nexus-data" },
+    { "path": "../../packages/nexus-graphql" },
+    { "path": "../../packages/nexus-cache" },
+    { "path": "../../packages/nexus-email" },
+    { "path": "../../packages/nexus-payments" },
+    { "path": "../../packages/nexus-crypto" },
+    { "path": "../../packages/nexus-ads" },
+    { "path": "../../packages/nexus-plugins" },
+    { "path": "../../packages/nexus-ai-client" }
+  ]
+}

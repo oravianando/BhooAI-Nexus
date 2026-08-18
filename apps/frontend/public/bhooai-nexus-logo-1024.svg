@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">BhooAI Nexus hexagonal logo</title>
+  <desc id="desc">A transparent square BhooAI Nexus icon with a connected N inside a hexagon.</desc>
+  <defs>
+    <linearGradient id="edge" x1="120" y1="100" x2="900" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="0.5" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#d8b4fe"/>
+    </linearGradient>
+    <linearGradient id="nMark" x1="285" y1="270" x2="740" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="0.55" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#f0abfc"/>
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="42%" r="62%">
+      <stop offset="0" stop-color="#172554"/>
+      <stop offset="0.72" stop-color="#081326"/>
+      <stop offset="1" stop-color="#030712"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <path d="M512 72 902 297v430L512 952 122 727V297z" fill="url(#core)" stroke="url(#edge)" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M512 130 842 321v382L512 894 182 703V321z" fill="none" stroke="#67e8f9" stroke-opacity=".22" stroke-width="6"/>
+  <path d="M512 190 786 348v316L512 822 238 664V348z" fill="none" stroke="#a78bfa" stroke-opacity=".16" stroke-width="4"/>
+
+  <path d="M318 724V300l388 424V300" fill="none" stroke="url(#nMark)" stroke-linecap="round" stroke-linejoin="round" stroke-width="84" filter="url(#glow)"/>
+  <path d="M318 724V300l388 424V300" fill="none" stroke="#071225" stroke-linecap="round" stroke-linejoin="round" stroke-width="42"/>
+
+  <circle cx="318" cy="300" r="32" fill="#67e8f9" filter="url(#glow)"/>
+  <circle cx="706" cy="724" r="32" fill="#f0abfc" filter="url(#glow)"/>
+  <circle cx="318" cy="300" r="13" fill="#f8feff"/>
+  <circle cx="706" cy="724" r="13" fill="#fff"/>
+</svg>

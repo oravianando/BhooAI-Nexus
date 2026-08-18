@@ -1,0 +1,10 @@
+{
+  "name": "hello-worker",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "mode": "sandboxed",
+  "capabilities": ["http"],
+  "hooks": ["start"],
+  "dependencies": [],
+  "limits": { "heartbeatMs": 1000, "heartbeatTimeoutMs": 5000 }
+}

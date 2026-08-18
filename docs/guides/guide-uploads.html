@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upload Files — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Upload Files <span class="sub">Multipart form-data uploads through the Node backend — CSRF-protected POST, UUID-renamed files served from a static <code>/uploads/*</code> route, with size/count/type validation.</span></h1>
+
+  <h2>The flow</h2>
+  <pre><code>Browser ──&gt; GET /csrf-token ──&gt; POST /uploads (multipart, x-csrf-token) ──&gt; uploads/&lt;uuid&gt;.ext
+                                                                        400 on too-large / too-many / wrong-type
+GET /uploads/&lt;uuid&gt;.ext ──&gt; serveStatic middleware ──&gt; file bytes</code></pre>
+
+  <h2>1. Register the upload routes</h2>
+  <p>In <code>apps/backend/src/main.ts</code> the <code>registerUploadRoutes()</code> call wires both the
+     multipart POST handler and the static file middleware that serves the stored files back:</p>
+  <pre><code><span class="kw">import</span> { registerUploadRoutes } <span class="kw">from</span> <span class="str">'./modules/uploads/uploadsRoutes.js'</span>;
+
+registerUploadRoutes(app, {
+  uploadDir:   path.resolve(<span class="str">'uploads'</span>),
+  urlPrefix:   <span class="str">'/uploads'</span>,
+  maxFileSize: config.uploads.maxFileSize,
+  maxFiles:    config.uploads.maxFiles,
+  allowedTypes:config.uploads.allowedTypes,
+});
+
+<span class="com">// static middleware for GET /uploads/*</span>
+app.use(<span class="str">'/uploads'</span>, serveStatic(uploadDir, { immutable: <span class="num">true</span>, maxAge: <span class="num">31536000</span> }));</code></pre>
+
+  <h2>2. Configuration — nexus.config.ts</h2>
+  <pre><code>uploads: {
+  maxFileSize:  <span class="num">5</span> * <span class="num">1024</span> * <span class="num">1024</span>,   <span class="com">// 5 MB per file</span>
+  maxFiles:     <span class="num">10</span>,               <span class="com">// per single POST</span>
+  allowedTypes: [
+    <span class="str">'image/png'</span>, <span class="str">'image/jpeg'</span>, <span class="str">'image/webp'</span>, <span class="str">'image/gif'</span>,
+    <span class="str">'application/pdf'</span>,
+    <span class="str">'text/plain'</span>,
+  ],
+}</code></pre>
+
+  <div class="callout note">
+    <span class="label">Per-file limit</span>
+    <code>maxFileSize</code> applies to <em>each</em> file, not the whole body. A 10-file POST where every file is
+    4 MB is allowed; a single 6 MB file is rejected with <code>400</code>.
+  </div>
+
+  <h2>3. CSRF flow — GET /csrf-token first</h2>
+  <p>Because the upload is a POST, it needs a CSRF token. The double-submit pattern requires the
+     <code>x-csrf-token</code> header to match the <code>nexus_csrf</code> cookie. Fetch a token on page load
+     (a GET, which also sets the cookie):</p>
+  <pre><code><span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'same-origin'</span> });
+<span class="kw">const</span> { token } = <span class="kw">await</span> r.json();
+<span class="com">// store `token` and send it in the x-csrf-token header on the POST</span></code></pre>
+
+  <h2>4. Full example — profile picture upload form</h2>
+  <pre><code><span class="com">&lt;!-- HTML --&gt;</span>
+&lt;form id=<span class="str">"pic-form"</span> enctype=<span class="str">"multipart/form-data"</span>&gt;
+  &lt;input type=<span class="str">"file"</span> name=<span class="str">"avatar"</span> accept=<span class="str">"image/*"</span> required /&gt;
+  &lt;button type=<span class="str">"submit"</span>&gt;Upload&lt;/button&gt;
+&lt;/form&gt;
+&lt;img id=<span class="str">"preview"</span> hidden /&gt;</code></pre>
+
+  <pre><code><span class="com">// JS — fetch the CSRF token, then POST FormData</span>
+<span class="kw">let</span> csrfToken;
+(<span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'same-origin'</span> });
+  csrfToken = (<span class="kw">await</span> r.json()).token;
+})();
+
+document.getElementById(<span class="str">'pic-form'</span>).addEventListener(<span class="str">'submit'</span>, <span class="kw">async</span> (e) =&gt; {
+  e.preventDefault();
+  <span class="kw">const</span> form = e.currentTarget;
+  <span class="kw">const</span> fd = <span class="kw">new</span> FormData(form);          <span class="com">// multipart/form-data, browser sets the boundary</span>
+
+  <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">'/uploads'</span>, {
+    method: <span class="str">'POST'</span>,
+    credentials: <span class="str">'same-origin'</span>,
+    headers: { <span class="str">'x-csrf-token'</span>: csrfToken },  <span class="com">// do NOT set Content-Type; fetch does it</span>
+    body: fd,
+  });
+
+  <span class="kw">if</span> (!res.ok) {
+    <span class="kw">const</span> err = <span class="kw">await</span> res.json().catch(() =&gt; ({}));
+    alert(<span class="str">'Upload failed: '</span> + (err.error || res.status));
+    <span class="kw">return</span>;
+  }
+
+  <span class="kw">const</span> { files } = <span class="kw">await</span> res.json();
+  <span class="kw">const</span> img = document.getElementById(<span class="str">'preview'</span>);
+  img.src = files[<span class="num">0</span>].url;                 <span class="com">// /uploads/&lt;uuid&gt;.png</span>
+  img.hidden = <span class="num">false</span>;
+});</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Don't set Content-Type</span>
+    When sending <code>FormData</code> with <code>fetch</code>, do <strong>not</strong> set
+    <code>Content-Type: multipart/form-data</code> yourself. The browser must set the boundary automatically;
+    a manually-set header omits the boundary and the parser fails.
+  </div>
+
+  <h2>5. Success response</h2>
+  <p>Files are stored in the <code>uploads/</code> directory with a random UUID filename. The original name is
+     discarded; only the extension is preserved. The response returns the public URL for each file:</p>
+  <pre><code>{
+  <span class="str">"files"</span>: [
+    {
+      <span class="str">"field"</span>: <span class="str">"avatar"</span>,
+      <span class="str">"originalName"</span>: <span class="str">"me.png"</span>,
+      <span class="str">"storedName"</span>: <span class="str">"9f1c2d8a-3b7e-4a01-9c12-6d8e5f4a7b21.png"</span>,
+      <span class="str">"url"</span>: <span class="str">"/uploads/9f1c2d8a-3b7e-4a01-9c12-6d8e5f4a7b21.png"</span>,
+      <span class="str">"size"</span>: <span class="num">482113</span>,
+      <span class="str">"type"</span>: <span class="str">"image/png"</span>
+    }
+  ]
+}</code></pre>
+
+  <h2>6. Validation errors (400)</h2>
+  <p>The handler validates <em>before</em> writing to disk. Any failure returns <code>400</code> with a JSON
+     error body and <strong>no file is stored</strong>:</p>
+  <table>
+    <thead><tr><th>Condition</th><th>Response body</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>One file exceeds <code>maxFileSize</code></td><td><code>{"error":"file too large","limit":5242880,"size":...}</code></td><td>400</td></tr>
+      <tr><td>More files than <code>maxFiles</code></td><td><code>{"error":"too many files","limit":10,"count":12}</code></td><td>400</td></tr>
+      <tr><td>MIME type not in <code>allowedTypes</code></td><td><code>{"error":"file type not allowed","type":"application/x-msdownload"}</code></td><td>400</td></tr>
+      <tr><td>Missing CSRF token</td><td><em>empty body</em></td><td>401</td></tr>
+      <tr><td>No files in the POST</td><td><code>{"error":"no files received"}</code></td><td>400</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout danger">
+    <span class="label">MIME sniffing</span>
+    The handler trusts the <code>Content-Type</code> the browser sends for the <code>allowedTypes</code> check,
+    but also reads the magic bytes for image types. A file claiming <code>image/png</code> that isn't a real PNG
+    is rejected. Treat uploads as untrusted — serve them from a static route with
+    <code>Content-Disposition: inline</code> and never <code>eval</code> uploaded content.
+  </div>
+
+  <h2>7. Where files live</h2>
+  <table>
+    <thead><tr><th>Concern</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Directory</td><td><code>uploads/</code> at the backend root (configurable via <code>uploads.uploadDir</code>)</td></tr>
+      <tr><td>Filenames</td><td>Random UUID v4 + original extension, e.g. <code>&lt;uuid&gt;.png</code></td></tr>
+      <tr><td>Public URL</td><td><code>/uploads/&lt;uuid&gt;.ext</code> served by the static middleware</td></tr>
+      <tr><td>gitignore</td><td><code>uploads/</code> is gitignored — it is runtime data, not source</td></tr>
+      <tr><td>Backups</td><td>Back it up separately from the repo; it is not in version control</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Bring your own storage</span>
+    For production swap the local write for S3 / GCS / Azure Blob: keep the same <code>{files:[{url}]}</code>
+    response shape and the browser code doesn't change at all.
+  </div>
+
+  <p class="foot"><a href="guide-ai-chat.html">← AI Chat Streaming</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-mongodb.html">MongoDB CRUD →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · Upload Files</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel a superseded run when a branch is pushed again.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (full suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NEXUS_DB_URI: mongodb://localhost:27017/nexus_ci
+      NEXUS_REDIS_URL: redis://localhost:6379
+      NEXUS_AUTH_JWT_SECRET: ci-secret-long-enough-for-hs256-testing-aaaaaaaaaaaaaaaa
+      NEXUS_LOGGING_LEVEL: warn
+      NEXUS_PLUGINS_DIR: __ci_no_plugins__
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: apps/frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: apps/frontend
+        run: npx vite build
+
+      - name: Run framework test suite (vitest)
+        run: npx vitest run
+
+      - name: Run frontend client tests
+        working-directory: apps/frontend
+        run: npx vitest run
+
+      - name: Install Python AI server deps
+        working-directory: apps/ai-server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-asyncio httpx
+
+      - name: Run Python AI server tests (pytest)
+        working-directory: apps/ai-server
+        run: python -m pytest -q
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run cross-service e2e (Playwright)
+        run: npx playwright test --config=playwright.config.ts
+
+      - name: Upload e2e backend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-backend-log
+          path: logs/e2e-backend.log
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows (build + Mongo-free tests)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: apps/frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: apps/frontend
+        run: npx vite build
+
+      # Windows runners don't support service containers, so Mongo/Redis-
+      # dependent suites (nexus-data, nexus-cache, nexus-realtime, apps/backend
+      # integration, and the Playwright e2e) run only on Linux. This job covers
+      # everything that doesn't need external infra: the pure framework unit
+      # suites, the (mocked) frontend client tests, and the CLI.
+      - name: Run Mongo/Redis-free test suites
+        run: >-
+          npx vitest run
+          --project "@bhooai/nexus-core"
+          --project "@bhooai/nexus-telemetry"
+          --project "@bhooai/nexus-cli"
+          --project "@bhooai/nexus-graphql"
+          --project "@bhooai/nexus-crypto"
+          --project "@bhooai/nexus-payments"
+          --project "@bhooai/nexus-email"
+          --project "@bhooai/nexus-ads"
+          --project "@bhooai/nexus-ai-client"
+          --project "@bhooai/nexus-plugins"
+          --project "@bhooai/nexus-auth"
+
+      - name: Run frontend client tests
+        working-directory: apps/frontend
+        run: npx vitest run
+
+      - name: Verify nexus doctor
+        run: node bin/nexus.js doctor
+        env:
+          NEXUS_AUTH_JWT_SECRET: ci-secret-long-enough-for-hs256-testing-aaaaaaaaaaaaaaaa
+
+      - name: Verify nexus init round-trip
+        shell: pwsh
+        run: |
+          node bin/nexus.js init ./_init-snapshot --force | Out-Null
+          if (-not (Test-Path ./_init-snapshot/apps/backend/src/main.ts)) { throw "init did not scaffold backend main.ts" }
+          if (-not (Test-Path ./_init-snapshot/bin/nexus.js)) { throw "init did not scaffold bin/nexus.js" }
+          Remove-Item -Recurse -Force ./_init-snapshot

@@ -1,0 +1,27 @@
+# BhooAI Nexus AI server (Python FastAPI) - separate service.
+#
+# Build (from production/):
+#   docker build -f Dockerfile.ai -t bhooai-nexus-ai .
+# Run:
+#   docker run --rm -p 8000:8000 --env-file .env bhooai-nexus-ai
+
+ARG PYTHON_VERSION=3.13
+
+FROM python:${PYTHON_VERSION}-slim
+
+WORKDIR /srv/ai
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY apps/ai-server/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY apps/ai-server/main.py apps/ai-server/settings.py ./
+COPY apps/ai-server/providers ./providers
+COPY apps/ai-server/routers ./routers
+COPY contracts ./contracts
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

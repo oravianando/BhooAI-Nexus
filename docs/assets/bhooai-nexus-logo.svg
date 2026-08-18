@@ -1,0 +1,135 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1920"
+  height="1024"
+  viewBox="0 0 1920 1024"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">BhooAI Nexus</title>
+  <desc id="desc">BhooAI Nexus futuristic hexagonal logo and wordmark.</desc>
+  <defs>
+    <linearGradient
+      id="edge"
+      x1="140"
+      y1="120"
+      x2="820"
+      y2="900"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#22d3ee" />
+      <stop offset=".5" stop-color="#818cf8" />
+      <stop offset="1" stop-color="#d8b4fe" />
+    </linearGradient>
+    <linearGradient
+      id="word"
+      x1="900"
+      y1="360"
+      x2="1740"
+      y2="680"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#fff" />
+      <stop offset=".55" stop-color="#a5f3fc" />
+      <stop offset="1" stop-color="#c4b5fd" />
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="42%" r="65%">
+      <stop stop-color="#172554" />
+      <stop offset=".72" stop-color="#081326" />
+      <stop offset="1" stop-color="#030712" />
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <g transform="translate(95 72)">
+    <path
+      d="M385 0 770 222v444L385 888 0 666V222z"
+      fill="url(#core)"
+      stroke="url(#edge)"
+      stroke-width="18"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M385 58 710 246v376L385 810 60 622V246z"
+      fill="none"
+      stroke="#22d3ee"
+      stroke-opacity=".22"
+      stroke-width="6"
+    />
+    <path
+      d="M385 118 654 273v318L385 746 116 591V273z"
+      fill="none"
+      stroke="#a855f7"
+      stroke-opacity=".16"
+      stroke-width="4"
+    />
+    <path
+      d="M192 660V240l386 420V240"
+      fill="none"
+      stroke="url(#edge)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="76"
+      filter="url(#glow)"
+    />
+    <path
+      d="M192 660V240l386 420V240"
+      fill="none"
+      stroke="#071225"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="38"
+    />
+    <circle cx="192" cy="240" r="30" fill="#22d3ee" filter="url(#glow)" />
+    <circle cx="578" cy="660" r="30" fill="#e879f9" filter="url(#glow)" />
+    <circle cx="192" cy="240" r="12" fill="#fff" />
+    <circle cx="578" cy="660" r="12" fill="#fff" />
+  </g>
+  <g transform="translate(980 250)">
+    <text
+      x="0"
+      y="270"
+      fill="url(#word)"
+      font-family="Arial, Helvetica, sans-serif"
+      font-size="230"
+      font-weight="800"
+      letter-spacing="10"
+    >
+      BhooAI
+    </text>
+    <text
+      x="16"
+      y="465"
+      fill="url(#edge)"
+      font-family="Arial, Helvetica, sans-serif"
+      font-size="126"
+      font-weight="700"
+      letter-spacing="38"
+    >
+      NEXUS
+    </text>
+    <path
+      d="M18 550h840"
+      stroke="url(#edge)"
+      stroke-width="8"
+      stroke-linecap="round"
+    />
+    <circle cx="890" cy="550" r="11" fill="#d8b4fe" />
+    <text
+      x="18"
+      y="620"
+      fill="#9ab0c9"
+      font-family="Arial, Helvetica, sans-serif"
+      font-size="27"
+      font-weight="500"
+      letter-spacing="8"
+    >
+      ONE RUNTIME. EVERY SIGNAL.
+    </text>
+  </g>
+</svg>

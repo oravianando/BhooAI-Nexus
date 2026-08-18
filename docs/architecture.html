@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Architecture — BhooAI Nexus Docs</title>
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">SYSTEM MAP</div>
+  <h1>Architecture <span class="sub">How Nexus composes packages, processes, config layers, and request flow.</span></h1>
+
+  <p>Nexus is a Node-based full-stack framework driven by one typed config file (<code>nexus.config.ts</code>)
+     and a <code>/bin</code> CLI. Four processes run under one supervisor: a Node backend, a React+Vite
+     frontend, a Python (FastAPI) AI server, and a React admin app.</p>
+
+  <h2>Repository shape (npm workspaces)</h2>
+  <pre><code>bhooai-nexus/                    package &amp; workspace root
+    ├── package.json              workspaces: ["packages/*", "apps/*"]
+    ├── package-lock.json         workspace lockfile
+    ├── bin/nexus.js              CLI entry (loads @bhooai/nexus-cli via tsx)
+    ├── nexus.config.ts           framework reference config
+    ├── nexus.runtime.json        admin-written runtime overrides (only this file is machine-edited)
+    ├── supervisor.json           supervisor process definitions
+    ├── cluster.runtime.json      cluster link/runtime state
+    ├── playwright.config.ts      cross-service e2e config
+    ├── vitest.workspace.ts       vitest workspace config
+    ├── tsconfig.json             root tsconfig (references workspaces)
+    ├── tsconfig.base.json        shared base tsconfig
+    ├── contracts/                Node↔Python AI contract
+    ├── packages/                 17 scoped framework packages
+    │   ├── nexus-core/           http server, router, config, di
+    │   ├── nexus-auth/           csrf, cors, jwt, oauth, rbac, sessions
+    │   ├── nexus-data/           custom ODM over mongodb driver
+    │   ├── nexus-graphql/        federation gateway + subgraph + subscriptions
+    │   ├── nexus-realtime/       websocket rooms, pub/sub, webrtc, mediasoup
+    │   ├── nexus-payments/       razorpay, paypal, payu, skrill, payoneer
+    │   ├── nexus-email/          smtp (nodemailer), templates, queue
+    │   ├── nexus-crypto/         keypair, x509, csr, der, cert
+    │   ├── nexus-cache/          redis cache + rate limiter + pubsub
+    │   ├── nexus-ads/            google ads gaql
+    │   ├── nexus-ai-client/      sse streaming, openai/ollama/together
+    │   ├── nexus-cluster/        mesh nodes, registry, load balancer, autoscaler
+    │   ├── nexus-plugins/        manifest, host, sandbox, worker hooks
+    │   ├── nexus-telemetry/      logger, metrics, trace
+    │   ├── nexus-admin/          admin React app source (config/env/users/db/process)
+    │   ├── nexus-safe-goto/      safe external-link dialog (noopener/noreferrer)
+    │   └── nexus-cli/            init wizard, dev, doctor, uninstall, pysetup
+    ├── apps/                     runnable processes under the supervisor
+    │   ├── backend/              tsx watch — :4000
+    │   ├── frontend/             vite — :3000
+    │   ├── ai-server/            uvicorn --reload — :8000
+    │   └── admin/                vite — :3001 (consumes nexus-admin)
+    ├── libraries/                shared local libraries
+    ├── plugins/                  user plugins
+    ├── workflows/                workflow definitions
+    ├── tests/                    cross-service Playwright e2e
+    ├── certs/                    generated TLS certs
+    ├── uploads/                  runtime file uploads (served at /uploads)
+    ├── logs/                     supervisor log output
+    └── docs/                     this documentation site</code></pre>
+  <p>Run workspace commands from <code>bhooai-nexus/</code>. It is both the npm package
+     (<code>name: "bhooai-nexus"</code>) and the workspaces root — <code>npm install</code> from
+     here installs all <code>packages/*</code> and <code>apps/*</code> workspaces into one
+     <code>node_modules/</code>. The parent <code>BhooAI-Nexus/</code> directory only groups the
+     package and related local projects.</p>
+
+  <h2>Four terminals = one supervisor + control API</h2>
+  <p><code>bin/nexus.js dev</code> runs a <strong>custom supervisor</strong> (not <code>concurrently</code>/<code>pm2</code>)
+     that owns the four child processes:</p>
+  <ol>
+    <li><code>apps/backend</code> (tsx watch) — :4000</li>
+     <li><code>apps/frontend</code> (vite) — :3000</li>
+    <li><code>apps/ai-server</code> (uvicorn --reload) — :8000</li>
+    <li><code>apps/admin/</code> (vite) — :3001</li>
+  </ol>
+   <p>The supervisor streams prefixed colored logs, handles graceful Ctrl-C, and exposes a <strong>localhost
+      HTTP control API</strong> on :7474 (<code>GET /status</code>, <code>POST /start?name=...</code>,
+      <code>POST /restart?name=...</code>, <code>POST /stop?name=...</code>, <code>GET /logs?name=...</code>).
+      On Windows, stop/restart terminates the complete child process tree so shell wrappers do not orphan servers.
+      Each process is also runnable standalone.</p>
+
+  <h2>Config precedence</h2>
+  <p>Low → high:</p>
+   <pre><code>code defaults &lt; framework config &lt; user nexus.config.ts &lt; nexus.runtime.json &lt; .env / NEXUS_* env &lt; CLI flags</code></pre>
+  <p><code>@bhooai/nexus-core/config</code> validates (zod), deep-merges, and exposes a typed object. The admin
+     app writes <strong>only</strong> <code>nexus.runtime.json</code> so the human <code>nexus.config.ts</code>
+      stays clean (no AST patching). Secrets are loaded from the project-root <code>.env</code>. Sections: server, db, redis, graphql, ws, auth, payments, email, certs,
+      ads, webrtc, ai, plugins, logging, uploads.</p>
+
+  <h2>Request lifecycle (backend)</h2>
+  <pre><code>HTTP request
+  → NexusServer (node:http)            securityHeaders → cors → static /uploads → bodyParser → csrf → rateLimit → router
+  → Router (trie: params/wildcard/405)  per-route middleware: [authToken, requireRole, …] then handler
+  → handler(ctx)                       ctx.body (JSON/urlencoded/multipart), ctx.state.user, ctx.json/ctx.res
+  → Server sends 404 if !ctx.res.writableEnded</code></pre>
+   <p><code>ctx.res</code> is the raw <code>ServerResponse</code> (used directly for SSE streaming:
+     <code>writeHead</code> + <code>write</code> + <code>end</code>). Raw body is retained on
+      <code>ctx.state.__rawBody</code> for webhook signature verification.</p>
+
+  <h2>File uploads</h2>
+  <p><code>bodyParser</code> buffers <code>multipart/form-data</code> and exposes files through
+     <code>ctx.state.files</code>. The backend registers <code>registerUploadRoutes</code> at
+     <code>POST /uploads</code>; files receive generated UUID-based names and are written under the
+     project-local <code>uploads/</code> directory. <code>serveStatic</code> exposes saved files read-only at
+     <code>/uploads/&lt;generated-name&gt;</code>. The default request envelope is 12 MiB and the per-file limit
+     is 10 MiB. CSRF remains part of the normal middleware pipeline.</p>
+
+  <h2>Security (nexus-auth — one cohesive unit)</h2>
+  <ul>
+    <li><strong>CORS</strong> — preflight short-circuit, credentials, <code>Vary: Origin</code>.</li>
+    <li><strong>CSRF</strong> — double-submit token (HttpOnly cookie <code>nexus_csrf</code> +
+        <code>x-csrf-token</code> header); safe methods mint a fresh token, unsafe methods do
+        <code>checkOrigin</code> (trustedOrigins non-empty → 401 on missing/untrusted Origin) + double-submit
+        match. <strong>CSRF is also enforced on the WS upgrade</strong> (query / <code>Sec-WebSocket-Protocol</code>)
+        since WS has no CORS preflight.</li>
+    <li><strong>Auth</strong> — local (bcryptjs, JWT access+refresh rotation, httpOnly session cookies, Redis
+        session store with reuse detection), Google (PKCE) + Facebook OAuth2 (state, token exchange, account
+        linking), RBAC (role inheritance). First registered user is bootstrapped as admin.</li>
+    <li><strong>Rate limiting</strong> — fixed-window; in-memory now, Redis-backed in production.</li>
+  </ul>
+
+  <h2>GraphQL (no Apollo)</h2>
+  <p><code>nexus-graphql</code> uses <code>graphql</code> (graphql-js) for parse/validate/execute. Composition,
+     supergraph SDL, the query planner, and the gateway executor are ours — no <code>@apollo/*</code>, no
+     <code>@graphql-tools/federation</code>.</p>
+  <pre><code>defineSubgraph (SDL+resolvers, auto-wires _service/_entities, @key parse)
+  → createGateway
+      ├─ in-process: execute() against the built PUBLIC schema (federation directives stripped)
+      └─ federated:  composeSupergraph → queryPlanner → executeFederated
+                       (FetchNode DAG, @key joins, @provides/@requires)
+  → graphqlHttpHandler (POST/GET, introspection toggle)
+  → SubscriptionServer (graphql-transport-ws over ws)</code></pre>
+  <p>Federation subset (v1): <code>@key</code> (single + composite), <code>@external</code>, <code>@requires</code>,
+     <code>@provides</code>, <code>@extends</code>, <code>_entities</code>, <code>_service { sdl }</code>. The
+     app ships single-subgraph by default; <code>nexus add subgraph</code> opts into federation.</p>
+
+  <h2>Data (custom ODM, no mongoose)</h2>
+  <p><code>nexus-data</code> on the official <code>mongodb</code> driver. Self-contained validators (no zod).
+     Connection/ConnectionManager, Schema (field opts incl. <code>ref</code>/<code>refPath</code>/
+     <code>select</code>/<code>immutable</code>/<code>expires</code>/<code>unique</code>/<code>index</code>/
+     <code>transform</code>), Model (find/findById/create/insertMany/update*/delete*/aggregate/bulkWrite/
+     findOneAndUpdate), DocumentInstance (Proxy, save/remove/validate/populate, pre/post hooks, timestamps,
+     strict, virtuals), chainable+thenable Query, batched multi-level populate, transactions
+     (<code>withTransaction</code>). Auto-index creation at boot.</p>
+
+  <h2>Realtime + WebRTC (nexus-realtime)</h2>
+  <ul>
+    <li><strong>WS server</strong> (<code>ws</code>, noServer upgrade) with connection registry, room membership,
+        pub/sub adapter (Memory + Redis for cross-instance fanout), auth on upgrade via
+        <code>?token=</code>/subprotocol + optional CSRF origin check.</li>
+    <li><strong>WebRTC signaling relay</strong> over WS (offer/answer/candidate — direct if same-instance, else
+        published to <code>conn:&lt;to&gt;</code>).</li>
+    <li><strong>mediasoup SFU adapter</strong> (lazy import, one worker/router-per-room, send/recv transports,
+        produce/consume). The browser uses <code>mediasoup-client</code>; the frontend <code>stream.ts</code>
+        wraps it over the realtime <code>media</code> action channel.</li>
+  </ul>
+
+  <h2>Plugins (nexus-plugins)</h2>
+  <p>Two modes: <strong>trusted</strong> (in-process, full Node API, dynamic-import entry) and
+     <strong>sandboxed</strong> (<code>worker_threads</code> with capability-restricted RPC — real
+     heap/event-loop isolation, a crash can't take down the host).</p>
+  <pre><code>PluginManifest { name, version, entry, mode, capabilities[], configSchema, hooks[], dependencies[] }
+PluginHost: load(dir) → topoSort by deps (cycle detection)
+          → runLifecycle(install → init → start → stop, stop reverses)
+PluginContext: http/graphql/data/auth/realtime/scheduler/events/admin registrars (capability-gated in sandbox)
+capabilityPolicy: METHOD_CAPABILITY map + fs path-allowlist + net host-allowlist + authorize()
+AdminExtensions: registerPage/registerSlot → grouped pages + ordered slots</code></pre>
+  <p>The sandbox bootstrap is plain <code>.mjs</code> (Node runs it directly in the worker, no TS loader). The
+     host drives ALL lifecycle hooks including <code>install</code>.</p>
+  <div class="callout warn">
+    <span class="label">v1 seams</span>
+    Sandboxed plugins can't add GraphQL subgraphs (resolvers aren't serializable) — use trusted mode.
+    Sandboxed middleware is a no-op stub. The sandbox is not cryptographic; for truly untrusted plugins use
+    child-process/OS isolation.
+  </div>
+
+  <h2>Payments (nexus-payments)</h2>
+  <p><code>PaymentProvider</code> interface (<code>createOrder/capture/refund/getOrderStatus/verifyWebhook</code>)
+     with an injectable <code>HttpTransport</code> (tests inject mocks — no live gateways). Razorpay + PayPal
+     are full; PayU/Skrill/Payoneer are happy-path + sandbox tests. <code>WebhookRouter</code> dispatches by
+     <code>:provider</code> param with per-provider signature verification. Browser-facing
+     <code>/payments/order</code> routes are auth+CSRF guarded; webhooks stay separate.</p>
+
+  <h2>Cross-service contract (contracts/)</h2>
+  <p><code>ai-openapi.yaml</code> (OpenAPI 3.1) is the single source of truth for the Node↔Python AI boundary.
+     The Python FastAPI server and the Node <code>nexus-ai-client</code> both conform to it. The browser never
+     talks to Python directly — Node proxies/re-emits SSE. Both OpenAI and Ollama speak the OpenAI-compatible
+     API → one <code>OpenAICompatibleProvider</code> parameterised by <code>base_url</code>+<code>api_key</code>.</p>
+
+  <h2>Telemetry (nexus-telemetry)</h2>
+  <p>Structured JSON logger (stdout + rotating file, child loggers, redaction), metrics registry
+     (counters/histograms, <code>/metrics</code>), request/trace-ID propagation across Node→WS→Python. Admin
+     monitoring consumes this.</p>
+
+  <h2>Testing</h2>
+  <ul>
+    <li><strong>Vitest</strong> per Node package (real MongoDB via <code>.env</code> — no embedded Mongo).</li>
+    <li><strong>pytest</strong> for the AI server (FastAPI contract tests via TestClient).</li>
+    <li><strong>Playwright</strong> for cross-service e2e (boots the real backend, drives auth → CSRF → GraphQL → payments).</li>
+  </ul>
+  <p>Each phase ships runnable + tested. See <a href="improvements.html">Improvements</a> for honest seams and next steps.</p>
+
+  <div class="foot">BhooAI Nexus · Architecture</div>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

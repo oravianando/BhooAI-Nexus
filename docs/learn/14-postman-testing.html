@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>14 · Postman Testing — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+<style>
+  .postman-step {
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(11, 7, 27, 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    margin-bottom: 2rem;
+    overflow: hidden;
+  }
+  .step-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .step-num {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(139, 92, 246, 0.75));
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .step-label {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--admin-ink, #eef6ff);
+  }
+  .step-method {
+    margin-left: auto;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .method-get { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+  .method-post { background: rgba(99, 102, 241, 0.25); color: #818cf8; }
+  .step-body { padding: 1.25rem 1.5rem; }
+  .url-bar {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    color: #93c5fd;
+    margin-bottom: 1rem;
+    word-break: break-all;
+  }
+  .code-block {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.6;
+    color: #cbd5e1;
+  }
+  .code-block .key { color: #93c5fd; }
+  .code-block .str { color: #fbbf24; }
+  .code-block .num { color: #34d399; }
+  .code-block .cmt { color: #64748b; font-style: italic; }
+  .table-headers {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+  }
+  .table-headers th, .table-headers td {
+    text-align: left;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .table-headers th {
+    color: var(--admin-muted, #98aec9);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+  }
+  .table-headers code {
+    font-size: 0.78rem;
+    color: #93c5fd;
+  }
+  .screenshot-placeholder {
+    background: rgba(99, 102, 241, 0.06);
+    border: 2px dashed rgba(99, 102, 241, 0.25);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+    color: var(--admin-muted, #98aec9);
+    margin: 1rem 0;
+    font-size: 0.85rem;
+  }
+  .screenshot-placeholder img {
+    max-width: 100%;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .alert-tip {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.82rem;
+    color: #6ee7b7;
+    line-height: 1.5;
+  }
+  .alert-warn {
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.82rem;
+    color: #fbbf24;
+    line-height: 1.5;
+  }
+  .alert-err {
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.82rem;
+    color: #fca5a5;
+    line-height: 1.5;
+  }
+
+  /* Postman request flow diagram */
+  .flow {
+    margin: 1.4rem 0;
+    padding: 1.5rem 1.3rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(11, 7, 27, 0.92));
+  }
+  .flow-caption {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+    font-size: 0.78rem;
+    color: #98aec9;
+    letter-spacing: 0.04em;
+  }
+  .flow-caption .step-label { color: #a5b4fc; font-weight: 800; }
+  .flow-caption .step-label + span { color: #64748b; }
+  .flow-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .flow-step {
+    display: grid;
+    grid-template-columns: 2.4rem 1fr;
+    gap: 0.9rem;
+    align-items: center;
+  }
+  .flow-step-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .flow-step-num {
+    width: 2.1rem; height: 2.1rem;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.95), rgba(139, 92, 246, 0.85));
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .flow-step-line {
+    width: 2px;
+    height: 1.4rem;
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.7), rgba(99, 102, 241, 0.08));
+    border-radius: 2px;
+  }
+  .flow-step:last-child .flow-step-line { display: none; }
+  .flow-card {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.34);
+  }
+  .flow-card-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.6rem 0.95rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #eef6ff;
+  }
+  .flow-method {
+    padding: 0.16rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .flow-method-get { background: rgba(16, 185, 129, 0.22); color: #34d399; }
+  .flow-method-post { background: rgba(99, 102, 241, 0.28); color: #818cf8; }
+  .flow-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flow-card .endpoint {
+    margin-left: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    color: #93c5fd;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(147, 197, 253, 0.18);
+    border-radius: 6px;
+    padding: 0.16rem 0.5rem;
+    word-break: break-all;
+  }
+  .flow-body { padding: 0.7rem 0.95rem 0.8rem; }
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.76rem;
+    color: #cbd5e1;
+    padding: 0.14rem 0;
+  }
+  .flow-row .arrow { color: #34d399; flex-shrink: 0; }
+  .flow-row code { font-size: 0.72rem; color: #fbbf24; }
+  .flow-layers {
+    margin-top: 1.1rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.7rem;
+  }
+  .flow-layer {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 9px;
+    background: rgba(2, 8, 18, 0.4);
+  }
+  .flow-layer .badge {
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.14rem 0.5rem;
+    border-radius: 6px;
+  }
+  .badge-cookie { background: rgba(52, 211, 153, 0.16); color: #34d399; }
+  .badge-jwt { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+  .badge-agent { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
+  .flow-layer p { margin: 0; font-size: 0.74rem; color: #cbd5e1; line-height: 1.5; }
+  .flow-layer code { font-size: 0.7rem; color: #fbbf24; }
+  .flow-foot {
+    margin-top: 1rem;
+    padding: 0.65rem 0.95rem;
+    border-left: 3px solid #f59e0b;
+    border-radius: 7px;
+    background: rgba(251, 191, 36, 0.1);
+    color: #fbbf24;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+  .flow-foot code { font-size: 0.74rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .flow, .flow-card, .flow-step-num { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 14</div>
+  <h1>Postman Testing — Cluster Link API <span class="sub">Step-by-step guide to testing the cluster node linking flow with Postman, complete with screenshots, headers, and troubleshooting.</span></h1>
+
+  <!-- Prerequisites -->
+  <h2>Prerequisites</h2>
+  <table>
+    <thead><tr><th>Component</th><th>Status</th><th>How to start</th></tr></thead>
+    <tbody>
+      <tr><td>Master server (node-1)</td><td>Must be running</td><td><code>npm run dev</code> from <code>node-1/</code></td></tr>
+      <tr><td>Slave node agent (MyFirstProject)</td><td>Must be running on port 7575</td><td><code>nexus node serve --role=backend --port=7575</code> from <code>MyFirstProject/</code></td></tr>
+      <tr><td>Postman</td><td>Installed</td><td>Download from <code>postman.com</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="alert-tip">
+    <strong>Quick check:</strong> Before testing, verify the agent is alive:
+    <code style="display:block;margin-top:0.5rem;">GET http://192.168.1.8:7575/info<br/>Authorization: Bearer a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6</code>
+    Expected: <code>{"id":"...-backend","role":"backend",...}</code>
+  </div>
+
+  <!-- Auth Flow Overview -->
+  <h2>Auth Flow Overview</h2>
+  <p>Every <code>/admin/cluster/*</code> route is protected by two layers:</p>
+  <ol>
+    <li><strong>CSRF token</strong> — double-submit cookie pattern. Every POST needs <code>x-csrf-token</code> header matching the <code>nexus_csrf</code> cookie.</li>
+    <li><strong>JWT Bearer token</strong> — admin user must login, get <code>accessToken</code>, send as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+  </ol>
+  <p>The complete flow is 3 requests — CSRF → Login → Link.</p>
+
+  <div class="screenshot-placeholder">
+    <strong>📸 Full Postman Collection showing all 3 requests in order</strong>
+    <br/><em>Collection named "BhooAI Nexus — Cluster Link"</em>
+    <br/><br/><img src="../assets/screenshots/01-collection.png" alt="Postman collection with Get CSRF Token, Login, and Link Slave Node requests" />
+  </div>
+
+  <!-- Step 1 -->
+  <div class="postman-step">
+    <div class="step-header">
+      <span class="step-num">1</span>
+      <span class="step-label">Get CSRF Token</span>
+      <span class="step-method method-get">GET</span>
+    </div>
+    <div class="step-body">
+      <div class="url-bar">http://localhost:4000/csrf-token</div>
+
+      <h4>Headers</h4>
+      <table class="table-headers">
+        <thead><tr><th>Key</th><th>Value</th><th>Required</th></tr></thead>
+        <tbody>
+          <tr><td><code>Origin</code></td><td><code>http://localhost:3001</code></td><td>Yes — CSRF origin check</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Response (200)</h4>
+      <div class="code-block">{
+  <span class="key">"token"</span>: <span class="str">"HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG"</span>
+}</div>
+
+      <div class="alert-tip">
+        <strong>Important:</strong> The response sets a cookie <code>nexus_csrf=HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG</code>.
+        Postman's <strong>Cookie Jar</strong> automatically stores this. <em>Enable "Automatically follow redirects" and "Send Postman Token header" in Postman settings.</em>
+      </div>
+
+      <div class="screenshot-placeholder">
+        <strong>📸 Postman GET request — URL, Headers (Origin), Response body with token, and Cookies tab</strong>
+        <br/><em>Showing the received nexus_csrf cookie</em>
+        <br/><br/><img src="../assets/screenshots/02-step1-csrf.png" alt="Postman GET /csrf-token request with response token and cookie" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="postman-step">
+    <div class="step-header">
+      <span class="step-num">2</span>
+      <span class="step-label">Login (Get JWT)</span>
+      <span class="step-method method-post">POST</span>
+    </div>
+    <div class="step-body">
+      <div class="url-bar">http://localhost:4000/auth/login</div>
+
+      <h4>Headers</h4>
+      <table class="table-headers">
+        <thead><tr><th>Key</th><th>Value</th><th>Required</th></tr></thead>
+        <tbody>
+          <tr><td><code>Content-Type</code></td><td><code>application/json</code></td><td>Yes</td></tr>
+          <tr><td><code>x-csrf-token</code></td><td><code>HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG</code></td><td>Yes — from Step 1</td></tr>
+          <tr><td><code>Origin</code></td><td><code>http://localhost:3001</code></td><td>Yes</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Body (raw JSON)</h4>
+      <div class="code-block">{
+  <span class="key">"email"</span>: <span class="str">"oravianando@gmail.com"</span>,
+  <span class="key">"password"</span>: <span class="str">"admin123"</span>
+}</div>
+
+      <h4>Response (200)</h4>
+      <div class="code-block">{
+  <span class="key">"user"</span>: { <span class="key">"_id"</span>: <span class="str">"..."</span>, <span class="key">"email"</span>: <span class="str">"..."</span>, <span class="key">"roles"</span>: [<span class="str">"admin"</span>] },
+  <span class="key">"accessToken"</span>: <span class="str">"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI..."</span>,
+  <span class="key">"refreshToken"</span>: <span class="str">"eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiI..."</span>
+}</div>
+
+      <div class="alert-warn">
+        <strong>CSRF rotation:</strong> Login is a POST request. The CSRF cookie rotates after this! You MUST
+        re-fetch <code>/csrf-token</code> before the next POST. In Postman, re-run Step 1 to get a fresh token.
+      </div>
+
+      <div class="screenshot-placeholder">
+        <strong>📸 Postman POST — URL, Headers (x-csrf-token), Body (raw JSON), Response with accessToken</strong>
+        <br/><em>The Console tab confirms the POST completed successfully</em>
+        <br/><br/><img src="../assets/screenshots/03-step2-login.png" alt="Postman POST /auth/login request with accessToken response" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="postman-step">
+    <div class="step-header">
+      <span class="step-num">3</span>
+      <span class="step-label">Link Slave Node</span>
+      <span class="step-method method-post">POST</span>
+    </div>
+    <div class="step-body">
+      <div class="url-bar">http://localhost:4000/admin/cluster/link</div>
+
+      <h4>Headers</h4>
+      <table class="table-headers">
+        <thead><tr><th>Key</th><th>Value</th><th>Required</th></tr></thead>
+        <tbody>
+          <tr><td><code>Content-Type</code></td><td><code>application/json</code></td><td>Yes</td></tr>
+          <tr><td><code>Authorization</code></td><td><code>Bearer eyJhbGciOiJIUzI1NiJ9...</code></td><td>Yes — from Step 2</td></tr>
+          <tr><td><code>x-csrf-token</code></td><td><code>&lt;fresh token from re-running Step 1&gt;</code></td><td>Yes — MUST be re-fetched</td></tr>
+          <tr><td><code>Origin</code></td><td><code>http://localhost:3001</code></td><td>Yes</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Body (raw JSON)</h4>
+      <div class="code-block">{
+  <span class="key">"nodeUrl"</span>: <span class="str">"http://192.168.1.8:7575"</span>,
+  <span class="key">"token"</span>: <span class="str">"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span>
+}</div>
+
+      <h4>Response (200) — Success</h4>
+      <div class="code-block">{
+  <span class="key">"node"</span>: {
+    <span class="key">"identity"</span>: {
+      <span class="key">"id"</span>: <span class="str">"a453d9a9e220-backend"</span>,
+      <span class="key">"role"</span>: <span class="str">"backend"</span>,
+      <span class="key">"tier"</span>: <span class="str">"dev"</span>,
+      <span class="key">"version"</span>: <span class="str">"0.1.0"</span>,
+      <span class="key">"baseUrl"</span>: <span class="str">"http://localhost:7575"</span>,
+      <span class="key">"services"</span>: { <span class="key">"backend"</span>: <span class="str">"http://localhost:4001"</span> },
+      <span class="key">"capabilities"</span>: [<span class="str">"start"</span>,<span class="str">"stop"</span>,<span class="str">"restart"</span>,<span class="str">"logs"</span>,<span class="str">"update"</span>,<span class="str">"metrics"</span>]
+    },
+    <span class="key">"status"</span>: <span class="str">"pending"</span>,
+    <span class="key">"registeredAt"</span>: <span class="str">"2026-08-10T03:10:06.129Z"</span>,
+    <span class="key">"lastSeenAt"</span>: <span class="str">"2026-08-10T03:10:06.129Z"</span>,
+    <span class="key">"enabled"</span>: <span class="num">true</span>,
+    <span class="key">"authToken"</span>: <span class="str">"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span>
+  }
+}</div>
+
+      <div class="screenshot-placeholder">
+        <strong>📸 Postman POST — URL, Headers (Authorization Bearer + x-csrf-token), Body (nodeUrl + token), Response with the linked node</strong>
+        <br/><em>Response headers show status 200</em>
+        <br/><br/><img src="../assets/screenshots/04-step3-link.png" alt="Postman POST /admin/cluster/link request returning the linked node object" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Troubleshooting -->
+  <h2>Troubleshooting</h2>
+
+  <h3>Error: <code>401 Unauthorized</code> (empty body)</h3>
+  <div class="alert-err">
+    <strong>Cause:</strong> CSRF token mismatch or missing. The <code>x-csrf-token</code> header doesn't match the <code>nexus_csrf</code> cookie.<br/>
+    <strong>Fix:</strong> Re-run Step 1 immediately before Step 3. The cookie rotates on every GET/POST, so never reuse an old token.<br/>
+    <strong>Check:</strong> In Postman's <strong>Cookies</strong> tab, verify the <code>nexus_csrf</code> cookie value matches the <code>x-csrf-token</code> header.
+  </div>
+
+  <div class="screenshot-placeholder">
+    <strong>📸 Postman showing a 401 — Headers tab (x-csrf-token), Cookies tab (nexus_csrf), and empty Response body</strong>
+    <br/><br/><img src="../assets/screenshots/07-error-401-csrf.png" alt="Postman 401 Unauthorized CSRF mismatch with empty response body" />
+  </div>
+
+  <h3>Error: <code>400 {"error":"fetch failed"}</code></h3>
+  <div class="alert-err">
+    <strong>Cause:</strong> The master backend cannot reach the slave's node agent.<br/>
+    <strong>Fix:</strong><br/>
+    1. Verify the agent is running: <code>Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 7575</code><br/>
+    2. Start it if not: <code>nexus node serve --role=backend --port=7575</code><br/>
+    3. Verify the URL is correct — use <code>http://192.168.1.8:7575</code> not <code>localhost</code> if the agent binds to <code>192.168.1.8</code>.
+  </div>
+
+  <div class="screenshot-placeholder">
+    <strong>📸 Postman "fetch failed" error + terminal showing the node agent NOT running (no process on port 7575)</strong>
+    <br/><br/><img src="../assets/screenshots/05-error-fetch-failed.png" alt="Postman fetch failed error and terminal showing no node agent on port 7575" />
+  </div>
+
+  <h3>Error: <code>400 {"error":"agent 401 /info"}</code></h3>
+  <div class="alert-err">
+    <strong>Cause:</strong> Token mismatch. The <code>token</code> in the link body doesn't match the agent's <code>cluster.token</code>.<br/>
+    <strong>Fix:</strong><br/>
+    1. Check the slave's config: <code>Get-Content nexus.config.ts | Select-String "token:"</code><br/>
+    2. Also check <code>nexus.runtime.json</code> — it may override the token<br/>
+    3. Use the correct token in the link body<br/>
+    4. If you used "Generate token" in the admin UI, restart the node agent so it picks up the new token
+  </div>
+
+  <div class="screenshot-placeholder">
+    <strong>📸 Postman "agent 401 /info" error + the slave's nexus.config.ts showing the token</strong>
+    <br/><br/><img src="../assets/screenshots/06-error-agent-401.png" alt="Postman agent 401 /info error and the slave nexus.config.ts token" />
+  </div>
+
+  <h3>Error: <code>403 Forbidden</code></h3>
+  <div class="alert-err">
+    <strong>Cause:</strong> The logged-in user doesn't have the <code>admin</code> role.<br/>
+    <strong>Fix:</strong> Verify the user has <code>roles: ["admin"]</code> in MongoDB. Check with: <code>db.users.findOne({email:"..."}, {roles:1})</code>
+  </div>
+
+  <!-- Postman Collection Setup -->
+  <h2>Postman Collection — Quick Setup</h2>
+  <p>Save time with environment variables. Create a Postman Environment named "BhooAI Nexus" with these variables:</p>
+
+  <table>
+    <thead><tr><th>Variable</th><th>Value</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>baseUrl</code></td><td><code>http://localhost:4000</code></td><td>Master backend URL</td></tr>
+      <tr><td><code>slaveUrl</code></td><td><code>http://192.168.1.8:7575</code></td><td>Slave node agent URL</td></tr>
+      <tr><td><code>adminEmail</code></td><td><code>oravianando@gmail.com</code></td><td>Admin user email</td></tr>
+      <tr><td><code>adminPassword</code></td><td><code>admin123</code></td><td>Admin user password</td></tr>
+      <tr><td><code>clusterToken</code></td><td><code>a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6</code></td><td>Slave's cluster.token</td></tr>
+      <tr><td><code>csrfToken</code></td><td><em>(auto-filled by script)</em></td><td>CSRF token from Step 1</td></tr>
+      <tr><td><code>accessToken</code></td><td><em>(auto-filled by script)</em></td><td>JWT from login response</td></tr>
+    </tbody>
+  </table>
+
+  <p>Then use these in your requests:</p>
+  <div class="code-block"><span class="cmt">// URL</span>
+{{baseUrl}}/csrf-token
+{{baseUrl}}/auth/login
+{{baseUrl}}/admin/cluster/link
+
+<span class="cmt">// Headers</span>
+x-csrf-token: {{csrfToken}}
+Authorization: Bearer {{accessToken}}
+
+<span class="cmt">// Body</span>
+{ <span class="key">"nodeUrl"</span>: <span class="str">"{{slaveUrl}}"</span>, <span class="key">"token"</span>: <span class="str">"{{clusterToken}}"</span> }</div>
+
+  <p>In Postman's <strong>Tests</strong> tab for the CSRF request, add:</p>
+  <div class="code-block"><span class="cmt">// Auto-extract CSRF token after Step 1</span>
+const body = pm.response.json();
+pm.environment.set(<span class="str">"csrfToken"</span>, body.token);</div>
+
+  <p>In the <strong>Tests</strong> tab for the Login request, add:</p>
+  <div class="code-block"><span class="cmt">// Auto-extract access token after Step 2</span>
+const body = pm.response.json();
+pm.environment.set(<span class="str">"accessToken"</span>, body.accessToken);</div>
+
+  <div class="screenshot-placeholder">
+    <strong>📸 Environment variables, the Tests tab with auto-extraction scripts, and a successful run of all 3 requests in the Collection Runner</strong>
+    <br/><em>Green "All tests passed" indicator in Collection Runner</em>
+    <br/><br/><img src="../assets/screenshots/08-env-runner.png" alt="Postman environment variables and Collection Runner with all tests passed" />
+  </div>
+
+  <!-- Complete flow diagram -->
+  <h2>Visual Flow</h2>
+  <div class="screenshot-placeholder">
+    <img src="../assets/screenshots/visual-flow.png" alt="Postman request flow: 3-step handshake — CSRF Token → Login (JWT) → Link Slave Node, with Cookie jar, JWT Bearer, and Agent token security layers" style="max-width:100%;border-radius:8px;border:1px solid rgba(255,255,255,0.1)" />
+  </div>
+
+  <p class="foot"><a href="10-cluster.html">&larr; 10 · Cluster</a> · <a href="index.html">Build Guide</a> · Next: <a href="11-cli.html">11 · CLI →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 14 Postman Testing</div>
+</main>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

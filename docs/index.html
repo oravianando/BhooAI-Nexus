@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Overview — BhooAI Nexus Docs</title>
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="hero">
+    <div class="hero-particles" aria-hidden="true"></div>
+    <div class="eyebrow">FUTURE-READY NODE RUNTIME</div>
+    <h1>BhooAI Nexus
+      <span class="sub">A Node-based full-stack framework — backend, frontend, AI, and admin in one tree.</span>
+    </h1>
+    <p>Nexus is a source-first platform for building secure, realtime applications without assembling a dozen
+       unrelated runtimes. It combines a Node backend, React frontend, Python AI service, and operator console
+       behind one typed <code>nexus.config.ts</code>, one <code>.env</code>, and one local supervisor.</p>
+    <div class="status-strip"><span>TypeScript core</span><span>Node 20+</span><span>MongoDB native driver</span><span>AI-ready</span></div>
+    <div class="cta">
+      <a class="primary" href="getting-started.html">Get started →</a>
+      <a href="learn/index.html">Learn the code</a>
+      <a href="architecture.html">How it's made</a>
+      <a href="examples.html">Examples</a>
+    </div>
+  </div>
+
+  <h2>What it is</h2>
+   <p>Nexus is a monorepo framework: scoped <code>@bhooai/nexus-*</code> packages form the platform, while four
+      runnable services provide the working product surface — a Node backend, a React+Vite frontend, a Python
+      FastAPI AI server, and a React admin console. One supervisor boots the services; one config stack drives them.</p>
+
+  <p>Where it matters, everything is built from scratch — no Apollo, no mongoose, no express. The GraphQL
+     federation layer, the ODM, the HTTP server, and the plugin sandbox are all hand-rolled on top of minimal,
+     well-chosen primitives (<code>graphql</code>, <code>mongodb</code>, <code>node:http</code>,
+     <code>worker_threads</code>).</p>
+
+  <h2>What's inside</h2>
+  <div class="grid">
+    <div class="card"><h4>Custom HTTP server</h4><p>Trie router with params/wildcards, middleware pipeline, JSON/urlencoded/multipart parsing, static files — on <code>node:http</code>, no express.</p></div>
+    <div class="card"><h4>Inbuilt security</h4><p>Double-submit CSRF (with origin check on the WS upgrade), CORS, security headers, rate limiting — one cohesive unit.</p></div>
+    <div class="card"><h4>From-scratch ODM</h4><p>Schemas, hooks, validation, populate, transactions, indexes — on the official <code>mongodb</code> driver, no mongoose.</p></div>
+    <div class="card"><h4>GraphQL federation</h4><p>Subgraphs, composition, supergraph SDL, a query planner, entity joins, <code>@provides</code>/<code>@requires</code> — no Apollo.</p></div>
+    <div class="card"><h4>Realtime + WebRTC</h4><p>WebSocket rooms, Redis pub/sub fanout, auth on upgrade, WebRTC signaling, and a mediasoup SFU adapter.</p></div>
+    <div class="card"><h4>Auth &amp; OAuth</h4><p>JWT access+refresh rotation, session reuse detection, RBAC, Google (PKCE) + Facebook OAuth2, account linking.</p></div>
+    <div class="card"><h4>Five gateways</h4><p>Razorpay + PayPal full; PayU, Skrill, Payoneer happy-path; per-provider webhook signature verification.</p></div>
+    <div class="card"><h4>Email + Certs</h4><p>SMTP via nodemailer + templates + queue; RSA/ECDSA keypairs, self-signed X.509, and a hand-rolled CSR encoder.</p></div>
+    <div class="card"><h4>Cache &amp; Ads</h4><p>Redis cache-aside + rate limiter + pub/sub; a REST-based Google Ads client with a GAQL query builder.</p></div>
+    <div class="card"><h4>Python AI</h4><p>FastAPI server (OpenAI + Ollama) behind a single OpenAPI contract; Node proxies/re-emits SSE.</p></div>
+    <div class="card"><h4>Plugins</h4><p>Trusted in-process plugins and a sandboxed <code>worker_threads</code> runtime with capability-restricted RPC.</p></div>
+    <div class="card"><h4>Cluster / Mesh</h4><p>Node agents on every host, a persisted central registry, a round-robin load balancer, and an RPS/CPU autoscaler with an optional AI advisor.</p></div>
+    <div class="card"><h4>Admin + CLI</h4><p>Admin console (config editor → runtime.json, process control, plugins, users, monitoring) + a <code>nexus</code> CLI with a supervisor.</p></div>
+  </div>
+
+  <h2>The four terminals</h2>
+     <p><code>node bin/nexus.js dev</code> starts a custom supervisor that owns four child processes and streams
+     colored, prefixed logs. It also exposes a localhost HTTP control API (start/stop/restart/status/logs)
+     that the admin app consumes — decoupling admin from OS-specific process management.</p>
+  <table>
+    <thead><tr><th>Terminal</th><th>Process</th><th>Default port</th></tr></thead>
+    <tbody>
+      <tr><td>Backend</td><td><code>tsx apps/backend/src/main.ts</code></td><td>4000</td></tr>
+       <tr><td>Frontend</td><td><code>vite</code></td><td>3000</td></tr>
+      <tr><td>AI server</td><td><code>uvicorn</code></td><td>8000</td></tr>
+      <tr><td>Admin</td><td><code>vite</code></td><td>3001</td></tr>
+    </tbody>
+  </table>
+
+   <h2>Configuration model</h2>
+   <p>Use <code>nexus.config.ts</code> for non-secret application behavior and <code>.env</code> for secrets and
+      environment-specific overrides. A generated app owns its own <code>nexus.config.ts</code>; the admin writes only
+      <code>nexus.runtime.json</code>, which is gitignored.
+      The precedence is:</p>
+   <pre><code>code defaults &lt; nexus.config.ts &lt; nexus.runtime.json &lt; .env / NEXUS_* &lt; CLI flags</code></pre>
+
+   <h2>Dependency policy</h2>
+  <ul>
+    <li><strong>Allowed:</strong> <code>graphql</code>, <code>mongodb</code>, <code>ws</code>, <code>nodemailer</code>,
+        <code>node-redis</code>, <code>bcrypt</code>/<code>bcryptjs</code>, <code>jose</code>,
+        <code>mediasoup</code>/<code>mediasoup-client</code>.</li>
+    <li><strong>Forbidden:</strong> any <code>@apollo/*</code>, <code>mongoose</code>,
+        <code>@graphql-tools/federation</code>, <code>express</code>/<code>fastify</code>/<code>koa</code>.</li>
+    <li><strong>Avoided:</strong> <code>concurrently</code>/<code>pm2</code> (custom supervisor),
+        <code>node-forge</code> (hand-rolled DER for CSRs), <code>werift</code> (use <code>mediasoup</code>).</li>
+  </ul>
+
+  <div class="callout note">
+    <span class="label">Where to next</span>
+    Read <a href="getting-started.html">Getting Started</a> to run it, <a href="learn/index.html">Learn the code</a>
+    for step-by-step module walkthroughs with playgrounds, <a href="architecture.html">Architecture</a>
+    for how it's built, and the <a href="api/core.html">API reference</a> for each package's surface.
+  </div>
+
+   <div class="foot">BhooAI Nexus — framework documentation. Source-first, local-first, extensible by design.</div>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

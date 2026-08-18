@@ -1,0 +1,314 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ads API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-ads</span> Ads API
+    <span class="sub">REST-based Google Ads client with a GAQL query builder.</span></h1>
+
+  <p>A small, dependency-light Google Ads client. Uses the Google Ads API REST endpoint
+     <code>googleAds:search</code> with GAQL — no <code>google-ads-api</code> / grpc native dependency.
+     OAuth2 refresh-token access tokens are cached; the HTTP transport is injectable so tests run
+     without live credentials.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>factory</td><td><code>createGoogleAds</code>, <code>CreateAdsOptions</code></td></tr>
+      <tr><td>client</td><td><code>GoogleAdsClient</code></td></tr>
+      <tr><td>query builder</td><td><code>GaqlBuilder</code>, <code>campaignsQuery</code>, <code>campaignMetricsQuery</code></td></tr>
+      <tr><td>transport</td><td><code>fetchTransport</code>, <code>HttpRequest</code>, <code>HttpResponse</code>, <code>HttpTransport</code></td></tr>
+      <tr><td>types</td><td><code>GoogleAdsConfig</code>, <code>Campaign</code>, <code>AdsRow</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { createGoogleAds, GaqlBuilder } <span class="kw">from</span> <span class="str">'@bhooai/nexus-ads'</span>;
+
+<span class="kw">const</span> ads = createGoogleAds({
+  enabled: <span class="kw">true</span>,
+  developerToken,
+  clientId,
+  clientSecret,
+  refreshToken,
+  loginCustomerId,                       <span class="com">// optional — MCC account</span>
+  customerId,
+});
+
+<span class="kw">const</span> q = <span class="kw">new</span> GaqlBuilder()
+  .select(<span class="str">'campaign.id'</span>, <span class="str">'campaign.name'</span>, <span class="str">'metrics.impressions'</span>)
+  .from(<span class="str">'campaign'</span>)
+  .where(<span class="str">"segments.date &gt;= '2026-08-01'"</span>)
+  .where(<span class="str">"segments.date &lt;= '2026-08-02'"</span>)
+  .orderBy(<span class="str">'metrics.impressions'</span>, <span class="str">'DESC'</span>)
+  .limit(<span class="num">50</span>)
+  .build();
+
+<span class="kw">const</span> rows = <span class="kw">await</span> ads.search(customerId, q); <span class="com">// paginates via nextPageToken</span></pre>
+
+  <div class="callout note">
+    <span class="label">Why REST, not grpc?</span>
+    Nexus uses the Google Ads <code>googleAds:search</code> REST endpoint (no native <code>google-ads-api</code>
+    / grpc dependency). OAuth2 refresh-token tokens are cached with a 60s margin; <code>developer-token</code>
+    and <code>login-customer-id</code> headers are set by <code>GoogleAdsClient.searchHeaders()</code>;
+    <code>customerId</code> is hyphen-stripped. Tests mock the HTTP transport — no live Google Ads calls.
+  </div>
+
+  <h2>Factory</h2>
+
+  <h3 id="createGoogleAds">createGoogleAds(config, opts?)</h3>
+  <pre><code><span class="kw">function</span> createGoogleAds(config: GoogleAdsConfig, opts: CreateAdsOptions = {}): GoogleAdsClient</code></pre>
+  <p>Build a <code>GoogleAdsClient</code>. The constructor throws if <code>developerToken</code>,
+     <code>clientId</code>, <code>clientSecret</code>, or <code>refreshToken</code> are missing/empty.
+     <code>GoogleAdsConfig</code> (the type) also requires <code>enabled</code> and <code>customerId</code>.</p>
+  <pre><code><span class="kw">import</span> { createGoogleAds, fetchTransport } <span class="kw">from</span> <span class="str">'@bhooai/nexus-ads'</span>;
+
+<span class="kw">const</span> ads = createGoogleAds(config.ads, {
+  transport: fetchTransport,  <span class="com">// optional — defaults to fetchTransport (Node &gt;= 18)</span>
+  apiVersion: <span class="str">'v17'</span>,         <span class="com">// optional — defaults to 'v17'</span>
+});</code></pre>
+
+  <h3 id="CreateAdsOptions">CreateAdsOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>transport?</code></td><td><code>HttpTransport</code></td><td><code>fetchTransport</code></td><td>Injectable HTTP transport so the client is testable without live Google creds.</td></tr>
+      <tr><td><code>apiVersion?</code></td><td><code>string</code></td><td><code>'v17'</code></td><td>Google Ads API version path segment.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="GoogleAdsClient">Client — GoogleAdsClient</h2>
+  <pre><code><span class="kw">class</span> GoogleAdsClient {
+  constructor(cfg: GoogleAdsConfig, transport: HttpTransport, apiVersion = <span class="str">'v17'</span>);
+  search(customerId: <span class="kw">string</span>, query: <span class="kw">string</span>): Promise&lt;AdsRow[]&gt;;
+  listCampaigns(customerId?: <span class="kw">string</span>, limit?: <span class="kw">number</span>): Promise&lt;Campaign[]&gt;;
+  campaignMetrics(fromDate: <span class="kw">string</span>, toDate: <span class="kw">string</span>, customerId?: <span class="kw">string</span>, limit?: <span class="kw">number</span>): Promise&lt;AdsRow[]&gt;;
+}</code></pre>
+  <p>Google Ads REST client. Uses the <code>googleAds:search</code> REST endpoint with GAQL. OAuth2 access
+     tokens are acquired via the refresh-token grant and cached until near expiry (60s safety margin).
+     The HTTP transport is injectable.</p>
+  <div class="callout warn">
+    <span class="label">Constructor throws</span>
+    Throws <code>[nexus-ads] developerToken, clientId, clientSecret, refreshToken all required</code> if
+    any of those four fields is missing/empty at construction.
+  </div>
+
+  <h3>constructor(cfg, transport, apiVersion = 'v17')</h3>
+  <table>
+    <thead><tr><th>Arg</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cfg</code></td><td><code>GoogleAdsConfig</code></td><td>Google Ads config (see <a href="#GoogleAdsConfig">GoogleAdsConfig</a>).</td></tr>
+      <tr><td><code>transport</code></td><td><code>HttpTransport</code></td><td>HTTP transport (injected by <code>createGoogleAds</code>; default <code>fetchTransport</code>).</td></tr>
+      <tr><td><code>apiVersion</code></td><td><code>string</code> (default <code>'v17'</code>)</td><td>API version path segment in <code>googleads.googleapis.com/&lt;v&gt;/</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>search(customerId, query)</h3>
+  <pre><code><span class="kw">async</span> search(customerId: <span class="kw">string</span>, query: <span class="kw">string</span>): Promise&lt;AdsRow[]&gt;</code></pre>
+  <p>Run a GAQL query against a customer and return <strong>all</strong> rows, transparently paginating via
+     <code>nextPageToken</code>. The <code>customerId</code> is hyphen-stripped. Throws
+     <code>[nexus-ads] search failed: HTTP &lt;status&gt; &lt;body&gt;</code> on a non-200 response.</p>
+  <pre><code><span class="kw">const</span> rows = <span class="kw">await</span> ads.search(<span class="str">'123-456-7890'</span>, q);
+<span class="com">// POST https://googleads.googleapis.com/v17/customers/1234567890/googleAds:search</span></code></pre>
+
+  <h3>listCampaigns(customerId?, limit?)</h3>
+  <pre><code><span class="kw">async</span> listCampaigns(customerId = <span class="kw">this</span>.cfg.customerId, limit = <span class="num">50</span>): Promise&lt;Campaign[]&gt;</code></pre>
+  <p>List campaigns on a customer. Runs an internal GAQL query selecting
+     <code>campaign.id</code>, <code>campaign.name</code>, <code>campaign.status</code>,
+     <code>campaign.advertising_channel_type</code>, ordered by <code>campaign.id</code>, then maps each
+     row to a <code>Campaign</code>. Defaults <code>customerId</code> to <code>config.customerId</code> and
+     <code>limit</code> to <code>50</code>.</p>
+
+  <h3>campaignMetrics(fromDate, toDate, customerId?, limit?)</h3>
+  <pre><code><span class="kw">async</span> campaignMetrics(
+  fromDate: <span class="kw">string</span>, toDate: <span class="kw">string</span>,
+  customerId = <span class="kw">this</span>.cfg.customerId, limit = <span class="num">50</span>,
+): Promise&lt;AdsRow[]&gt;</code></pre>
+  <p>Campaign performance metrics for a date range (<code>YYYY-MM-DD</code>). Runs an internal GAQL query
+     selecting <code>campaign.id</code>, <code>campaign.name</code>, <code>metrics.impressions</code>,
+     <code>metrics.clicks</code>, <code>metrics.cost_micros</code>, <code>metrics.conversions</code> with
+     <code>segments.date &gt;= '&lt;from&gt;'</code> and <code>segments.date &lt;= '&lt;to&gt;'</code>, ordered by
+     <code>campaign.id</code>. Returns the raw <code>AdsRow[]</code> (no shape mapping).</p>
+  <pre><code><span class="kw">const</span> rows = <span class="kw">await</span> ads.campaignMetrics(<span class="str">'2026-08-01'</span>, <span class="str">'2026-08-02'</span>);</code></pre>
+
+  <h2 id="GaqlBuilder">Query builder — GaqlBuilder</h2>
+  <pre><code><span class="kw">class</span> GaqlBuilder {
+  select(...fields: <span class="kw">string</span>[]): <span class="kw">this</span>;
+  from(resource: <span class="kw">string</span>): <span class="kw">this</span>;
+  where(condition: <span class="kw">string</span>): <span class="kw">this</span>;
+  orderBy(field: <span class="kw">string</span>, dir: <span class="str">'ASC'</span> | <span class="str">'DESC'</span> = <span class="str">'ASC'</span>): <span class="kw">this</span>;
+  limit(n: <span class="kw">number</span>): <span class="kw">this</span>;
+  build(): <span class="kw">string</span>;
+}</code></pre>
+  <p>GAQL (Google Ads Query Language) builder. Produces queries like:</p>
+  <pre><code>SELECT campaign.id, campaign.name FROM campaign
+WHERE campaign.status = <span class="str">'ENABLED'</span> ORDER BY campaign.id LIMIT 50</code></pre>
+  <p>Every chaining method returns <code>this</code>. <code>select(...)</code> takes <strong>REST params</strong>
+     (one field per argument); multiple calls accumulate. <code>where(...)</code> takes a single full
+     condition string and may be called multiple times (joined with <code>AND</code>).</p>
+  <pre><code><span class="kw">const</span> q = <span class="kw">new</span> GaqlBuilder()
+  .select(<span class="str">'campaign.id'</span>, <span class="str">'campaign.name'</span>, <span class="str">'metrics.impressions'</span>)
+  .from(<span class="str">'campaign'</span>)
+  .where(<span class="str">"campaign.status = 'ENABLED'"</span>)
+  .where(<span class="str">"segments.date &gt;= '2026-08-01'"</span>)
+  .where(<span class="str">"segments.date &lt;= '2026-08-02'"</span>)
+  .orderBy(<span class="str">'metrics.impressions'</span>, <span class="str">'DESC'</span>)
+  .limit(<span class="num">100</span>)
+  .build();</code></pre>
+  <div class="callout warn">
+    <span class="label">build() throws</span>
+    <code>build()</code> throws <code>[nexus-ads] GaqlBuilder: FROM resource required</code> if
+    <code>from(...)</code> was never called, and <code>[nexus-ads] GaqlBuilder: at least one field required</code>
+    if <code>select(...)</code> was never called.
+  </div>
+
+  <h3>select(...fields)</h3>
+  <pre><code>select(...fields: <span class="kw">string</span>[]): <span class="kw">this</span></code></pre>
+  <p>Append fields to the SELECT list (REST params — pass each field as a separate argument). Multiple
+     calls accumulate.</p>
+  <pre><code>.select(<span class="str">'campaign.id'</span>, <span class="str">'campaign.name'</span>)
+.select(<span class="str">'metrics.impressions'</span>)      <span class="com">// additive</span></code></pre>
+
+  <h3>from(resource)</h3>
+  <pre><code>from(resource: <span class="kw">string</span>): <span class="kw">this</span></code></pre>
+  <p>Set the FROM resource (e.g. <code>'campaign'</code>). Required — <code>build()</code> throws if unset.</p>
+
+  <h3>where(condition)</h3>
+  <pre><code>where(condition: <span class="kw">string</span>): <span class="kw">this</span></code></pre>
+  <p>Append a <strong>full</strong> condition string (e.g. <code>"campaign.status = 'ENABLED'"</code>).
+     Multiple calls are joined with <code>AND</code>. There is no <code>in()</code> helper — pass the full
+     condition yourself.</p>
+  <pre><code>.where(<span class="str">"segments.date &gt;= '2026-08-01'"</span>)
+.where(<span class="str">"segments.date &lt;= '2026-08-02'"</span>)
+.where(<span class="str">"campaign.status = 'ENABLED'"</span>)</code></pre>
+
+  <h3>orderBy(field, dir?)</h3>
+  <pre><code>orderBy(field: <span class="kw">string</span>, dir: <span class="str">'ASC'</span> | <span class="str">'DESC'</span> = <span class="str">'ASC'</span>): <span class="kw">this</span></code></pre>
+  <p>Set the ORDER BY field and direction (default <code>'ASC'</code>). Only the last call wins.</p>
+
+  <h3>limit(n)</h3>
+  <pre><code>limit(n: <span class="kw">number</span>): <span class="kw">this</span></code></pre>
+  <p>Set the LIMIT. Omit to leave it unset.</p>
+
+  <h3>build()</h3>
+  <pre><code>build(): <span class="kw">string</span></code></pre>
+  <p>Render the final GAQL string. Throws if no FROM resource or no fields were set.</p>
+
+  <h2>Convenience queries</h2>
+  <p>Two ready-made GAQL builders return query <strong>strings</strong> (they do <em>not</em> hit the API).
+     Pass them to <code>GoogleAdsClient.search(customerId, q)</code>.</p>
+
+  <h3 id="campaignsQuery">campaignsQuery(limit?)</h3>
+  <pre><code><span class="kw">function</span> campaignsQuery(limit = <span class="num">50</span>): <span class="kw">string</span></code></pre>
+  <p>Standard campaign-listing GAQL: selects <code>campaign.id</code>, <code>campaign.name</code>,
+     <code>campaign.status</code>, <code>campaign.advertising_channel_type</code> from <code>campaign</code>,
+     ordered by <code>campaign.id</code>, limited to <code>limit</code> (default 50).</p>
+  <pre><code><span class="kw">const</span> q = campaignsQuery(<span class="num">100</span>);
+<span class="kw">const</span> campaigns = (<span class="kw">await</span> ads.search(customerId, q)).map(rowToCampaign);</code></pre>
+
+  <h3 id="campaignMetricsQuery">campaignMetricsQuery(fromDate, toDate, limit?)</h3>
+  <pre><code><span class="kw">function</span> campaignMetricsQuery(fromDate: <span class="kw">string</span>, toDate: <span class="kw">string</span>, limit = <span class="num">50</span>): <span class="kw">string</span></code></pre>
+  <p>Campaign performance metrics for a date range (<code>YYYY-MM-DD</code>). Selects
+     <code>campaign.id</code>, <code>campaign.name</code>, <code>metrics.impressions</code>,
+     <code>metrics.clicks</code>, <code>metrics.cost_micros</code>, <code>metrics.conversions</code> from
+     <code>campaign</code>, with <code>segments.date &gt;= '&lt;from&gt;'</code> AND
+     <code>segments.date &lt;= '&lt;to&gt;'</code>, ordered by <code>campaign.id</code>.</p>
+  <pre><code><span class="kw">const</span> q = campaignMetricsQuery(<span class="str">'2026-08-01'</span>, <span class="str">'2026-08-02'</span>);
+<span class="kw">const</span> rows = <span class="kw">await</span> ads.search(customerId, q);</code></pre>
+  <div class="callout note">
+    <span class="label">Note</span>
+    <code>GoogleAdsClient.listCampaigns</code> and <code>campaignMetrics</code> use the <em>same</em> queries
+    internally (via private helpers). Use these exports when you want the GAQL string itself (e.g. to
+    pass to <code>search</code> with a different customer or to inspect/extend before running).
+  </div>
+
+  <h2 id="transport">Transport — fetchTransport</h2>
+  <pre><code><span class="kw">const</span> fetchTransport: HttpTransport</code></pre>
+  <p>Default fetch-based HTTP transport (Node &gt;= 18); <strong>unauthenticated pass-through</strong>. It
+     adds <em>no</em> auth — the <code>Authorization</code> (Bearer), <code>developer-token</code>, and
+     <code>login-customer-id</code> headers are added by <code>GoogleAdsClient.searchHeaders()</code>. This
+     helper just forwards <code>method</code>, <code>url</code>, <code>headers</code>, and <code>body</code> to
+     <code>fetch()</code> and returns <code>{ status, body, headers }</code>.</p>
+  <pre><code><span class="kw">const</span> res = <span class="kw">await</span> fetchTransport({
+  method: <span class="str">'POST'</span>,
+  url: <span class="str">'https://oauth2.googleapis.com/token'</span>,
+  headers: { <span class="str">'content-type'</span>: <span class="str">'application/x-www-form-urlencoded'</span> },
+  body,
+});</code></pre>
+
+  <h2>Types</h2>
+
+  <h3 id="GoogleAdsConfig">GoogleAdsConfig</h3>
+  <p>Google Ads config as it appears in <code>nexus.config.ts</code> under <code>ads</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Google Ads on/off (required by the type).</td></tr>
+      <tr><td><code>developerToken</code></td><td><code>string</code></td><td>Google Ads API developer token. Constructor throws if missing/empty.</td></tr>
+      <tr><td><code>clientId</code></td><td><code>string</code></td><td>OAuth2 client id. Constructor throws if missing/empty.</td></tr>
+      <tr><td><code>clientSecret</code></td><td><code>string</code></td><td>OAuth2 client secret. Constructor throws if missing/empty.</td></tr>
+      <tr><td><code>refreshToken</code></td><td><code>string</code></td><td>OAuth2 refresh token (long-lived). Constructor throws if missing/empty.</td></tr>
+      <tr><td><code>loginCustomerId?</code></td><td><code>string</code></td><td>Login customer id (MCC account, hyphenated or plain). Required for MCC; sent as the <code>login-customer-id</code> header (hyphen-stripped).</td></tr>
+      <tr><td><code>customerId</code></td><td><code>string</code></td><td>Default customer id to query (used by <code>listCampaigns</code> / <code>campaignMetrics</code> when <code>customerId</code> arg is omitted). Required by the type.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Campaign</h3>
+  <p>Minimal campaign shape mapped from the <code>campaign</code> resource by
+     <code>GoogleAdsClient.listCampaigns</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td><code>campaign.id</code>.</td></tr>
+      <tr><td><code>name</code></td><td><code>string</code></td><td><code>campaign.name</code>.</td></tr>
+      <tr><td><code>status</code></td><td><code>string</code></td><td><code>campaign.status</code>.</td></tr>
+      <tr><td><code>advertisingChannelType?</code></td><td><code>string</code></td><td><code>campaign.advertising_channel_type</code> (omitted if null).</td></tr>
+      <tr><td><code>budget?</code></td><td><code>{ amountMicros?: string }</code></td><td>Budget (declared on the type; <code>listCampaigns</code> does not currently populate it).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AdsRow</h3>
+  <pre><code><span class="kw">type</span> AdsRow = Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;;</code></pre>
+  <p>A row from a <code>googleAds:search</code> response: a record mapping resource name → fields
+     (e.g. <code>{ campaign: { id: '...', name: '...', ... }, metrics: { ... } }</code>). Returned by
+     <code>search</code> and <code>campaignMetrics</code>.</p>
+
+  <h3>HttpRequest</h3>
+  <pre><code><span class="kw">interface</span> HttpRequest {
+  method: <span class="str">'GET'</span> | <span class="str">'POST'</span>;
+  url: <span class="kw">string</span>;
+  headers?: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;;
+  body?: <span class="kw">string</span>;
+}</code></pre>
+  <p>Request shape an <code>HttpTransport</code> consumes.</p>
+
+  <h3>HttpResponse</h3>
+  <pre><code><span class="kw">interface</span> HttpResponse {
+  status: <span class="kw">number</span>;
+  body: <span class="kw">string</span>;
+  headers?: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;;
+}</code></pre>
+  <p>Response shape an <code>HttpTransport</code> produces.</p>
+
+  <h3>HttpTransport</h3>
+  <pre><code><span class="kw">type</span> HttpTransport = (req: HttpRequest) =&gt; Promise&lt;HttpResponse&gt;;</code></pre>
+  <p>Injectable HTTP transport so the client is testable without live Google creds. The default is
+     <code>fetchTransport</code>. Tests pass a stub that returns canned
+     <code>{ status: 200, body: JSON.stringify({ results: [...] }) }</code> responses.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Ads API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Ads - GAQL builder","apiBase":"http://localhost:4000","js":"// Mirror of GaqlBuilder: select(...fields), from, where (full condition), orderBy, limit, build.\nclass GaqlBuilder {\n  constructor() { this.fields = []; this.resource = \"\"; this.conditions = []; this.order = null; this.limitN = null; }\n  select(...f) { this.fields.push(...f); return this; }\n  from(r) { this.resource = r; return this; }\n  where(c) { this.conditions.push(c); return this; }\n  orderBy(field, dir = \"ASC\") { this.order = { field, dir }; return this; }\n  limit(n) { this.limitN = n; return this; }\n  build() {\n    if (!this.resource) throw new Error(\"FROM resource required\");\n    if (this.fields.length === 0) throw new Error(\"at least one field required\");\n    let q = \"SELECT \" + this.fields.join(\", \") + \" FROM \" + this.resource;\n    if (this.conditions.length) q += \" WHERE \" + this.conditions.join(\" AND \");\n    if (this.order) q += \" ORDER BY \" + this.order.field + \" \" + this.order.dir;\n    if (this.limitN != null) q += \" LIMIT \" + this.limitN;\n    return q;\n  }\n}\nconst q = new GaqlBuilder()\n  .select(\"campaign.id\", \"campaign.name\", \"metrics.impressions\")\n  .from(\"campaign\")\n  .where(\"segments.date \u003e= \u00272026-08-01\u0027\")\n  .where(\"segments.date \u003c= \u00272026-08-02\u0027\")\n  .orderBy(\"metrics.impressions\", \"DESC\")\n  .limit(50)\n  .build();\nconsole.log(q);\n\n// Convenience: campaignMetricsQuery(fromDate, toDate, limit=50)\nfunction campaignMetricsQuery(fromDate, toDate, limit = 50) {\n  return new GaqlBuilder()\n    .select(\"campaign.id\", \"campaign.name\", \"metrics.impressions\", \"metrics.clicks\", \"metrics.cost_micros\", \"metrics.conversions\")\n    .from(\"campaign\")\n    .where(\"segments.date \u003e= \u0027\" + fromDate + \"\u0027\")\n    .where(\"segments.date \u003c= \u0027\" + toDate + \"\u0027\")\n    .orderBy(\"campaign.id\")\n    .limit(limit)\n    .build();\n}\nconsole.log(campaignMetricsQuery(\"2026-08-01\", \"2026-08-02\"));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

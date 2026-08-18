@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>10 · Cluster — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 10</div>
+  <h1>Cluster <span class="sub"><code>@bhooai/nexus-cluster</code> — multi-host mesh. A node agent on every machine, a persisted central registry, a round-robin load balancer, and an RPS/CPU autoscaler with an optional AI advisor.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/types.ts</code></td><td>Mesh types (node identity, roles, services, registry records).</td></tr>
+      <tr><td><code>src/agent.ts</code></td><td><code>NodeAgent</code> — runs on each host, announces services, heartbeats.</td></tr>
+      <tr><td><code>src/client.ts</code></td><td><code>NodeClient</code> — how a node talks to the central registry.</td></tr>
+      <tr><td><code>src/registry.ts</code></td><td><code>NodeRegistry</code> — persisted central registry of live nodes.</td></tr>
+      <tr><td><code>src/lb.ts</code></td><td><code>LoadBalancer</code> — round-robin reverse proxy on :8080.</td></tr>
+      <tr><td><code>src/autoscaler.ts</code></td><td>Scale based on RPS/CPU thresholds with cooldowns.</td></tr>
+      <tr><td><code>src/ai.ts</code></td><td><code>HttpAiAdvisor</code> — optional AI-driven scaling advice.</td></tr>
+      <tr><td><code>src/manager.ts</code></td><td><code>ClusterManager</code> — orchestrates LB, autoscaler, registry.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Load balancer — round-robin</h3>
+  <p>The LB is a plain <code>node:http</code> reverse proxy. It round-robins across every <em>ready</em>
+     backend node and streams requests through untouched (so SSE and uploads work), tagging each response
+     with <code>x-bhooai-node</code>:</p>
+  <pre><code><span class="kw">private</span> nextTarget() {
+  <span class="kw">const</span> targets = <span class="kw">this</span>.targets();  <span class="com">// registry.readyByRole('backend')</span>
+  <span class="kw">if</span> (targets.length === <span class="num">0</span>) <span class="kw">return</span> { id: <span class="str">''</span>, baseUrl: <span class="str">''</span> };
+  <span class="kw">const</span> target = targets[<span class="kw">this</span>.rr % targets.length];
+  <span class="kw">this</span>.rr = (<span class="kw">this</span>.rr + <span class="num">1</span>) % targets.length;
+  <span class="kw">return</span> target;
+}</code></pre>
+  <p>It also keeps a per-node request counter + a 10-second histogram — that's the autoscaler's RPS source.</p>
+
+  <h3>2. Registry + agents</h3>
+  <p><code>NodeAgent</code> runs on each host, announces its services (backend, frontend, …), and heartbeats
+     to the central <code>NodeRegistry</code>. The registry is persisted so the mesh survives restarts and
+     can fail open when single-node.</p>
+
+  <h3>3. Autoscaler</h3>
+  <p><code>Autoscaler</code> watches RPS per node and CPU; on thresholds it scales within
+     <code>minNodes</code>/<code>maxNodes</code> with cooldowns. <code>ai.ts</code> is an optional
+     <code>HttpAiAdvisor</code> that can inform the decision.</p>
+
+  <h3>4. In the backend</h3>
+  <p><code>ClusterManager</code> auto-starts the LB + autoscaler when <code>cluster.enabled</code> (config).
+     The admin console exposes full mesh control via <code>/admin/cluster/*</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Fail-open</span>
+    When <code>cluster.enabled</code> is off (default) or the mesh is down, the app keeps working on a
+    single node — a deliberate availability choice.
+  </div>
+
+  <h2>Playground</h2>
+  <p>Sandbox: round-robin target selection + autoscale-decision model. Live API: the backend health (mesh
+     control endpoints are admin-authenticated).</p>
+
+  <section data-playground='{
+    "title": "Cluster — load balancing + autoscale",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: round-robin across ready backend nodes\nfunction makeLB() {\n  let rr = 0;\n  return (targets) => {\n    if (!targets.length) return null;\n    const t = targets[rr % targets.length];\n    rr = (rr + 1) % targets.length;\n    return t;\n  };\n}\nconst lb = makeLB();\nconst nodes = [\"node-A\", \"node-B\", \"node-C\"];\nconst served = Array.from({ length: 7 }, () => lb(nodes)).join(\", \");\nconsole.log(\"requests ->\", served);\n\n// Model: autoscaler — scale up if avg RPS per node > high threshold\nfunction shouldScaleUp(rpsPerNode, high) { return rpsPerNode > high; }\nconsole.log(\"scale up? (rps 45, high 40):\", shouldScaleUp(45, 40));\nconsole.log(\"scale up? (rps 20, high 40):\", shouldScaleUp(20, 40));\n\n// Model: target RPS after adding a node\nconst currentNodes = 2, totalRps = 80;\nconsole.log(\"rps/node now:\", totalRps / currentNodes);\nconsole.log(\"rps/node with 3:\", totalRps / 3);",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <p class="foot"><a href="09-plugins.html">&larr; 09 · Plugins</a> · <a href="index.html">Build Guide</a> · Next: <a href="11-cli.html">11 · CLI →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 10 Cluster</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

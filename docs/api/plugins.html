@@ -1,0 +1,522 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plugins API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-plugins</span> Plugins API
+    <span class="sub">Manifest, host, hooks, trusted in-process + sandboxed worker plugins.</span></h1>
+
+  <p>The plugin system. A plugin ships a <code>plugin.json</code> manifest declaring its name,
+     capabilities, and lifecycle hooks, plus an entry module whose default export is a
+     <code>PluginModule</code> with optional <code>install</code> / <code>init</code> /
+     <code>start</code> / <code>onConfigChange</code> / <code>stop</code> functions. The
+     <code>PluginHost</code> loads manifests from a directory, orders them topologically by
+     <code>dependencies</code>, constructs a <code>TrustedPlugin</code> (in-process) or
+     <code>SandboxedPlugin</code> (worker_thread) handle, and drives the lifecycle in order.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>manifest</td><td><code>Capability</code>, <code>ALL_CAPABILITIES</code>, <code>LifecycleHook</code>, <code>LIFECYCLE_HOOKS</code>, <code>PluginManifest</code>, <code>SandboxLimits</code>, <code>validateManifest</code></td></tr>
+      <tr><td>hooks</td><td><code>HookBus</code>, <code>ServiceContainer</code></td></tr>
+      <tr><td>host</td><td><code>AdminPageSpec</code>, <code>SlotSpec</code>, <code>ScheduledJob</code>, <code>HostBindings</code>, <code>PluginContext</code>, <code>PluginModule</code>, <code>PluginHandle</code></td></tr>
+      <tr><td>runtime</td><td><code>TrustedPlugin</code></td></tr>
+      <tr><td>sandbox</td><td><code>SandboxedPlugin</code>, <code>PolicyDecision</code>, <code>authorize</code></td></tr>
+      <tr><td>registry</td><td><code>PluginHost</code></td></tr>
+      <tr><td>admin</td><td><code>AdminExtensions</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="Capability">Manifest — capabilities &amp; lifecycle</h2>
+
+  <h3>Capability</h3>
+  <pre><code><span class="kw">type</span> Capability =
+  | 'http'        <span class="com">// register routes / middleware</span>
+  | 'graphql'     <span class="com">// add (and host can remove) a subgraph</span>
+  | 'data'        <span class="com">// ODM models</span>
+  | 'auth'        <span class="com">// auth helpers</span>
+  | 'realtime'    <span class="com">// rooms / pubsub</span>
+  | 'scheduler'   <span class="com">// cron-style jobs</span>
+  | 'events'      <span class="com">// cross-plugin event bus</span>
+  | 'admin'       <span class="com">// admin pages / slots</span>
+  | 'fs'          <span class="com">// filesystem (allowlisted paths)</span>
+  | 'net';        <span class="com">// network (allowlisted hosts)</span></code></pre>
+  <p>A capability grants access to a host registrar or resource. Sandbox mode gates every
+     registrar by these; trusted mode checks them too (defense in depth — uniform contract with
+     sandboxed plugins and lets the app audit usage). <code>fs</code> / <code>net</code> are only
+     surfaced on <code>PluginContext</code> when granted.</p>
+  <pre><code><span class="kw">const</span> ALL_CAPABILITIES: Capability[] = [
+  'http', 'graphql', 'data', 'auth', 'realtime', 'scheduler', 'events', 'admin', 'fs', 'net',
+];</code></pre>
+
+  <h3>LifecycleHook</h3>
+  <pre><code><span class="kw">type</span> LifecycleHook = 'install' | 'init' | 'start' | 'config:change' | 'stop';
+<span class="kw">const</span> LIFECYCLE_HOOKS: LifecycleHook[] = ['install', 'init', 'start', 'config:change', 'stop'];</code></pre>
+  <table>
+    <thead><tr><th>Hook</th><th>Driven by</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>install</code></td><td><code>PluginHost.install()</code></td><td>One-time setup (e.g. create indexes). Runs once on load.</td></tr>
+      <tr><td><code>init</code></td><td><code>PluginHost.init()</code></td><td>Initialization after install.</td></tr>
+      <tr><td><code>start</code></td><td><code>PluginHost.start()</code></td><td>Begin serving (register routes, start jobs, subscribe events).</td></tr>
+      <tr><td><code>config:change</code></td><td><code>PluginHandle.updateConfig()</code></td><td>Notified via <code>onConfigChange(ctx, newConfig)</code> when runtime config is pushed.</td></tr>
+      <tr><td><code>stop</code></td><td><code>PluginHost.stop()</code></td><td>Shutdown — runs in <strong>reverse</strong> dependency order.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PluginManifest">PluginManifest</h3>
+  <pre><code><span class="com">// plugins/my-plugin/plugin.json</span>
+{
+  <span class="str">"name"</span>: <span class="str">"analytics"</span>,
+  <span class="str">"version"</span>: <span class="str">"1.0.0"</span>,
+  <span class="str">"entry"</span>: <span class="str">"index.js"</span>,
+  <span class="str">"mode"</span>: <span class="str">"trusted"</span>,                  <span class="com">// or "sandboxed"</span>
+  <span class="str">"capabilities"</span>: [<span class="str">"http"</span>, <span class="str">"events"</span>, <span class="str">"admin"</span>],
+  <span class="str">"configSchema"</span>: {},
+  <span class="str">"hooks"</span>: [<span class="str">"install"</span>, <span class="str">"init"</span>, <span class="str">"start"</span>, <span class="str">"config:change"</span>, <span class="str">"stop"</span>],
+  <span class="str">"dependencies"</span>: []
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Unique plugin name (kebab-case; validated against <code>/^[a-z0-9-]+$/</code>).</td></tr>
+      <tr><td><code>version</code></td><td><code>string</code></td><td>Semver version.</td></tr>
+      <tr><td><code>entry</code></td><td><code>string</code></td><td>Entry module path relative to the plugin dir, e.g. <code>"index.js"</code>.</td></tr>
+      <tr><td><code>mode</code></td><td><code>'trusted' | 'sandboxed'</code></td><td><code>'trusted'</code> runs in-process with full Node API; <code>'sandboxed'</code> runs in a <code>worker_thread</code>.</td></tr>
+      <tr><td><code>capabilities</code></td><td><code>Capability[]</code></td><td>Capabilities this plugin requests. Sandbox mode gates every registrar by these.</td></tr>
+      <tr><td><code>configSchema?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Optional JSON schema for the plugin's config (validated before init).</td></tr>
+      <tr><td><code>hooks?</code></td><td><code>LifecycleHook[]</code></td><td>Lifecycle hooks the plugin implements (documentation / manifest validation).</td></tr>
+      <tr><td><code>dependencies?</code></td><td><code>string[]</code></td><td>Other plugin names that must start first (topological ordering).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="SandboxLimits">SandboxLimits</h3>
+  <pre><code><span class="kw">interface</span> SandboxLimits {
+  resourceLimits?: { maxOldGenerationSizeMb?; maxYoungGenerationSizeMb?; codeRangeSizeMb?; stackSizeMb? };
+  heartbeatMs?: <span class="kw">number</span>;
+  heartbeatTimeoutMs?: <span class="kw">number</span>;
+  fsAllowPaths?: <span class="kw">string</span>[];
+  netAllowHosts?: <span class="kw">string</span>[];
+}</code></pre>
+  <p>Per-plugin sandbox limits (sandboxed mode only). Passed to <code>SandboxedPlugin</code> via
+     <code>limitsByPlugin</code> on <code>PluginHost.load</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>resourceLimits?</code></td><td><code>object</code></td><td><code>{ maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 16 }</code></td><td><code>node:worker_threads</code> resource limits. Sub-fields: <code>maxOldGenerationSizeMb</code>, <code>maxYoungGenerationSizeMb</code>, <code>codeRangeSizeMb</code>, <code>stackSizeMb</code>.</td></tr>
+      <tr><td><code>heartbeatMs?</code></td><td><code>number</code></td><td>—</td><td>Heartbeat interval (ms) the worker reports while alive.</td></tr>
+      <tr><td><code>heartbeatTimeoutMs?</code></td><td><code>number</code></td><td><code>4000</code></td><td>If a beat is missed within this window the worker is killed and the handle enters <code>'errored'</code>.</td></tr>
+      <tr><td><code>fsAllowPaths?</code></td><td><code>string[]</code></td><td>—</td><td>Filesystem paths the plugin may access (when <code>'fs'</code> capability is granted). A path is allowed if it equals or starts with one of the entries; empty/absent = no extra restriction beyond the capability.</td></tr>
+      <tr><td><code>netAllowHosts?</code></td><td><code>string[]</code></td><td>—</td><td>Hostnames the plugin may reach (when <code>'net'</code> capability is granted). Matched against <code>new URL(url).hostname</code>; empty/absent = no extra restriction.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="validateManifest">validateManifest(m)</h3>
+  <pre><code><span class="kw">function</span> validateManifest(m: PluginManifest): <span class="kw">void</span></code></pre>
+  <p>Validate a manifest's shape. Returns <code>void</code> on success and <strong>throws</strong> on
+     a missing/invalid field: name must match <code>/^[a-z0-9-]+$/</code>, <code>version</code> and
+     <code>entry</code> are required, <code>mode</code> must be <code>'trusted'</code> or
+     <code>'sandboxed'</code>, every capability must be in <code>ALL_CAPABILITIES</code>, and every
+     dependency must be a non-empty string.</p>
+  <pre><code><span class="kw">import</span> { validateManifest, ALL_CAPABILITIES } <span class="kw">from</span> <span class="str">'@bhooai/nexus-plugins'</span>;
+validateManifest(manifest);   <span class="com">// throws on invalid; returns void otherwise</span>
+ALL_CAPABILITIES;             <span class="com">// ['http','graphql','data','auth','realtime','scheduler','events','admin','fs','net']</span></code></pre>
+
+  <h2 id="HookBus">Hooks — HookBus &amp; ServiceContainer</h2>
+
+  <h3>HookBus</h3>
+  <pre><code><span class="kw">class</span> HookBus {
+  publish(topic: <span class="kw">string</span>, payload: <span class="kw">unknown</span>): <span class="kw">void</span>;
+  subscribe(topic: <span class="kw">string</span>, handler: (payload: <span class="kw">unknown</span>) =&gt; <span class="kw">void</span>): () =&gt; <span class="kw">void</span>;
+  subscriberCount(topic: <span class="kw">string</span>): <span class="kw">number</span>;
+}</code></pre>
+  <p>A typed pub/sub bus for inter-plugin events. Subscribers are invoked synchronously per topic;
+     <code>publish</code> iterates a snapshot of the set so a handler may unsubscribe during publish.
+     <code>subscribe</code> returns an unsubscribe function. <code>subscriberCount</code> is for
+     tests / inspection. This backs <code>ctx.events</code> on <code>PluginContext</code>.</p>
+  <pre><code><span class="kw">const</span> bus = <span class="kw">new</span> HookBus();
+<span class="kw">const</span> off = bus.subscribe(<span class="str">'user:created'</span>, (u) =&gt; console.log(<span class="str">'new user'</span>, u));
+bus.publish(<span class="str">'user:created'</span>, { id: <span class="num">42</span> });
+bus.subscriberCount(<span class="str">'user:created'</span>);  <span class="com">// 1</span>
+off();
+bus.subscriberCount(<span class="str">'user:created'</span>);  <span class="com">// 0</span></code></pre>
+
+  <h3 id="ServiceContainer">ServiceContainer</h3>
+  <pre><code><span class="kw">class</span> ServiceContainer {
+  register&lt;T&gt;(name: <span class="kw">string</span>, svc: T): <span class="kw">void</span>;
+  get&lt;T&gt;(name: <span class="kw">string</span>): T;
+  has(name: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  remove(name: <span class="kw">string</span>): <span class="kw">void</span>;
+}</code></pre>
+  <p>A minimal named-service container (inbuilt DI): register / get by name. <code>register</code>
+     throws if the name is already taken; <code>get</code> throws if not found. This backs
+     <code>ctx.services</code> on <code>PluginContext</code>.</p>
+  <pre><code><span class="kw">const</span> services = <span class="kw">new</span> ServiceContainer();
+services.register(<span class="str">'emailer'</span>, { send: <span class="kw">async</span> (m) =&gt; { /* ... */ } });
+services.has(<span class="str">'emailer'</span>);   <span class="com">// true</span>
+services.get(<span class="str">'emailer'</span>);   <span class="com">// { send: ... }</span>
+services.remove(<span class="str">'emailer'</span>);</code></pre>
+  <div class="callout warn">
+    <span class="label">services is gated by the events capability</span>
+    <code>ctx.services.register</code> / <code>ctx.services.get</code> require the <strong><code>events</code></code>
+    capability — there is no <code>services</code> capability. The capability policy maps both
+    <code>services.register</code> and <code>services.get</code> to <code>events</code>, so a plugin
+    that wants the DI container must request <code>'events'</code> in its manifest.
+  </div>
+
+  <h2 id="HostBindings">Host — type aliases &amp; bindings</h2>
+
+  <h3>AdminPageSpec</h3>
+  <pre><code><span class="kw">interface</span> AdminPageSpec {
+  path: <span class="kw">string</span>;       <span class="com">// route path in the admin app, e.g. "/plugins/analytics"</span>
+  title: <span class="kw">string</span>;      <span class="com">// nav label</span>
+  group?: <span class="kw">string</span>;     <span class="com">// nav grouping</span>
+  icon?: <span class="kw">string</span>;      <span class="com">// optional icon name</span>
+  order?: <span class="kw">number</span>;     <span class="com">// optional order within its group</span>
+}</code></pre>
+
+  <h3>SlotSpec</h3>
+  <pre><code><span class="kw">interface</span> SlotSpec {
+  slot: <span class="kw">string</span>;       <span class="com">// named insertion point in the admin UI, e.g. "dashboard:top"</span>
+  component: <span class="kw">string</span>;   <span class="com">// component/module the admin should render there</span>
+  order?: <span class="kw">number</span>;     <span class="com">// optional ordering within the slot</span>
+}</code></pre>
+
+  <h3>ScheduledJob</h3>
+  <pre><code><span class="kw">interface</span> ScheduledJob {
+  name: <span class="kw">string</span>;
+  cron: <span class="kw">string</span>;
+}</code></pre>
+
+  <h3 id="HostBindings">HostBindings</h3>
+  <pre><code><span class="kw">interface</span> HostBindings {
+  http: {
+    addRoute(method: <span class="kw">string</span>, path: <span class="kw">string</span>, handler: (ctx: any) =&gt; void | Promise&lt;void&gt;): void;
+    addMiddleware(mw: (ctx: any, next: () =&gt; Promise&lt;void&gt;) =&gt; Promise&lt;void&gt;, phase?: 'before-route' | 'after-route'): void;
+  };
+  graphql: {
+    addSubgraph(subgraph: { name: <span class="kw">string</span>; typeDefs: <span class="kw">string</span>; resolvers: <span class="kw">unknown</span> }): Promise&lt;void&gt;;
+    removeSubgraph(name: <span class="kw">string</span>): Promise&lt;void&gt;;
+  };
+  data: { registerModel(name: <span class="kw">string</span>, schema: <span class="kw">unknown</span>): <span class="kw">unknown</span>; getModel(name: <span class="kw">string</span>): <span class="kw">unknown</span> };
+  realtime: { join(room: <span class="kw">string</span>, connId: <span class="kw">string</span>): void; broadcast(room: <span class="kw">string</span>, msg: <span class="kw">unknown</span>): void };
+  scheduler: { schedule(name: <span class="kw">string</span>, cron: <span class="kw">string</span>, fn: () =&gt; void | Promise&lt;void&gt;): void; cancel(name: <span class="kw">string</span>): void };
+  events: { publish(topic: <span class="kw">string</span>, payload: <span class="kw">unknown</span>): void; subscribe(topic: <span class="kw">string</span>, handler: (payload: <span class="kw">unknown</span>) =&gt; void): () =&gt; void };
+  admin: { registerAdminPage(page: AdminPageSpec): void; registerSlot(slot: SlotSpec): void };
+  services: { register(name: <span class="kw">string</span>, svc: <span class="kw">unknown</span>): void; get(name: <span class="kw">string</span>): <span class="kw">unknown</span> };
+  config: { get(pluginName: <span class="kw">string</span>): <span class="kw">unknown</span>; set(pluginName: <span class="kw">string</span>, cfg: <span class="kw">unknown</span>): void };
+  logger: { child(meta: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): { info(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void; warn(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void; error(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void } };
+}</code></pre>
+  <p>The actual implementation the app provides for each registrar. The plugin context (trusted or
+     sandboxed) delegates to these. Sandbox mode intercepts calls to enforce capability policy
+     before reaching the bindings. <code>ctx</code> params are deliberately <code>any</code> (the
+     host's <code>RequestContext</code> type lives in <code>nexus-core</code>; plugins should not
+     import it directly — they receive a <code>PluginRequest</code> via the sandbox proxy).</p>
+
+  <h3 id="PluginContext">PluginContext</h3>
+  <pre><code><span class="kw">interface</span> PluginContext {
+  <span class="kw">readonly</span> pluginName: <span class="kw">string</span>;
+  <span class="kw">readonly</span> capabilities: Capability[];
+  <span class="kw">readonly</span> config: <span class="kw">unknown</span>;
+  <span class="kw">readonly</span> logger: { info(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void; warn(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void; error(m: <span class="kw">string</span>, meta?: <span class="kw">unknown</span>): void };
+  http: {
+    addRoute(method: <span class="kw">string</span>, path: <span class="kw">string</span>, handler: (ctx: any) =&gt; void | Promise&lt;void&gt;): void;
+    addMiddleware(mw: (ctx: any, next: () =&gt; Promise&lt;void&gt;) =&gt; Promise&lt;void&gt;, phase?: 'before-route' | 'after-route'): void;
+  };
+  graphql: { addSubgraph(subgraph: { name: <span class="kw">string</span>; typeDefs: <span class="kw">string</span>; resolvers: <span class="kw">unknown</span> }): Promise&lt;void&gt; };
+  data: { registerModel(name: <span class="kw">string</span>, schema: <span class="kw">unknown</span>): <span class="kw">unknown</span>; getModel(name: <span class="kw">string</span>): <span class="kw">unknown</span> };
+  realtime: { join(room: <span class="kw">string</span>, connId: <span class="kw">string</span>): void; broadcast(room: <span class="kw">string</span>, msg: <span class="kw">unknown</span>): void };
+  scheduler: { schedule(name: <span class="kw">string</span>, cron: <span class="kw">string</span>, fn: () =&gt; void | Promise&lt;void&gt;): void; cancel(name: <span class="kw">string</span>): void };
+  events: { publish(topic: <span class="kw">string</span>, payload: <span class="kw">unknown</span>): void; subscribe(topic: <span class="kw">string</span>, handler: (payload: <span class="kw">unknown</span>) =&gt; void): () =&gt; void };
+  admin: { registerAdminPage(page: AdminPageSpec): void; registerSlot(slot: SlotSpec): void };
+  services: { register(name: <span class="kw">string</span>, svc: <span class="kw">unknown</span>): void; get(name: <span class="kw">string</span>): <span class="kw">unknown</span> };
+  fs?: { readFile(path: <span class="kw">string</span>): Promise&lt;Buffer | <span class="kw">string</span>&gt;; writeFile(path: <span class="kw">string</span>, data: <span class="kw">string</span> | Buffer): Promise&lt;void&gt; };
+  net?: { fetch(url: <span class="kw">string</span>, init?: { method?: <span class="kw">string</span>; headers?: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;; body?: <span class="kw">string</span> }): Promise&lt;{ status: <span class="kw">number</span>; body: <span class="kw">string</span> }&gt; };
+}</code></pre>
+  <p>The facade a plugin's lifecycle functions receive. Every registrar is capability-gated (the
+     trusted handle checks via <code>requireCap</code> in addition to any sandbox policy).
+     <code>fs</code> and <code>net</code> are <strong>only</strong> present when the corresponding
+     capability is granted; in sandboxed mode they're further restricted by <code>SandboxLimits</code>
+     allowlists. There is no <code>ctx.auth</code> — <code>'auth'</code> is only a capability value.</p>
+  <table>
+    <thead><tr><th>Registrar</th><th>Capability</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>ctx.http.addRoute</code> / <code>addMiddleware</code></td><td><code>http</code></td><td>Sandboxed middleware is a no-op (functions aren't serializable).</td></tr>
+      <tr><td><code>ctx.graphql.addSubgraph</code></td><td><code>graphql</code></td><td>Trusted only — recomposes + hot-swaps the gateway. The host bindings also expose <code>removeSubgraph</code>.</td></tr>
+      <tr><td><code>ctx.data.registerModel</code> / <code>getModel</code></td><td><code>data</code></td><td>ODM models.</td></tr>
+      <tr><td><code>ctx.realtime.join</code> / <code>broadcast</code></td><td><code>realtime</code></td><td>Rooms / pubsub.</td></tr>
+      <tr><td><code>ctx.scheduler.schedule</code> / <code>cancel</code></td><td><code>scheduler</code></td><td>Cron-style jobs.</td></tr>
+      <tr><td><code>ctx.events.publish</code> / <code>subscribe</code></td><td><code>events</code></td><td>Cross-plugin <code>HookBus</code>. Use <code>subscribe</code> (not <code>on</code>).</td></tr>
+      <tr><td><code>ctx.admin.registerAdminPage</code> / <code>registerSlot</code></td><td><code>admin</code></td><td>Admin pages / slots.</td></tr>
+      <tr><td><code>ctx.services.register</code> / <code>get</code></td><td><code>events</code> (surprising)</td><td>DI container. Gated by <code>events</code>, not a <code>services</code> capability (there is none).</td></tr>
+      <tr><td><code>ctx.fs.readFile</code> / <code>writeFile</code></td><td><code>fs</code></td><td>Only present when granted; sandboxed: <code>fsAllowPaths</code> enforced.</td></tr>
+      <tr><td><code>ctx.net.fetch</code></td><td><code>net</code></td><td>Only present when granted; sandboxed: <code>netAllowHosts</code> enforced.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PluginModule">PluginModule</h3>
+  <pre><code><span class="kw">interface</span> PluginModule {
+  install?(ctx: PluginContext): Promise&lt;void&gt; | void;
+  init?(ctx: PluginContext): Promise&lt;void&gt; | void;
+  start?(ctx: PluginContext): Promise&lt;void&gt; | void;
+  onConfigChange?(ctx: PluginContext, newConfig: <span class="kw">unknown</span>): Promise&lt;void&gt; | void;
+  stop?(ctx: PluginContext): Promise&lt;void&gt; | void;
+}</code></pre>
+  <p>The plugin module shape: a default export factory returning lifecycle handlers. The host
+     drives <code>install → init → start</code> in dependency order; <code>stop</code> runs in
+     reverse. <code>onConfigChange</code> is invoked when a new config is pushed via
+     <code>PluginHandle.updateConfig</code> (and in sandboxed mode also signals the
+     <code>'config:change'</code> hook to the worker).</p>
+  <pre><code><span class="com">// plugins/analytics/index.js</span>
+<span class="kw">export default</span> {
+  <span class="kw">async</span> install(ctx) { ctx.log.info(<span class="str">'analytics install'</span>); },
+  <span class="kw">async</span> init(ctx)  { ctx.log.info(<span class="str">'analytics init'</span>); },
+  <span class="kw">async</span> start(ctx) {
+    ctx.http.addRoute(<span class="str">'GET'</span>, <span class="str">'/analytics/hit'</span>, (r) =&gt; r.json({ ok: <span class="kw">true</span> }));
+    ctx.admin.registerAdminPage({ path: <span class="str">'/plugins/analytics'</span>, title: <span class="str">'Analytics'</span>, group: <span class="str">'Insights'</span> });
+    ctx.events.subscribe(<span class="str">'user:created'</span>, () =&gt; ctx.logger.info(<span class="str">'new user'</span>));
+  },
+  <span class="kw">async</span> onConfigChange(ctx, newCfg) { ctx.log.info(<span class="str">'config changed'</span>, newCfg); },
+  <span class="kw">async</span> stop(ctx) { ctx.log.info(<span class="str">'analytics stop'</span>); },
+};</code></pre>
+
+  <h3 id="PluginHandle">PluginHandle</h3>
+  <pre><code><span class="kw">interface</span> PluginHandle {
+  manifest: PluginManifest;
+  state: 'loaded' | 'installed' | 'initialized' | 'started' | 'stopped' | 'errored';
+  install(): Promise&lt;void&gt;;
+  init(): Promise&lt;void&gt;;
+  start(): Promise&lt;void&gt;;
+  stop(): Promise&lt;void&gt;;
+  updateConfig(cfg: <span class="kw">unknown</span>): Promise&lt;void&gt;;   <span class="com">// re-validates + calls onConfigChange</span>
+  unload(): Promise&lt;void&gt;;                  <span class="com">// stop + (sandboxed) terminate the worker</span>
+}</code></pre>
+  <p>A loaded plugin handle. Both <code>TrustedPlugin</code> and <code>SandboxedPlugin</code>
+     implement this. <code>updateConfig</code> swaps the config on the context and (if the module
+     implements <code>onConfigChange</code>) notifies the plugin; in sandboxed mode it signals the
+     <code>'config:change'</code> hook to the worker. <code>unload</code> stops the plugin and, for
+     sandboxed plugins, terminates the worker thread.</p>
+
+  <h2 id="TrustedPlugin">Runtime — TrustedPlugin</h2>
+  <pre><code><span class="kw">class</span> TrustedPlugin <span class="kw">implements</span> PluginHandle {
+  <span class="kw">readonly</span> manifest: PluginManifest;
+  state: PluginHandle['state'];   <span class="com">// 'loaded'</span>
+  constructor(manifest: PluginManifest, pluginDir: <span class="kw">string</span>, bindings: HostBindings, config: <span class="kw">unknown</span>);
+  install(): Promise&lt;void&gt;;
+  init(): Promise&lt;void&gt;;
+  start(): Promise&lt;void&gt;;
+  stop(): Promise&lt;void&gt;;
+  updateConfig(cfg: <span class="kw">unknown</span>): Promise&lt;void&gt;;
+  unload(): Promise&lt;void&gt;;
+}</code></pre>
+  <p>Trusted in-process plugin: the entry module is imported directly into the host
+     (<code>pathToFileURL</code> + dynamic <code>import()</code>) and its lifecycle functions run
+     with full Node API access. Every registrar on the context is checked against the manifest's
+     capabilities (<code>requireCap</code> throws <code>"lacks capability: &lt;cap&gt;"</code> if
+     missing) — defense in depth. A trusted plugin could reach the host directly, but going through
+     the context keeps the contract uniform with sandboxed plugins and lets the app audit usage.
+     <code>fs</code>/<code>net</code> are surfaced on the context only when the capability is
+     granted; they're lazily imported from <code>node:fs/promises</code> / the global <code>fetch</code>.</p>
+  <pre><code><span class="kw">const</span> plugin = <span class="kw">new</span> TrustedPlugin(manifest, pluginDir, bindings, { region: <span class="str">'us'</span> });
+<span class="kw">await</span> plugin.install();
+<span class="kw">await</span> plugin.init();
+<span class="kw">await</span> plugin.start();
+<span class="kw">await</span> plugin.updateConfig({ region: <span class="str">'eu'</span> });   <span class="com">// calls module.onConfigChange if defined</span>
+<span class="kw">await</span> plugin.stop();
+<span class="kw">await</span> plugin.unload();               <span class="com">// stop + clear module/ctx references</span></code></pre>
+
+  <h2 id="SandboxedPlugin">Sandbox — SandboxedPlugin &amp; policy</h2>
+
+  <h3>SandboxedPlugin</h3>
+  <pre><code><span class="kw">class</span> SandboxedPlugin <span class="kw">implements</span> PluginHandle {
+  <span class="kw">readonly</span> manifest: PluginManifest;
+  state: PluginHandle['state'];   <span class="com">// 'loaded'</span>
+  constructor(manifest: PluginManifest, pluginDir: <span class="kw">string</span>, bindings: HostBindings, config: <span class="kw">unknown</span>, limits: SandboxLimits = {});
+  install(): Promise&lt;void&gt;;
+  init(): Promise&lt;void&gt;;
+  start(): Promise&lt;void&gt;;
+  stop(): Promise&lt;void&gt;;
+  updateConfig(cfg: <span class="kw">unknown</span>: Promise&lt;void&gt;;
+  unload(): Promise&lt;void&gt;;
+  getRestarts(): <span class="kw">number</span>;   <span class="com">// test helper: number of times the worker died</span>
+}</code></pre>
+  <p>Sandboxed plugin: the entry runs inside a <code>worker_thread</code> with heap + event-loop
+     isolation. A crash in the worker cannot take the host down. The host owns the real registrars
+     (<code>HostBindings</code>); the worker calls them over a request/response RPC, and the host
+     authorizes every call via <code>authorize</code> before forwarding. Route handlers registered
+     by the worker run <em>inside</em> the worker — the host proxies inbound requests to the worker
+     over <code>invokeRoute</code> and awaits the response. If the worker dies mid-request, the
+     host returns <code>503</code> and rejects in-flight RPC / lifecycle waiters. A heartbeat
+     watchdog (default <code>4000ms</code>) terminates a worker that stops beating.</p>
+  <pre><code><span class="kw">const</span> plugin = <span class="kw">new</span> SandboxedPlugin(manifest, pluginDir, bindings, cfg, {
+  resourceLimits: { maxOldGenerationSizeMb: <span class="num">128</span> },
+  heartbeatTimeoutMs: <span class="num">5000</span>,
+  fsAllowPaths: [<span class="str">'/var/data/hello-worker'</span>],
+  netAllowHosts: [<span class="str">'api.example.com'</span>],
+});
+<span class="kw">await</span> plugin.install();   <span class="com">// spawns worker, waits for 'ready', drives install via RPC</span>
+<span class="kw">await</span> plugin.start();
+plugin.getRestarts();   <span class="com">// 0 unless the worker has died</span>
+<span class="kw">await</span> plugin.unload();   <span class="com">// stop + terminate the worker</span></code></pre>
+  <div class="callout warn">
+    <span class="label">v1 seams</span>
+    Sandboxed plugins run in a <code>worker_threads</code> sandbox with real heap/event-loop
+    isolation (a crash can't take down the host) and capability-restricted RPC. They
+    <strong>cannot</strong> add GraphQL subgraphs (resolvers aren't serializable —
+    <code>ctx.graphql</code> is trusted-only) and sandboxed middleware is a no-op (the host logs a
+    warning and does not apply it). The sandbox is not cryptographic — for truly untrusted plugins
+    use child-process/OS isolation.
+  </div>
+
+  <h3>PolicyDecision</h3>
+  <pre><code><span class="kw">interface</span> PolicyDecision {
+  allowed: <span class="kw">boolean</span>;
+  reason?: <span class="kw">string</span>;
+}</code></pre>
+  <p>Result of an authorization check. <code>reason</code> is present when <code>allowed</code> is
+     false (e.g. <code>"missing capability: events"</code>, <code>"path outside allowlist: /etc"</code>,
+     <code>"host outside allowlist: evil.com"</code>).</p>
+
+  <h3 id="authorize">authorize(method, args, capabilities, fsAllowPaths?, netAllowHosts?)</h3>
+  <pre><code><span class="kw">function</span> authorize(
+  method: <span class="kw">string</span>,
+  args: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;,
+  capabilities: Set&lt;Capability&gt;,
+  fsAllowPaths?: <span class="kw">string</span>[],
+  netAllowHosts?: <span class="kw">string</span>[],
+): PolicyDecision</code></pre>
+  <p>Decide whether a sandboxed plugin may invoke an RPC method with the given args. The capability
+     set is checked first against <code>METHOD_CAPABILITY</code>; for <code>fs.readFile</code> /
+     <code>fs.writeFile</code> the path is additionally checked against <code>fsAllowPaths</code>
+     (allowed if it equals or starts with an entry); for <code>net.fetch</code> the hostname (from
+     <code>new URL(url).hostname</code>) is checked against <code>netAllowHosts</code>. Unknown
+     methods (including <code>logger</code>, which is always allowed) are allowed by default.</p>
+  <table>
+    <thead><tr><th>RPC method</th><th>Capability</th></tr></thead>
+    <tbody>
+      <tr><td><code>http.addRoute</code>, <code>http.addMiddleware</code></td><td><code>http</code></td></tr>
+      <tr><td><code>data.registerModel</code>, <code>data.getModel</code></td><td><code>data</code></td></tr>
+      <tr><td><code>realtime.join</code>, <code>realtime.broadcast</code></td><td><code>realtime</code></td></tr>
+      <tr><td><code>scheduler.schedule</code>, <code>scheduler.cancel</code></td><td><code>scheduler</code></td></tr>
+      <tr><td><code>events.publish</code>, <code>events.subscribe</code>, <code>events.unsubscribe</code></td><td><code>events</code></td></tr>
+      <tr><td><code>admin.registerAdminPage</code>, <code>admin.registerSlot</code></td><td><code>admin</code></td></tr>
+      <tr><td><code>services.register</code>, <code>services.get</code></td><td><code>events</code></td></tr>
+      <tr><td><code>fs.readFile</code>, <code>fs.writeFile</code></td><td><code>fs</code> + path allowlist</td></tr>
+      <tr><td><code>net.fetch</code></td><td><code>net</code> + host allowlist</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="label">http route handler isn't gated</span>
+    The <code>http</code> route handler is <em>not</em> gated by <code>authorize</code> — it is a
+    push from the host to the worker (<code>invokeRoute</code>), not a worker RPC. The
+    <code>http.addRoute</code> call that <em>registers</em> the route is gated; the per-request
+    proxy is not.
+  </div>
+
+  <h2 id="PluginHost">Registry — PluginHost</h2>
+  <pre><code><span class="kw">class</span> PluginHost {
+  constructor(bindings: HostBindings, pluginsDir: <span class="kw">string</span>);
+  load(configByPlugin: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; = {}, limitsByPlugin: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; = {}): Promise&lt;<span class="kw">string</span>[]&gt;;
+  runLifecycle(hook: 'install' | 'init' | 'start' | 'stop'): Promise&lt;void&gt;;
+  install(): Promise&lt;void&gt;;
+  init(): Promise&lt;void&gt;;
+  start(): Promise&lt;void&gt;;
+  stop(): Promise&lt;void&gt;;
+  updateConfig(name: <span class="kw">string</span>, config: <span class="kw">unknown</span>): Promise&lt;void&gt;;
+  unload(name: <span class="kw">string</span>): Promise&lt;void&gt;;
+  get(name: <span class="kw">string</span>): PluginHandle | <span class="kw">undefined</span>;
+  list(): PluginHandle[];
+  order(): <span class="kw">string</span>[];
+}</code></pre>
+  <p>Loads plugin manifests from a directory, constructs the right handle (trusted in-process vs
+     sandboxed worker), orders them topologically by their declared <code>dependencies</code>, and
+     drives the <code>install → init → start → stop</code> lifecycle in that order. <code>stop</code>
+     runs in <strong>reverse</strong> dependency order and is best-effort (never throws).
+     <code>runLifecycle</code> throws (and marks the handle <code>'errored'</code>) if a plugin
+     fails <code>install</code>/<code>init</code>/<code>start</code>.</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>constructor(bindings, pluginsDir)</code></td><td>The <code>pluginsDir</code> is scanned for subdirectories containing a <code>plugin.json</code>.</td></tr>
+      <tr><td><code>load(configByPlugin?, limitsByPlugin?)</code></td><td>Discover and load (but not start) all plugins. Reads each <code>plugin.json</code>, <code>validateManifest</code>s it, topo-sorts by <code>dependencies</code>, and constructs a <code>TrustedPlugin</code> or <code>SandboxedPlugin</code> per <code>mode</code>. <code>configByPlugin</code> maps plugin name → its config object; <code>limitsByPlugin</code> maps plugin name → its <code>SandboxLimits</code>. Returns the load order (plugin names).</td></tr>
+      <tr><td><code>runLifecycle(hook)</code></td><td>Run a lifecycle hook across all plugins in dependency order (reversed for <code>'stop'</code>).</td></tr>
+      <tr><td><code>install()</code> / <code>init()</code> / <code>start()</code></td><td>Convenience: <code>runLifecycle('install'|'init'|'start')</code>.</td></tr>
+      <tr><td><code>stop()</code></td><td>Best-effort reverse-order shutdown; never throws.</td></tr>
+      <tr><td><code>updateConfig(name, config)</code></td><td>Push a config change to one plugin (delegates to <code>PluginHandle.updateConfig</code>). Throws if <code>name</code> is unknown.</td></tr>
+      <tr><td><code>unload(name)</code></td><td>Stop and remove a plugin (delegates to <code>PluginHandle.unload</code>); drops it from <code>loadOrder</code>.</td></tr>
+      <tr><td><code>get(name)</code></td><td>The <code>PluginHandle</code> for <code>name</code>, or <code>undefined</code>.</td></tr>
+      <tr><td><code>list()</code></td><td>All handles in load order.</td></tr>
+      <tr><td><code>order()</code></td><td>The load order (plugin names).</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">import</span> { PluginHost } <span class="kw">from</span> <span class="str">'@bhooai/nexus-plugins'</span>;
+
+<span class="kw">const</span> host = <span class="kw">new</span> PluginHost(bindings, <span class="str">'./plugins'</span>);
+<span class="kw">const</span> order = <span class="kw">await</span> host.load(
+  { analytics: { region: <span class="str">'us'</span> } },                       <span class="com">// configByPlugin</span>
+  { 'hello-worker': { heartbeatTimeoutMs: <span class="num">5000</span> } },   <span class="com">// limitsByPlugin</span>
+);
+<span class="kw">await</span> host.install();
+<span class="kw">await</span> host.init();
+<span class="kw">await</span> host.start();
+host.order();          <span class="com">// ['analytics', 'hello-worker']</span>
+host.get(<span class="str">'analytics'</span>); <span class="com">// TrustedPlugin handle</span>
+host.list();           <span class="com">// [TrustedPlugin, SandboxedPlugin]</span>
+<span class="kw">await</span> host.updateConfig(<span class="str">'analytics'</span>, { region: <span class="str">'eu'</span> });
+<span class="kw">await</span> host.stop();     <span class="com">// reverse order, best-effort</span>
+<span class="kw">await</span> host.unload(<span class="str">'analytics'</span>);</code></pre>
+
+  <h2 id="AdminExtensions">Admin — AdminExtensions</h2>
+  <pre><code><span class="kw">class</span> AdminExtensions {
+  registerPage(plugin: <span class="kw">string</span>, page: AdminPageSpec): void;
+  registerSlot(plugin: <span class="kw">string</span>, slot: SlotSpec): void;
+  removePlugin(plugin: <span class="kw">string</span>): void;
+  listPages(): Array&lt;AdminPageSpec &amp; { plugin: <span class="kw">string</span> }&gt;;
+  groupedPages(): Record&lt;<span class="kw">string</span>, Array&lt;AdminPageSpec &amp; { plugin: <span class="kw">string</span> }&gt;&gt;;
+  listSlots(slot: <span class="kw">string</span>): Array&lt;SlotSpec &amp; { plugin: <span class="kw">string</span> }&gt;;
+  toJSON(): { pages: Array&lt;AdminPageSpec &amp; { plugin: <span class="kw">string</span> }&gt;; slots: Record&lt;<span class="kw">string</span>, Array&lt;SlotSpec &amp; { plugin: <span class="kw">string</span> }&gt;&gt; };
+}</code></pre>
+  <p>A registry the host fills as plugins register admin pages and slots. The admin app reads this
+     (via the supervisor / control API or a direct endpoint) to render nav entries, pages, and
+     dashboard widgets contributed by plugins. Pages are keyed by <code>path</code> and grouped by
+     <code>group</code> (default <code>'Plugins'</code>); slots are grouped by their <code>slot</code>
+     name and ordered within it (default <code>order</code> = 100).</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>registerPage(plugin, page)</code></td><td>Add/replace a page keyed by <code>page.path</code>; stamps <code>plugin</code> onto the record.</td></tr>
+      <tr><td><code>registerSlot(plugin, slot)</code></td><td>Append a slot entry; the array is (re)sorted by <code>order</code> (default 100).</td></tr>
+      <tr><td><code>removePlugin(plugin)</code></td><td>Drop all pages and slots contributed by <code>plugin</code> (call on unload).</td></tr>
+      <tr><td><code>listPages()</code></td><td>All pages sorted by <code>order</code> (default 100), each tagged with <code>plugin</code>.</td></tr>
+      <tr><td><code>groupedPages()</code></td><td>Pages grouped by <code>group</code> (default <code>'Plugins'</code>), preserving per-group order.</td></tr>
+      <tr><td><code>listSlots(slot)</code></td><td>Slot entries for <code>slot</code>, ordered by <code>order</code>; <code>[]</code> if none.</td></tr>
+      <tr><td><code>toJSON()</code></td><td>Snapshot <code>{ pages, slots }</code> for serialization to the admin app.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">const</span> ext = <span class="kw">new</span> AdminExtensions();
+ext.registerPage(<span class="str">'analytics'</span>, { path: <span class="str">'/plugins/analytics'</span>, title: <span class="str">'Analytics'</span>, group: <span class="str">'Insights'</span> });
+ext.registerSlot(<span class="str">'analytics'</span>, { slot: <span class="str">'dashboard:top'</span>, component: <span class="str">'./AnalyticsWidget'</span>, order: <span class="num">10</span> });
+ext.listPages();     <span class="com">// [{ path:'/plugins/analytics', title:'Analytics', group:'Insights', plugin:'analytics' }]</span>
+ext.groupedPages();   <span class="com">// { Insights: [ ... ] }</span>
+ext.listSlots(<span class="str">'dashboard:top'</span>);  <span class="com">// [ { slot, component, order, plugin } ]</span>
+ext.toJSON();         <span class="com">// { pages: [...], slots: { 'dashboard:top': [...] } }</span>
+ext.removePlugin(<span class="str">'analytics'</span>);</code></pre>
+
+  <p>Two example plugins ship: <code>plugins/analytics</code> (trusted) and
+     <code>plugins/hello-worker</code> (sandboxed).</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Plugins API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Plugins - manifest + capabilities","apiBase":"http://localhost:4000","js":"const ALL = [\"http\",\"graphql\",\"data\",\"auth\",\"realtime\",\"scheduler\",\"events\",\"admin\",\"fs\",\"net\"];\nfunction validateManifest(m) {\n  if (!/^[a-z0-9-]+$/.test(m.name)) throw new Error(\"invalid name: \" + m.name);\n  if (m.mode !== \"trusted\" \u0026\u0026 m.mode !== \"sandboxed\") throw new Error(\"invalid mode\");\n  for (const c of m.capabilities) if (!ALL.includes(c)) throw new Error(\"unknown capability: \" + c);\n  return true;\n}\nconsole.log(\"ok:\", validateManifest({ name: \"analytics\", mode: \"trusted\", capabilities: [\"http\",\"admin\"] }));\ntry { validateManifest({ name: \"Bad Name\", mode: \"trusted\", capabilities: [] }); } catch (e) { console.log(\"error:\", e.message); }","api":{"method":"GET","path":"/plugins/extensions"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Improvements — BhooAI Nexus Docs</title>
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">EVOLUTION LOG</div>
+  <h1>Improvements &amp; Next Steps <span class="sub">What changed, what is stable, and what should be hardened next.</span></h1>
+  <p>This is the implementation and hardening log. It records improvements made over the naive approach and
+     concrete next steps for turning the developer platform into a production platform. The current runtime uses
+     a project-root <code>.env</code>, a user-owned <code>nexus.config.ts</code>, a gitignored runtime override file,
+     and a Windows-safe process-tree supervisor. Each item is honest about the current seam.</p>
+
+  <h2>A. Improvements already made during the build</h2>
+
+  <h3>Architecture</h3>
+  <ul>
+    <li><strong>Scoped packages over a mega-package.</strong> 14 <code>@bhooai/nexus-*</code> packages so the frontend can tree-shake and each subsystem is independently testable.</li>
+    <li><strong>Custom supervisor instead of <code>concurrently</code>/<code>pm2</code>.</strong> Owns the four child processes, streams prefixed colored logs, graceful Ctrl-C, and a localhost control API (:7474) the admin drives — decoupling admin from OS-specific process management (important on Windows).</li>
+    <li><strong><code>nexus.runtime.json</code> instead of AST patching.</strong> Admin writes overrides to a gitignored JSON file rather than rewriting <code>nexus.config.ts</code> with <code>ts-morph</code>. The typed config stays clean.</li>
+    <li><strong>Single cross-service contract.</strong> <code>contracts/ai-openapi.yaml</code> is the source of truth for the Node↔Python boundary; both derive from it, eliminating drift.</li>
+  </ul>
+
+  <h3>GraphQL (no Apollo)</h3>
+  <ul>
+    <li><strong><code>graphql</code> core + a from-scratch federation layer.</strong> Composition, supergraph SDL, a query planner (FetchNode DAG with <code>@key</code> joins, <code>@provides</code>/<code>@requires</code>), and a gateway executor — all ours.</li>
+    <li><strong>In-process vs distributed behind one gateway interface.</strong> A single-subgraph app pays no federation overhead; <code>nexus add subgraph</code> opts in. The naive sequential planner is correct before being clever.</li>
+  </ul>
+
+  <h3>Data (custom ODM)</h3>
+  <ul>
+    <li><strong>ODM on the official <code>mongodb</code> driver, self-contained validators</strong> (no zod in the data layer). Full hooks, batched multi-level <code>populate</code> with <code>refPath</code>, <code>withTransaction</code>, auto-index creation at boot.</li>
+    <li><strong>New-instance vs hydrate discipline.</strong> <code>create()</code> builds <code>_isNew=true</code> so <code>save()</code> inserts; <code>hydrate()</code> rehydrates. A real bug class caught during the build.</li>
+  </ul>
+
+  <h3>Security</h3>
+  <ul>
+    <li><strong>CSRF on the WebSocket upgrade</strong> (double-submit via query/`Sec-WebSocket-Protocol`) — a gap most frameworks leave open.</li>
+    <li><strong>Access tokens in memory, refresh in HttpOnly cookies</strong> on the frontend — reduces XSS token theft vs. <code>localStorage</code>.</li>
+    <li><strong>Double-submit CSRF with origin check</strong> gated on a non-empty <code>trustedOrigins</code> (a single-origin deploy isn't accidentally locked out).</li>
+  </ul>
+
+  <h3>Plugins</h3>
+  <ul>
+    <li><strong>Real isolation via <code>worker_threads</code></strong> for sandboxed plugins (heap/event-loop isolation, crash can't take down the host) with a capability policy (fs path-allowlist, net host-allowlist, method caps) + heartbeat watchdog. Documented as not a cryptographic sandbox.</li>
+  </ul>
+
+  <h3>AI</h3>
+  <ul>
+    <li><strong>One OpenAI-compatible provider</strong> for both OpenAI and Ollama (same API shape) — half the code. The server re-emits SSE with a <code>provider</code> tag and strips it before forwarding upstream.</li>
+  </ul>
+
+  <h3>Payments / Crypto</h3>
+  <ul>
+    <li><strong>Hand-rolled DER/ASN.1 encoder for CSR</strong> (~400 lines) instead of <code>node-forge</code> — <code>node:crypto</code> creates keys/certs but not CSRs.</li>
+    <li><strong>Injectable <code>HttpTransport</code></strong> on every payment provider — tests inject mocks, no live-gateway keys; the provider abstraction is identical across all five gateways.</li>
+  </ul>
+
+  <h2>B. Suggested next steps (production hardening)</h2>
+
+  <h3>Federation</h3>
+  <ol>
+    <li><strong>Parallel query planner.</strong> Replace sequential entity-join passes with a parallel FetchNode scheduler (concurrent independent subgraphs, batched <code>_entities</code>).</li>
+    <li><strong>Federation directive coverage.</strong> Implement <code>@shareable</code> arbitration, <code>@override</code>, <code>@inaccessible</code> enforcement.</li>
+    <li><strong>Subscription federation</strong> — a routing layer for subscriptions across subgraphs.</li>
+    <li><strong>Distributed mode hot-swap.</strong> Ship SDL polling + atomic schema swap for multi-instance deploys.</li>
+  </ol>
+
+  <h3>ODM</h3>
+  <ol start="5">
+    <li><strong>Query plan caching / DataLoader.</strong> Dedupe within a resolver tree to cut N+1 to 1.</li>
+    <li><strong>Change streams</strong> for real-time cache invalidation and subscription fan-out from Mongo.</li>
+    <li><strong>Lean cursors / streaming aggregation</strong> to avoid materializing large result sets.</li>
+    <li><strong>Schema migrations</strong> — a runner for renames/drops (auto-index handles additive).</li>
+  </ol>
+
+  <h3>Realtime / WebRTC</h3>
+  <ol start="9">
+    <li><strong>Producer discovery API on the SFU.</strong> Add a <code>getProducers</code> action so late joiners consume existing producers without waiting for a re-announce.</li>
+    <li><strong>Room/transport lifecycle hardening</strong> — server-driven consumer close, ICE restart on failures.</li>
+    <li><strong>Horizontal-scale pub/sub</strong> — verify Redis fanout under multi-instance + sticky-session LB.</li>
+  </ol>
+
+  <h3>Security</h3>
+  <ol start="12">
+    <li><strong>Redis-backed rate limit + session store</strong> so limits survive restarts and apply across instances.</li>
+    <li><strong>Access-token denylist</strong> (Redis) for instant logout across instances.</li>
+    <li><strong>Security headers audit</strong> — add a CSP builder and <code>Permissions-Policy</code>.</li>
+    <li><strong>Plugin sandbox escape audit</strong> — document (and add) child-process / OCI isolation for truly untrusted plugins.</li>
+  </ol>
+
+  <h3>AI</h3>
+  <ol start="16">
+    <li><strong>Token-usage accounting + cost guardrails</strong> — per-user/tenant billing and per-key quotas.</li>
+    <li><strong>Streaming backpressure</strong> — flow control so a slow client doesn't balloon server memory.</li>
+    <li><strong>Provider failover</strong> — per-request OpenAI → Ollama on upstream errors.</li>
+  </ol>
+
+  <h3>Payments</h3>
+  <ol start="19">
+    <li><strong>Idempotency keys</strong> on create-order to make retries safe.</li>
+    <li><strong>Webhook replay protection</strong> (timestamp + event-id dedup via Redis).</li>
+    <li><strong>Full PayU/Skrill/Payoneer</strong> — raw-HTTP completion for capture/refund/verify.</li>
+  </ol>
+
+  <h3>Frontend / Admin</h3>
+  <ol start="22">
+    <li><strong>Route-level code-splitting</strong> — lazy-load the mediasoup-client-heavy LiveStream route.</li>
+    <li><strong>OAuth callback UX</strong> — promote <code>?token=</code> to a same-page postMessage or short-lived exchange code.</li>
+    <li><strong>Admin live plugin install/uninstall</strong> — wire the UI to the registry's load/unload at runtime.</li>
+  </ol>
+
+  <h3>Ops / Release</h3>
+  <ol start="25">
+    <li><strong>CI matrix</strong> — Win + Linux running vitest + pytest + Playwright e2e. <span class="badge full">done</span></li>
+    <li><strong><code>nexus init</code> templates</strong> — real template files; generated backend is runnable, not a placeholder. <span class="badge full">done</span></li>
+    <li><strong>OpenTelemetry tracing</strong> — emit spans to OTLP for distributed traces in the admin monitoring pane.</li>
+    <li><strong>Container build</strong> — a Dockerfile per terminal + compose for Mongo/Redis + the four services.</li>
+  </ol>
+
+  <h2>C. Honest seams in the current build</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Seam</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Plugins (sandbox)</td><td>Can't add GraphQL subgraphs (resolvers aren't serializable)</td><td>Use trusted mode for subgraphs</td></tr>
+      <tr><td>Plugins (sandbox)</td><td>Middleware registration is a no-op</td><td>Functions can't be serialized across the worker boundary</td></tr>
+      <tr><td>Federation</td><td><code>@shareable</code>/<code>@override</code>/<code>@inaccessible</code> not enforced</td><td>v1 subset; documented</td></tr>
+      <tr><td>Payments</td><td>PayU/Skrill/Payoneer are happy-path + sandbox only</td><td>Weak Node SDKs; full needs raw HTTP</td></tr>
+      <tr><td>Realtime</td><td>Producers self-announce (no discovery API)</td><td>Works for demo; races on late join</td></tr>
+      <tr><td>WebRTC</td><td>Requires the mediasoup native worker installed</td><td>Adapter skips gracefully if absent</td></tr>
+      <tr><td>Admin</td><td>Plugin page attribution tags <code>&lt;plugin&gt;</code> placeholder</td><td>Needs per-plugin id in manifest</td></tr>
+    </tbody>
+  </table>
+  <p>These are documented in code (<code>Phase X seam</code>) and above so they are not mistaken for missing features.</p>
+
+  <div class="foot">BhooAI Nexus · Improvements &amp; Next Steps</div>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

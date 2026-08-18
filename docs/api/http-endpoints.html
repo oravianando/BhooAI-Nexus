@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HTTP Endpoints — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <span class="eyebrow">API Reference</span>
+  <h1>HTTP Endpoints
+    <span class="sub">Complete reference of every route the inbuilt <code>NexusServer</code> exposes, organized by module. ~73 endpoints across core, auth, admin, cluster, AI, and payments.</span></h1>
+
+  <p>The framework boots a custom HTTP server on <code>node:http</code> with a trie router and a middleware
+     pipeline. Every request flows through the global middleware stack below before being dispatched to a
+     module handler.</p>
+
+  <h2>Global middleware</h2>
+  <p>Applied to <strong>all</strong> requests, in order:</p>
+  <table>
+    <thead><tr><th>Middleware</th><th>Source</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>securityHeaders()</code></td><td>nexus-auth</td><td>HSTS, X-Content-Type-Options, frame-options, referrer-policy, CSP-ready</td></tr>
+      <tr><td><code>cors({ origin, credentials })</code></td><td>nexus-auth</td><td>Per-origin allow-list, preflight handling, credentialed cookie support</td></tr>
+      <tr><td><code>bodyParser(bodyLimit)</code></td><td>nexus-core</td><td>JSON / urlencoded / multipart parsing into <code>ctx.body</code> + <code>ctx.state.files</code></td></tr>
+      <tr><td><code>csrf({ trustedOrigins })</code></td><td>nexus-auth</td><td>Double-submit CSRF on all unsafe methods (POST/PUT/DELETE/PATCH)</td></tr>
+      <tr><td><code>rateLimit({ windowMs, max })</code></td><td>nexus-auth</td><td>300 requests / minute per IP (in-memory; Redis backend in nexus-cache)</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">const</span> server = <span class="kw">new</span> NexusServer({
+  router,
+  bodyLimit: config.server.bodyLimit,
+  middleware: [
+    securityHeaders(),
+    cors({ origin: config.cors.origins, credentials: <span class="num">true</span> }),
+    bodyParser(config.server.bodyLimit),
+    csrf({ trustedOrigins: config.cors.origins }),
+    rateLimit({ windowMs: <span class="num">60_000</span>, max: <span class="num">300</span> }),
+  ],
+  onError: (err, ctx) =&gt; ({ error: { code: err.code, message: err.message } }),
+});</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Auth shorthand</span>
+    In the tables below: <strong>None</strong> = no auth; <strong>CSRF</strong> = requires
+    <code>x-csrf-token</code> header matching the <code>nexus_csrf</code> cookie from
+    <code>GET /csrf-token</code>; <strong>JWT</strong> = requires <code>Authorization: Bearer &lt;accessToken&gt;</code>
+    (or the auth cookie); <strong>Signature</strong> = verified by the provider's webhook secret, not CSRF/JWT;
+    <strong>admin</strong> = the JWT subject must carry the <code>admin</code> role.
+  </div>
+
+  <h2>Core (8 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/health</code></td><td>None</td><td>Liveness probe → <code>{ status, env, time }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/csrf-token</code></td><td>None</td><td>Issue CSRF token + set <code>nexus_csrf</code> cookie → <code>{ token }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/echo</code></td><td>CSRF</td><td>Echo back the request body → <code>{ received }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/certs/self-signed</code></td><td>CSRF</td><td>Generate cert + keypair → <code>{ cert, privateKey, publicKey, csr? }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/plugins/extensions</code></td><td>None</td><td>Plugin admin extensions (manifests the admin shell renders)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/graphql</code></td><td>CSRF, optional Bearer</td><td>GraphQL query → <code>{ query, variables }</code> over POST</td></tr>
+      <tr><td><code>GET</code></td><td><code>/graphql</code></td><td>None, optional Bearer</td><td>GraphQL over GET (query in <code>?query</code>)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/payments/webhook/:provider</code></td><td>Signature</td><td>Payment webhook — verified by provider HMAC/hash, not CSRF or JWT</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Uploads (2 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/uploads</code></td><td>CSRF</td><td>Multipart upload → <code>{ files: [{ field, filename, url, size }] }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/uploads/&lt;filename&gt;</code></td><td>None</td><td>Serve an uploaded file (static, via <code>serveStatic</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Auth (9 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/auth/register</code></td><td>CSRF</td><td><code>{ email, password, name? }</code> → <code>{ user, accessToken, refreshToken }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/login</code></td><td>CSRF</td><td><code>{ email, password }</code> → <code>{ user, accessToken, refreshToken }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/refresh</code></td><td>CSRF</td><td><code>{ refreshToken? }</code> → <code>{ accessToken, refreshToken }</code> (rotation + reuse detection)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/auth/logout</code></td><td>CSRF</td><td>Clear session + cookies → <code>{ ok: true }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/me</code></td><td>JWT</td><td>→ <code>{ user }</code> or <code>{ user: null }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/google</code></td><td>None</td><td>Redirect to Google OAuth (only if configured)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/google/callback</code></td><td>None</td><td>Google OAuth callback (exchanges code, mints session, redirects)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/facebook</code></td><td>None</td><td>Redirect to Facebook OAuth (only if configured)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/auth/facebook/callback</code></td><td>None</td><td>Facebook OAuth callback</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Admin (15 endpoints) — all require JWT + admin role</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/admin/config</code></td><td>JWT+admin</td><td>Runtime + config (secrets redacted) + file + project info</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/config</code></td><td>JWT+admin+CSRF</td><td>Write runtime overrides to <code>nexus.runtime.json</code></td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/config/file</code></td><td>JWT+admin+CSRF</td><td>Write the <code>nexus.config.ts</code> source on disk</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/supervisor</code></td><td>JWT+admin</td><td>Supervisor control API port/URL (proxies to <code>:7474</code>)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/projects</code></td><td>JWT+admin</td><td>All registered projects</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/env</code></td><td>JWT+admin</td><td>Parsed <code>.env</code> entries (secrets masked)</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/env</code></td><td>JWT+admin+CSRF</td><td>Update <code>.env</code> entries</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/plugins</code></td><td>JWT+admin</td><td>Plugin extensions (same shape as <code>/plugins/extensions</code>)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/users</code></td><td>JWT+admin</td><td>User list (no password hashes)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/roles</code></td><td>JWT+admin</td><td>Role catalog</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/users/:id</code></td><td>JWT+admin+CSRF</td><td>Set user roles → <code>{ roles: string[] }</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/metrics</code></td><td>JWT+admin</td><td>Metrics snapshot + uptime + PID</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/orders</code></td><td>JWT+admin</td><td>Payment orders — <code>?limit=&amp;provider=</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/transactions</code></td><td>JWT+admin</td><td>Transaction log</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/status</code></td><td>JWT+admin</td><td>Per-provider status console</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Cluster (11 endpoints) — all require JWT + admin + CSRF</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/admin/cluster/overview</code></td><td>JWT+admin+CSRF</td><td>Linked nodes + metrics + load balancer status</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/cluster/setup</code></td><td>JWT+admin+CSRF</td><td>Master/slave topology + setup commands</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/setup</code></td><td>JWT+admin+CSRF</td><td>Save host/port overrides</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/link</code></td><td>JWT+admin+CSRF</td><td><code>{ nodeUrl, token? }</code> → handshake + register node</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/unlink</code></td><td>JWT+admin+CSRF</td><td><code>{ id }</code> → remove a node from the registry</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/generate-token</code></td><td>JWT+admin+CSRF</td><td>Generate a new pairing token</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/exec</code></td><td>JWT+admin+CSRF</td><td><code>{ id, action }</code> → start / stop / restart / kill a node</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/scale</code></td><td>JWT+admin+CSRF</td><td><code>{ target }</code> → scale to N nodes</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/poll</code></td><td>JWT+admin+CSRF</td><td>Refresh all nodes (health + metrics)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/start</code></td><td>JWT+admin+CSRF</td><td>Start the load balancer + autoscaler</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/cluster/stop</code></td><td>JWT+admin+CSRF</td><td>Stop the load balancer + autoscaler</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Schema / AI Providers (6 endpoints) — all require JWT + admin + CSRF</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/admin/ai/status</code></td><td>JWT+admin+CSRF</td><td>AI server + OpenAI + Ollama health</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/schemas/generate</code></td><td>JWT+admin+CSRF</td><td><code>{ prompt, model?, provider? }</code> → MongoDB schema</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/ai/providers</code></td><td>JWT+admin+CSRF</td><td>List providers (API keys masked)</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/ai/providers/:id</code></td><td>JWT+admin+CSRF</td><td>Update provider <code>{ apiKey?, enabled?, defaultModel? }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/ai/providers</code></td><td>JWT+admin+CSRF</td><td>Add provider <code>{ id, label, baseUrl, apiKey? }</code></td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/admin/ai/providers/:id</code></td><td>JWT+admin+CSRF</td><td>Remove a provider</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Database (7 endpoints) — all require JWT + admin + CSRF</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/admin/databases</code></td><td>JWT+admin+CSRF</td><td>List databases + collections</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/databases</code></td><td>JWT+admin+CSRF</td><td><code>{ name }</code> → create database</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/admin/databases/:db</code></td><td>JWT+admin+CSRF</td><td>Drop a database</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/databases/:db/collections</code></td><td>JWT+admin+CSRF</td><td><code>{ name, jsonSchema? }</code> → create collection</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/admin/databases/:db/collections/:name</code></td><td>JWT+admin+CSRF</td><td><code>{ newName?, validator? }</code> → rename / set validator</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/admin/databases/:db/collections/:name</code></td><td>JWT+admin+CSRF</td><td>Drop a collection</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/databases/:db/collections/:name/docs</code></td><td>JWT+admin+CSRF</td><td>Preview 10 documents</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Preflight &amp; Lint (3 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/admin/preflight</code></td><td>JWT+admin+CSRF</td><td>Connectivity checks (mongo, redis, AI server, providers)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/lint/env</code></td><td>JWT+admin+CSRF</td><td>Lint the <code>.env</code> file</td></tr>
+      <tr><td><code>POST</code></td><td><code>/admin/lint/config</code></td><td>JWT+admin+CSRF</td><td>Lint the runtime config</td></tr>
+    </tbody>
+  </table>
+
+  <h2>AI Proxy (3 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/ai/chat/completions</code></td><td>CSRF</td><td>Chat — streaming SSE or JSON, with provider routing</td></tr>
+      <tr><td><code>GET</code></td><td><code>/ai/models</code></td><td>None</td><td>List models — <code>?provider=</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/ai/embeddings</code></td><td>CSRF</td><td>Generate embeddings</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Payments Checkout (3 endpoints)</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/payments/order</code></td><td>JWT+CSRF</td><td>Create order <code>{ provider, amount, currency? }</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/payments/order/:id/capture</code></td><td>JWT+CSRF</td><td>Capture an authorized payment</td></tr>
+      <tr><td><code>GET</code></td><td><code>/payments/order/:id</code></td><td>JWT</td><td>Get order status — <code>?provider=</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Calling an unsafe endpoint</h2>
+  <pre><code><span class="com">// 1. fetch a CSRF token (sets the nexus_csrf cookie)</span>
+<span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'include'</span> });
+<span class="kw">const</span> { token } = <span class="kw">await</span> r.json();
+
+<span class="com">// 2. send it back on every POST/PUT/DELETE</span>
+<span class="kw">await</span> fetch(<span class="str">'/echo'</span>, {
+  method: <span class="str">'POST'</span>,
+  credentials: <span class="str">'include'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>, <span class="str">'x-csrf-token'</span>: token },
+  body: JSON.stringify({ hello: <span class="str">'nexus'</span> }),
+});</code></pre>
+
+  <div class="callout danger">
+    <span class="label">Two rules to remember</span>
+    All unsafe methods (POST / PUT / DELETE / PATCH) require a CSRF token from
+    <code>GET /csrf-token</code>. All <code>/admin/*</code> routes require a JWT Bearer token
+    (or the auth cookie) whose subject carries the <code>admin</code> role. Webhooks
+    (<code>/payments/webhook/:provider</code>) are the only exception — they are verified by
+    provider signature, never CSRF or JWT.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · HTTP Endpoints &nbsp;·&nbsp; <a href="cli.html">← CLI</a> &nbsp; <a href="websockets.html">WebSockets →</a></div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"HTTP - CSRF double-submit + 405 trie","apiBase":"http://localhost:4000","js":"function match(route, path) {\n  const rs = route.split(\"/\").filter(Boolean);\n  const ps = path.split(\"/\").filter(Boolean);\n  if (rs.length \u003e ps.length) return null;\n  const params = {};\n  for (let i = 0; i \u003c rs.length; i++) {\n    if (rs[i] === \"*\") return params;\n    if (rs[i].startsWith(\":\")) { params[rs[i].slice(1)] = ps[i]; continue; }\n    if (rs[i] !== ps[i]) return null;\n  }\n  return rs.length === ps.length ? params : null;\n}\nconsole.log(\"admin/users/42\", JSON.stringify(match(\"/admin/users/:id\", \"/admin/users/42\")));\nconsole.log(\"unknown deep path:\", match(\"/admin/users/:id\", \"/admin/users/42/roles\"));\n\nfunction csrfOk(cookie, sent, origin, trusted) {\n  return !!cookie \u0026\u0026 !!sent \u0026\u0026 cookie === sent \u0026\u0026 trusted.includes(origin);\n}\nconsole.log(\"valid POST:\", csrfOk(\"abc\", \"abc\", \"http://localhost:4000\", [\"http://localhost:4000\"]));\nconsole.log(\"bad origin:\", csrfOk(\"abc\", \"abc\", \"http://evil.test\", [\"http://localhost:4000\"]));","api":{"method":"GET","path":"/csrf-token"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

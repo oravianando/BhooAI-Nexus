@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>From Empty Project — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>From Empty Project <span class="sub">Scaffold a new BhooAI Nexus app from scratch, wire your first routes, and ship a CRUD module — end to end.</span></h1>
+
+  <p>This guide takes you from an empty directory to a running app with a custom
+     <code>todos</code> module. It assumes Node.js ≥ 22 and MongoDB ≥ 6 are installed;
+     Redis is optional (the framework degrades gracefully without it).</p>
+
+  <h2>1. Scaffold with <code>nexus init</code></h2>
+  <p>The fastest path is the published npm package. From an empty directory:</p>
+  <pre><code>mkdir my-app
+cd my-app
+npm init -y
+npm install @bhooai/nexus
+npx nexus init .
+npm install
+npm run doctor
+npm run dev</code></pre>
+  <div class="callout note">
+    <span class="label">Two installs on purpose</span>
+    <code>npm init</code> only writes <code>package.json</code>. Run <code>npx nexus init .</code>
+    <em>after</em> the first install so the CLI binary is on PATH; the second
+    <code>npm install</code> then picks up the generated frontend/admin dependencies.
+  </div>
+  <p>If you are working inside the monorepo, the equivalent is:</p>
+  <pre><code>node bin/nexus.js init ./my-app
+cd my-app
+npm install
+npm run dev</code></pre>
+
+  <h2>2. What <code>init</code> generates</h2>
+  <p>The scaffold copies a real, runnable project tree from
+     <code>packages/nexus-cli/templates/</code>. It is idempotent — existing files are
+     skipped unless you pass <code>--force</code>.</p>
+  <table>
+    <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>apps/backend/</code></td><td>Node backend (Nexus HTTP server, modules, plugins).</td></tr>
+      <tr><td><code>apps/frontend/</code></td><td>React + Vite frontend (demo tabs + auth client).</td></tr>
+      <tr><td><code>apps/admin/</code></td><td>Vite launcher for the admin SPA.</td></tr>
+      <tr><td><code>apps/ai-server/</code></td><td>Python FastAPI AI server (OpenAI-compatible).</td></tr>
+      <tr><td><code>bin/nexus.js</code></td><td>CLI shim (<code>dev</code>, <code>doctor</code>, <code>sync</code>, …).</td></tr>
+      <tr><td><code>bin/serve-all.mjs</code></td><td>Single-process launcher used by the Docker image.</td></tr>
+      <tr><td><code>nexus.config.ts</code></td><td>The single human-edited config file.</td></tr>
+      <tr><td><code>.env</code></td><td>Project secrets (gitignored). Loaded automatically.</td></tr>
+      <tr><td><code>.gitignore</code></td><td>Ignores <code>node_modules</code>, <code>uploads/</code>, <code>nexus.runtime.json</code>, <code>.env</code>.</td></tr>
+      <tr><td><code>uploads/</code></td><td>Project-local upload directory (kept via <code>.gitkeep</code>).</td></tr>
+      <tr><td><code>Dockerfile</code> + <code>docker.ps1/.sh/.bat</code></td><td>One-image build + helper scripts.</td></tr>
+    </tbody>
+  </table>
+  <p>The generated backend boots a Nexus HTTP server with the full security stack
+     and serves <code>/health</code>, <code>/csrf-token</code>, <code>/echo</code>,
+     and CSRF-protected <code>/uploads</code> out of the box.</p>
+
+  <h2>3. The minimal <code>nexus.config.ts</code></h2>
+  <p>One file holds every host/port and feature toggle. Secrets never live here —
+     they go in <code>.env</code> and are injected via <code>NEXUS_*</code> env vars.</p>
+  <pre><code><span class="kw">import type</span> { NexusConfig } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+
+<span class="kw">const</span> config: Partial&lt;NexusConfig&gt; = {
+  env: <span class="str">'development'</span>,
+
+  <span class="com">// The HTTP API server the browser/cluster proxy to.</span>
+  server: { port: <span class="num">4000</span>, host: <span class="str">'0.0.0.0'</span>, https: <span class="kw">false</span>, trustProxy: <span class="kw">false</span>, bodyLimit: <span class="num">12</span> * <span class="num">1024</span> * <span class="num">1024</span> },
+
+  <span class="com">// MongoDB host/port/database.</span>
+  db: { uri: <span class="str">'mongodb://localhost:27017/my-app'</span>, maxPoolSize: <span class="num">10</span>, autoIndex: <span class="kw">true</span> },
+
+  <span class="com">// Redis (optional — cache, sessions, WS fanout, rate limits).</span>
+  redis: { url: <span class="str">'redis://localhost:6379'</span>, keyPrefix: <span class="str">'myapp:'</span> },
+
+  <span class="com">// Auth: JWT secret comes ONLY from .env (NEXUS_AUTH_JWT_SECRET).</span>
+  auth: {
+    jwt: { accessTtl: <span class="num">60</span> * <span class="num">15</span>, refreshTtl: <span class="num">60</span> * <span class="num">60</span> * <span class="num">24</span> * <span class="num">30</span> },
+    cookieName: <span class="str">'nexus_sid'</span>,
+    refreshCookieName: <span class="str">'nexus_rid'</span>,
+    requireEmailVerification: <span class="kw">false</span>,
+  },
+
+  <span class="com">// Cluster mesh (off for a single-node app).</span>
+  cluster: { enabled: <span class="kw">false</span>, failOpenSingleNode: <span class="kw">true</span>, lbPort: <span class="num">8080</span>, nodeAgentPort: <span class="num">7575</span>, token: <span class="str">''</span> },
+};
+
+<span class="kw">export default</span> config;</code></pre>
+  <div class="callout warn">
+    <span class="label">Precedence</span>
+    Low → high: <strong>code defaults &lt; <code>nexus.config.ts</code> &lt;
+    <code>nexus.runtime.json</code> (admin, gitignored) &lt; <code>.env</code> /
+    <code>NEXUS_*</code> &lt; CLI flags</strong>. The admin writes only
+    <code>nexus.runtime.json</code>, so your config file stays clean.
+  </div>
+
+  <h2>4. <code>.env</code> setup</h2>
+  <p>Create a <code>.env</code> at the project root. The framework loads it
+     automatically on boot — do not commit it.</p>
+  <pre><code><span class="com"># .env</span>
+NEXUS_DB_URI=mongodb://localhost:27017/my-app
+NEXUS_REDIS_URL=redis://localhost:6379
+NEXUS_AUTH_JWT_SECRET=<span class="str">a-long-random-string-at-least-32-chars</span>
+NEXUS_SERVER_BODY_LIMIT=<span class="num">12582912</span>
+NEXUS_UPLOADS_DIR=uploads
+NEXUS_UPLOADS_PATH=/uploads
+
+<span class="com"># AI provider keys (optional — used by the Python AI server).</span>
+OPENAI_API_KEY=<span class="str">sk-...</span>
+ANTHROPIC_API_KEY=<span class="str">sk-ant-...</span>
+GOOGLE_API_KEY=<span class="str">...</span></code></pre>
+  <div class="callout danger">
+    <span class="label">Replace the default secret</span>
+    <code>doctor</code> will flag <code>NEXUS_AUTH_JWT_SECRET</code> if it is still the
+    default. Generate one with, e.g.
+    <code>node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"</code>.
+  </div>
+
+  <h2>5. Run all four terminals</h2>
+  <pre><code>npm run dev</code></pre>
+  <p>The supervisor boots the backend, frontend, AI server, and admin with
+     colored prefixed logs and handles Ctrl-C gracefully. Visit:</p>
+  <table>
+    <thead><tr><th>URL</th><th>What</th></tr></thead>
+    <tbody>
+      <tr><td><code>http://localhost:4000/health</code></td><td>Backend liveness</td></tr>
+      <tr><td><code>http://localhost:3000</code></td><td>Frontend</td></tr>
+      <tr><td><code>http://localhost:3001</code></td><td>Admin console</td></tr>
+      <tr><td><code>http://localhost:8000/health</code></td><td>Python AI server</td></tr>
+      <tr><td><code>http://localhost:7474/status</code></td><td>Supervisor control API</td></tr>
+    </tbody>
+  </table>
+
+  <h2>6. Add a custom GET route</h2>
+  <p>Open <code>apps/backend/src/main.ts</code> and register a route on the
+     <code>router</code> before <code>NexusServer</code> is constructed:</p>
+  <pre><code><span class="com">// apps/backend/src/main.ts</span>
+router.get(<span class="str">'/hello'</span>, (ctx) =&gt; {
+  ctx.json({ message: <span class="str">'hello from my-app'</span> });
+});</code></pre>
+  <p>Restart <code>npm run dev</code> and open <code>http://localhost:4000/hello</code>.
+     GET routes are safe methods — they get a fresh CSRF token cookie automatically
+     and do not need an <code>x-csrf-token</code> header.</p>
+
+  <h2>7. Add a custom POST route (CSRF-protected)</h2>
+  <p>Unsafe methods (POST/PUT/PATCH/DELETE) are CSRF-protected by the security
+     stack. The browser must first GET <code>/csrf-token</code>, then send the
+     returned token in the <code>x-csrf-token</code> header on every POST.</p>
+  <pre><code><span class="com">// apps/backend/src/main.ts</span>
+router.post(<span class="str">'/echo'</span>, (ctx) =&gt; {
+  ctx.json({ received: ctx.body });
+});</code></pre>
+  <pre><code><span class="com">// Browser</span>
+<span class="kw">const</span> csrf = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>, { credentials: <span class="str">'include'</span> }).then(r =&gt; r.json());
+<span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/echo'</span>, {
+  method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+  headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, <span class="str">'x-csrf-token'</span>: csrf.token },
+  body: JSON.stringify({ hello: <span class="str">'world'</span> }),
+});
+console.log(<span class="kw">await</span> r.json()); <span class="com">// { received: { hello: 'world' } }</span></code></pre>
+  <div class="callout warn">
+    <span class="label">Origin matters</span>
+    When <code>trustedOrigins</code> is non-empty, every unsafe request must carry an
+    <code>Origin</code> header that exactly matches a trusted origin
+    (<strong>including the port</strong>) <em>and</em> a matching
+    <code>x-csrf-token</code>. API clients that omit <code>Origin</code> (e.g.
+    Playwright's <code>APIRequestContext</code>) must add it explicitly.
+  </div>
+
+  <h2>8. Create a custom module</h2>
+  <p>Modules live under <code>apps/backend/src/modules/</code>. The scaffold ships
+     <code>auth/</code>, <code>users/</code>, <code>ai/</code>, <code>payments/</code>,
+     and <code>admin/</code>. Add your own by creating a folder with a routes file
+     and an optional ODM model, then registering it from <code>main.ts</code>.</p>
+  <p>Convention: each module exports a <code>register&lt;Name&gt;Routes(router, …)</code>
+     function and keeps its model, helpers, and types co-located.</p>
+
+  <h3>Example: a <code>todos</code> module with CRUD</h3>
+  <p>Folder layout:</p>
+  <pre><code>apps/backend/src/modules/todos/
+  todoModel.ts      <span class="com"># ODM model</span>
+  todoRoutes.ts     <span class="com"># registerTodoRoutes(router, guard)</span></code></pre>
+
+  <h4>todoModel.ts</h4>
+  <pre><code><span class="kw">import</span> { getModel, schema, types } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+<span class="kw">const</span> TodoSchema = schema({
+  title: types.string({ required: <span class="kw">true</span> }),
+  done: types.boolean({ default: <span class="kw">false</span> }),
+  owner: types.objectId({ required: <span class="kw">true</span> }),
+  createdAt: types.date({ default: () =&gt; <span class="kw">new</span> Date() }),
+});
+
+<span class="kw">let</span> Todo: ReturnType&lt;<span class="kw">typeof</span> getModel&gt;;
+<span class="kw">export function</span> initTodoModel() {
+  Todo = getModel(<span class="str">'Todo'</span>, TodoSchema);
+  <span class="kw">return</span> Todo;
+}
+<span class="kw">export function</span> getTodoModel() {
+  <span class="kw">if</span> (!Todo) <span class="kw">throw new</span> Error(<span class="str">'Todo model not initialized — call initTodoModel() first'</span>);
+  <span class="kw">return</span> Todo;
+}</code></pre>
+
+  <h4>todoRoutes.ts</h4>
+  <pre><code><span class="kw">import type</span> { Router } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+<span class="kw">import</span> { authToken } <span class="kw">from</span> <span class="str">'@bhooai/nexus-auth'</span>;
+<span class="kw">import</span> { initTodoModel, getTodoModel } <span class="kw">from</span> <span class="str">'./todoModel.js'</span>;
+
+<span class="kw">export function</span> registerTodoRoutes(router: Router, authService: <span class="kw">any</span>, cookieName: <span class="kw">string</span>): <span class="kw">void</span> {
+  initTodoModel();
+  <span class="kw">const</span> guard = [authToken(authService, { cookieName, allowCookie: <span class="kw">true</span> })];
+
+  <span class="com">// List my todos</span>
+  router.get(<span class="str">'/todos'</span>, <span class="kw">async</span> (ctx) =&gt; {
+    <span class="kw">const</span> Todo = getTodoModel();
+    <span class="kw">const</span> userId = (ctx.state.user <span class="kw">as</span> { id: <span class="kw">string</span> }).id;
+    <span class="kw">const</span> todos = <span class="kw">await</span> Todo.find({ owner: userId }).lean();
+    ctx.json({ todos });
+  }, guard);
+
+  <span class="com">// Create a todo</span>
+  router.post(<span class="str">'/todos'</span>, <span class="kw">async</span> (ctx) =&gt; {
+    <span class="kw">const</span> { title } = (ctx.body ?? {}) <span class="kw">as</span> { title?: <span class="kw">string</span> };
+    <span class="kw">if</span> (!title) <span class="kw">throw new</span> (ctx.app ?? <span class="kw">null</span>)?.ValidationError?.() ?? Error(<span class="str">'title required'</span>);
+    <span class="kw">const</span> Todo = getTodoModel();
+    <span class="kw">const</span> userId = (ctx.state.user <span class="kw">as</span> { id: <span class="kw">string</span> }).id;
+    <span class="kw">const</span> [todo] = <span class="kw">await</span> Todo.create({ title, owner: userId, done: <span class="kw">false</span> });
+    ctx.json({ todo });
+  }, guard);
+
+  <span class="com">// Toggle done</span>
+  router.post(<span class="str">'/todos/:id/toggle'</span>, <span class="kw">async</span> (ctx) =&gt; {
+    <span class="kw">const</span> Todo = getTodoModel();
+    <span class="kw">const</span> todo = <span class="kw">await</span> Todo.findById(ctx.params.id).lean();
+    <span class="kw">if</span> (!todo) { ctx.json({ error: <span class="str">'not found'</span> }, <span class="num">404</span>); <span class="kw">return</span>; }
+    <span class="kw">await</span> Todo.updateOne({ _id: todo._id }, { $set: { done: !todo.done } });
+    <span class="kw">const</span> updated = <span class="kw">await</span> Todo.findById(ctx.params.id).lean();
+    ctx.json({ todo: updated });
+  }, guard);
+
+  <span class="com">// Delete</span>
+  router.delete(<span class="str">'/todos/:id'</span>, <span class="kw">async</span> (ctx) =&gt; {
+    <span class="kw">const</span> Todo = getTodoModel();
+    <span class="kw">await</span> Todo.deleteOne({ _id: ctx.params.id });
+    ctx.json({ ok: <span class="kw">true</span> });
+  }, guard);
+}</code></pre>
+
+  <h4>Wire it in <code>main.ts</code></h4>
+  <pre><code><span class="com">// apps/backend/src/main.ts — after authService is built, before NexusServer</span>
+<span class="kw">import</span> { registerTodoRoutes } <span class="kw">from</span> <span class="str">'./modules/todos/todoRoutes.js'</span>;
+<span class="com">// ...</span>
+registerTodoRoutes(router, authService, config.auth.cookieName);</code></pre>
+  <p>Restart <code>npm run dev</code>. You now have authenticated CRUD for todos at
+     <code>/todos</code>, <code>/todos/:id/toggle</code>, and
+     <code>/todos/:id</code> — all CSRF-protected via the security stack and scoped
+     to the logged-in user via <code>authToken</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Next steps</span>
+    Read the <a href="guide-auth.html">Login &amp; Auth Flow</a> guide for the full
+    CSRF + JWT + OAuth flow, and the <a href="guide-websocket.html">WebSocket
+    Chat</a> guide to add realtime to your todos.
+  </div>
+
+  <p class="foot"><a href="../getting-started.html">&larr; Getting Started</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-auth.html">Login &amp; Auth Flow →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · From Empty Project</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

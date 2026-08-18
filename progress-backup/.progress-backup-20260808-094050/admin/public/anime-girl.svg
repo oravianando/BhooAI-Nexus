@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Anime girl portrait</title>
+  <desc id="desc">A colorful anime-style girl portrait with violet hair and teal eyes.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17133d"/>
+      <stop offset="0.52" stop-color="#5c2e83"/>
+      <stop offset="1" stop-color="#f08cae"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b9a1ff"/>
+      <stop offset="0.5" stop-color="#6848bf"/>
+      <stop offset="1" stop-color="#35246e"/>
+    </linearGradient>
+    <linearGradient id="shirt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f6ff"/>
+      <stop offset="1" stop-color="#b6c7ff"/>
+    </linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="28"/></filter>
+    <filter id="glow"><feGaussianBlur stdDeviation="7"/></filter>
+  </defs>
+
+  <rect width="800" height="1000" fill="url(#sky)"/>
+  <circle cx="110" cy="180" r="150" fill="#6ee7f9" opacity=".2" filter="url(#blur)"/>
+  <circle cx="690" cy="690" r="220" fill="#f9a8d4" opacity=".25" filter="url(#blur)"/>
+  <circle cx="650" cy="140" r="5" fill="#fff" opacity=".9"/>
+  <circle cx="140" cy="430" r="4" fill="#fff" opacity=".8"/>
+  <circle cx="710" cy="360" r="3" fill="#fff" opacity=".8"/>
+  <path d="M88 260l5 12 13 5-13 5-5 13-5-13-13-5 13-5zM670 230l4 10 11 4-11 4-4 11-4-11-11-4 11-4z" fill="#ffe4f0" opacity=".9"/>
+
+  <!-- soft halo -->
+  <ellipse cx="400" cy="390" rx="260" ry="280" fill="#d8c4ff" opacity=".28" filter="url(#glow)"/>
+
+  <!-- shoulders and sailor collar -->
+  <path d="M135 1000c12-160 85-245 190-275h150c105 30 178 115 190 275z" fill="url(#shirt)"/>
+  <path d="M320 736l80 112 80-112 75 38-74 127H319l-74-127z" fill="#5343a8" opacity=".9"/>
+  <path d="M328 742l72 103 72-103 23 12-95 140-95-140z" fill="#f7d6ff"/>
+  <path d="M355 835h90l-18 165h-54z" fill="#4d3b98" opacity=".8"/>
+
+  <!-- neck -->
+  <path d="M332 660h136v118c-25 45-111 45-136 0z" fill="#f3b39f"/>
+  <path d="M332 669c30 28 95 35 136 0v62c-37 38-101 34-136 0z" fill="#d88982" opacity=".35"/>
+
+  <!-- hair behind face -->
+  <path d="M190 390c-16-180 85-300 218-300 155 0 246 111 205 300l-25 280c-37 73-102 104-151 87l-42-95H334l-42 95c-52 18-120-20-151-91z" fill="url(#hair)" stroke="#2b1d5f" stroke-width="9"/>
+  <path d="M208 382c-21-128 61-257 197-257 130 0 215 92 203 226-35-102-102-149-187-159-63 77-133 134-213 190z" fill="#9b83ed" opacity=".5"/>
+  <path d="M202 448c-38 75-31 183 8 242 16-84 44-137 79-171l-22-111zM598 443c38 77 31 186-8 247-16-87-43-140-80-174l21-109z" fill="#48318d"/>
+
+  <!-- face -->
+  <path d="M273 337c0-105 57-171 127-171 82 0 129 68 129 171v166c-18 109-74 170-129 170s-111-61-127-170z" fill="#f8c2ae" stroke="#dc8f8b" stroke-width="5"/>
+  <path d="M274 438c18 88 59 133 126 133s108-45 128-133v69c-17 111-72 166-128 166s-111-55-126-166z" fill="#e89e96" opacity=".24"/>
+
+  <!-- bangs -->
+  <path d="M230 361c5-128 66-219 170-219 116 0 164 94 169 201-37-60-74-84-116-90-20 45-53 84-83 103l9-105c-48 59-92 91-149 110z" fill="url(#hair)" stroke="#2b1d5f" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M287 276c36-69 77-94 117-105-25 35-40 70-45 108 52-36 91-70 109-108 25 31 37 66 42 106-67-31-141-23-223-1z" fill="#c5b5ff" opacity=".35"/>
+
+  <!-- ears and earrings -->
+  <ellipse cx="267" cy="472" rx="18" ry="36" fill="#f1af9f"/>
+  <ellipse cx="533" cy="472" rx="18" ry="36" fill="#f1af9f"/>
+  <circle cx="260" cy="509" r="8" fill="#6ee7f9"/>
+  <circle cx="540" cy="509" r="8" fill="#6ee7f9"/>
+
+  <!-- eyes -->
+  <path d="M302 444c24-25 60-22 82 2-20 35-63 40-82-2z" fill="#fff" stroke="#38276f" stroke-width="7"/>
+  <ellipse cx="348" cy="447" rx="17" ry="25" fill="#24c7c8"/>
+  <ellipse cx="350" cy="451" rx="8" ry="14" fill="#173c72"/>
+  <circle cx="356" cy="438" r="5" fill="#fff"/>
+  <path d="M416 446c23-24 59-27 82-2-19 42-62 37-82 2z" fill="#fff" stroke="#38276f" stroke-width="7"/>
+  <ellipse cx="452" cy="447" rx="17" ry="25" fill="#24c7c8"/>
+  <ellipse cx="450" cy="451" rx="8" ry="14" fill="#173c72"/>
+  <circle cx="456" cy="438" r="5" fill="#fff"/>
+  <path d="M300 416c26-22 60-24 86-3M414 413c28-23 61-20 87 4" fill="none" stroke="#3b2873" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- nose and smile -->
+  <path d="M398 461l-12 48 17 5" fill="none" stroke="#ca7d7c" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M365 554c22 19 49 19 71 0" fill="none" stroke="#ad596e" stroke-width="6" stroke-linecap="round"/>
+  <path d="M372 557c18 8 39 8 57 0-7 24-49 24-57 0z" fill="#e7829a" opacity=".8"/>
+  <ellipse cx="299" cy="529" rx="31" ry="13" fill="#f98f9f" opacity=".25"/>
+  <ellipse cx="501" cy="529" rx="31" ry="13" fill="#f98f9f" opacity=".25"/>
+
+  <!-- foreground sparkles -->
+  <path d="M128 730l8 20 20 8-20 8-8 20-8-20-20-8 20-8zM674 800l7 17 17 7-17 7-7 17-7-17-17-7 17-7z" fill="#fff" opacity=".82"/>
+  <path d="M595 710c22-20 45-20 67 0-22 20-45 20-67 0z" fill="#8be9f2" opacity=".7"/>
+</svg>

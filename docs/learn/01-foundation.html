@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>01 · Foundation — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 01</div>
+  <h1>Foundation <span class="sub">The workspace, the config system, DI, errors, and the custom HTTP server. Everything else in Nexus builds on <code>@bhooai/nexus-core</code>.</span></h1>
+
+  <p>This chapter reconstructs the lowest layer of the framework. It is deliberately <em>without</em>
+     express/fastify/koa: the HTTP server is hand-rolled on <code>node:http</code>, the config loader is
+     own code with a <code>zod</code> schema, and the DI container is a few hundred lines.</p>
+
+  <h2>Why this package first</h2>
+  <p>Every other package imports from <code>@bhooai/nexus-core</code>:</p>
+  <ul>
+    <li><code>nexus-auth</code> uses <code>Router</code>, <code>RequestContext</code>, <code>Middleware</code>, and <code>AuthenticationError</code>.</li>
+    <li><code>apps/backend/src/main.ts</code> builds a <code>Router</code>, a <code>NexusServer</code>, and loads config with <code>loadConfigAuto</code>.</li>
+    <li>The CLI and admin read the same config stack.</li>
+  </ul>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/index.ts</code></td><td>Public barrel — re-exports config, di, errors, and http.</td></tr>
+      <tr><td><code>src/errors.ts</code></td><td><code>NexusError</code> + typed subclasses (<code>ValidationError</code>, <code>AuthenticationError</code>, …) and <code>toNexusError</code>.</td></tr>
+      <tr><td><code>src/config/types.ts</code></td><td>Typed <code>NexusConfig</code> shape (server, db, auth, payments, ai, …).</td></tr>
+      <tr><td><code>src/config/schema.ts</code></td><td><code>zod</code> schema that validates + defaults the merged config.</td></tr>
+      <tr><td><code>src/config/defaults.ts</code></td><td>Code-level defaults (ports, body limits, timeouts).</td></tr>
+      <tr><td><code>src/config/env.ts</code></td><td>Loads <code>.env</code> and maps <code>NEXUS_*</code> env vars to config paths.</td></tr>
+      <tr><td><code>src/config/merge.ts</code></td><td>Deep-merge helper used across the precedence chain.</td></tr>
+      <tr><td><code>src/config/ConfigLoader.ts</code></td><td>Orchestrates precedence: defaults &lt; config file &lt; runtime &lt; env &lt; CLI.</td></tr>
+      <tr><td><code>src/di/Container.ts</code></td><td>Minimal dependency-injection container (register/resolve).</td></tr>
+      <tr><td><code>src/http/context.ts</code></td><td><code>RequestContext</code> wrapper around <code>IncomingMessage</code>/<code>ServerResponse</code>.</td></tr>
+      <tr><td><code>src/http/Router.ts</code></td><td>Trie router: <code>:params</code>, <code>*</code> wildcards, per-route middleware, 405 handling.</td></tr>
+      <tr><td><code>src/http/Server.ts</code></td><td><code>NexusServer</code> — runs the middleware pipeline and dispatches to the router.</td></tr>
+      <tr><td><code>src/http/bodyParser.ts</code></td><td>JSON/urlencoded/multipart body parsing with a size limit.</td></tr>
+      <tr><td><code>src/http/static.ts</code></td><td><code>serveStatic</code> — read-only file serving for uploads/assets.</td></tr>
+      <tr><td><code>src/http/uploads.ts</code></td><td><code>registerUploadRoutes</code> — multipart upload handling + generated filenames.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. The router — trie dispatch</h3>
+  <p>The router is a <strong>trie</strong>: each path segment becomes a node, with special handling for
+     <code>:param</code> and <code>*</code> segments. Registering a route:</p>
+  <pre><code><span class="kw">router</span>.get(<span class="str">'/users/:id/publish'</span>, handler, [authToken, requireRole(<span class="str">'user'</span>)]);
+<span class="kw">router</span>.post(<span class="str">'/echo'</span>, (ctx) =&gt; ctx.json({ received: ctx.body }));</code></pre>
+  <p>Internally, <code>add()</code> walks the path and builds nodes:</p>
+  <pre><code><span class="kw">add</span>(method, path, handler, mw) {
+  <span class="kw">const</span> node = <span class="kw">this</span>.findOrCreateNode(path);
+  node.handlers.set(method.toUpperCase(), handler);
+  <span class="kw">for</span> (<span class="kw">const</span> m <span class="kw">of</span> mw) node.middleware.push(m);
+  <span class="kw">return this</span>;
+}</code></pre>
+  <p>Matching collects route-level middleware into <code>collectedMw</code> and resolves params. If a path exists
+     but the method doesn't, it returns a <code>405</code> handler that advertises <code>Allow</code> — a nice
+     touch most frameworks leave to the client.</p>
+  <div class="callout warn">
+    <span class="label">Middleware order</span>
+    Router-level middleware via <code>router.use()</code> runs <em>before</em> route middleware (they are
+    collected first in <code>match()</code>), which in turn runs before the handler.
+  </div>
+
+  <h3>2. The server — middleware pipeline</h3>
+  <p><code>NexusServer</code> wraps <code>node:http</code>. The constructor accepts <code>middleware</code> and a
+     router. On each request it builds a <code>RequestContext</code>, propagates an <code>x-request-id</code>,
+     and runs the pipeline:</p>
+  <pre><code><span class="kw">async</span> runPipeline(ctx) {
+  <span class="kw">const</span> stack = [...<span class="kw">this</span>.middleware, <span class="kw">this</span>.dispatchMiddleware()];
+  <span class="kw">let</span> i = <span class="num">0</span>;
+  <span class="kw">const</span> next = <span class="kw">async</span> () =&gt; { <span class="kw">const</span> mw = stack[i++]; <span class="kw">if</span> (mw) <span class="kw">await</span> mw(ctx, next); };
+  <span class="kw">await</span> next();
+  <span class="kw">if</span> (!ctx.res.writableEnded) ctx.status(<span class="num">404</span>); <span class="com">// nothing wrote -> 404</span>
+}</code></pre>
+  <p>The dispatch middleware matches the router, sets <code>ctx.params</code> / <code>ctx.routePattern</code>,
+     then runs route middleware + handler. Note the direct access to <code>ctx.res</code> — this is what lets
+     the AI proxy write SSE chunks by hand.</p>
+
+  <h3>3. Context</h3>
+  <p><code>RequestContext</code> wraps the raw <code>req</code>/<code>res</code> and exposes ergonomic helpers
+     (<code>ctx.json</code>, <code>ctx.status</code>, <code>ctx.query</code>, <code>ctx.body</code>,
+     <code>ctx.state</code>). Raw body is kept on <code>ctx.state.__rawBody</code> for webhook signature checks.</p>
+
+  <h3>4. Config precedence</h3>
+  <p>Precedence is low → high: <strong>defaults &lt; <code>nexus.config.ts</code> &lt; <code>nexus.runtime.json</code>
+     &lt; <code>.env</code>/<code>NEXUS_*</code> &lt; CLI flags</strong>. <code>loadConfig</code> applies each layer
+     with <code>merge()</code>, then validates the result against the zod schema (so typos surface early).</p>
+  <pre><code><span class="kw">const</span> config = <span class="kw">await</span> loadConfigAuto({ root: process.cwd() });
+config.server.port;  <span class="com">// number</span>
+config.db.uri;       <span class="com">// validated as mongodb://...</span></code></pre>
+
+  <h3>5. Errors</h3>
+  <p>Handlers throw typed errors (<code>ValidationError</code>, <code>AuthenticationError</code>,
+     <code>ConflictError</code>, …). <code>toNexusError</code> normalizes anything thrown (including unknown
+     values) and the server emits <code>{ error: { code, message, details? } }</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Why no express?</span>
+    A trie router + middleware pipeline is ~300 lines. By owning it, Nexus controls error envelopes,
+    request ids, SSE access, and 405/404 behavior without a framework's assumptions.
+  </div>
+
+  <h2>Playground</h2>
+  <p>The sandbox below models the config merge and a mini trie-router match. The <em>Live API</em> tab
+     hits a running backend's <code>/health</code> and <code>/csrf-token</code>.</p>
+
+  <section data-playground='{
+    "title": "Foundation — router + config merge",
+    "apiBase": "http://localhost:4000",
+    "js": "// Mini trie-ish matcher: static segments, :params, and * wildcards\nconst splitPath = (p) => p.split(\"/\").filter(Boolean);\n\nfunction routeMatch(route, path) {\n  const rs = splitPath(route), ps = splitPath(path);\n  if (rs.length > ps.length) return null;\n  const params = {};\n  for (let i = 0; i < rs.length; i++) {\n    if (rs[i] === \"*\") return params;   // wildcard consumes the rest\n    if (rs[i].startsWith(\":\")) { params[rs[i].slice(1)] = ps[i]; continue; }\n    if (rs[i] !== ps[i]) return null;\n  }\n  return rs.length === ps.length ? params : null;\n}\n\nconsole.log(\"users/42/publish\", routeMatch(\"/users/:id/publish\", \"/users/42/publish\"));\nconsole.log(\"assets/logo.svg\", routeMatch(\"/assets/*\", \"/assets/logo.svg\"));\nconsole.log(\"missing\", routeMatch(\"/users/:id\", \"/users/42/publish\"));\n\n// Config precedence: defaults < user < env\nconst merge = (a, b) => ({ ...a, ...b, nested: { ...(a.nested || {}), ...(b.nested || {}) } });\nconst effective = merge(merge({ port: 4000 }, { port: 4000 }), { port: 5000 });\nconsole.log(\"effective port:\", effective.port);",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <p class="foot"><a href="index.html">&larr; Build Guide</a> · Next: <a href="02-security.html">02 · Security →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 01 Foundation</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

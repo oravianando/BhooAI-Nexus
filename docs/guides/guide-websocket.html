@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebSocket Chat — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>WebSocket Chat <span class="sub">Realtime rooms, broadcasts, and WebRTC signaling over the Nexus WebSocket server — with a full browser chat example and the complete message-type reference.</span></h1>
+
+  <p>The Nexus realtime server (<code>@bhooai/nexus-realtime</code>) attaches to
+     the same HTTP server as the REST API. It authenticates on upgrade, tracks
+     rooms per instance, and can fan out across machines via a Redis pub/sub
+     adapter. This guide shows the full browser chat flow.</p>
+
+  <h2>1. How the server is wired</h2>
+  <p>The scaffold already wires <code>RealtimeServer</code> in
+     <code>apps/backend/src/main.ts</code>. It listens on
+     <code>config.ws.path</code> (default <code>/ws</code>) on the backend port
+     (default <code>4000</code>).</p>
+  <pre><code><span class="com">// apps/backend/src/main.ts (already generated)</span>
+<span class="kw">const</span> realtime = <span class="kw">new</span> RealtimeServer({
+  httpServer: server.httpServer,
+  path: config.ws.path,                 <span class="com">// '/ws'</span>
+  authService,                         <span class="com">// verify ?token= on upgrade</span>
+  csrfOptions: config.ws.requireCsrf ? { trustedOrigins: trustedOrigins(config) } : <span class="kw">undefined</span>,
+});</code></pre>
+  <p>The server attaches to the HTTP server's <code>upgrade</code> event and only
+     handles its own path. The upgrade is the security boundary — WebSockets
+     have no CORS preflight, so CSRF + origin are checked here.</p>
+
+  <h2>2. Browser connection</h2>
+  <pre><code><span class="kw">const</span> ws = <span class="kw">new</span> WebSocket(<span class="str">'ws://localhost:4000/ws?token='</span> + accessToken);</code></pre>
+  <div class="callout warn">
+    <span class="label">Auth on upgrade</span>
+    The access token is passed via the <code>?token=</code> query parameter
+    <em>or</em> the <code>Sec-WebSocket-Protocol</code> subprotocol header.
+    Without a valid token the server writes
+    <code>HTTP/1.1 401 Unauthorized</code> and destroys the socket. If
+    <code>requireAuth</code> is false (or no <code>authService</code> is passed),
+    anonymous connections are allowed and get a random id.
+  </div>
+
+  <h2>3. Message format</h2>
+  <p>Every message is a JSON object. The <code>type</code> field dispatches it.
+     Not every field is present on every type — the table below shows which.</p>
+  <pre><code>{
+  type: <span class="str">'join'</span> | <span class="str">'leave'</span> | <span class="str">'broadcast'</span> | <span class="str">'offer'</span> | <span class="str">'answer'</span> | <span class="str">'candidate'</span> | <span class="str">'media'</span> | <span class="str">'ping'</span>,
+  room: <span class="kw">string</span>,         <span class="com">// join/leave/broadcast</span>
+  event: <span class="kw">string</span>,        <span class="com">// broadcast</span>
+  data: unknown,        <span class="com">// broadcast</span>
+  to: <span class="kw">string</span>,           <span class="com">// offer/answer/candidate — peer connection id</span>
+  from: <span class="kw">string</span>,         <span class="com">// server-side only — the sender's id</span>
+  sdp: <span class="kw">string</span>,          <span class="com">// offer/answer</span>
+  candidate: unknown,   <span class="com">// candidate</span>
+  action: <span class="kw">string</span>,        <span class="com">// media — mediasoup signaling action</span>
+  payload: Record,      <span class="com">// media</span>
+}</code></pre>
+
+  <h2>4. Join a room</h2>
+  <pre><code>ws.send(JSON.stringify({ type: <span class="str">'join'</span>, room: <span class="str">'general'</span> }));
+
+<span class="com">// Server responds with the current local peers (excluding you)</span>
+{ type: <span class="str">'joined'</span>, room: <span class="str">'general'</span>, peers: [<span class="str">'conn:abc'</span>, <span class="str">'conn:def'</span>] }
+
+<span class="com">// Everyone else in the room is told you joined</span>
+{ type: <span class="str">'peer-joined'</span>, room: <span class="str">'general'</span>, peer: <span class="str">'conn:you'</span> }</code></pre>
+
+  <h2>5. Leave a room</h2>
+  <pre><code>ws.send(JSON.stringify({ type: <span class="str">'leave'</span>, room: <span class="str">'general'</span> }));
+
+<span class="com">// You get an ack</span>
+{ type: <span class="str">'left'</span>, room: <span class="str">'general'</span> }
+
+<span class="com">// Everyone else is told you left</span>
+{ type: <span class="str">'peer-left'</span>, room: <span class="str">'general'</span>, peer: <span class="str">'conn:you'</span> }</code></pre>
+
+  <h2>6. Broadcast to a room</h2>
+  <pre><code>ws.send(JSON.stringify({
+  type: <span class="str">'broadcast'</span>,
+  room: <span class="str">'general'</span>,
+  event: <span class="str">'message'</span>,
+  data: { text: <span class="str">'hello everyone'</span> },
+}));
+
+<span class="com">// Every other member of 'general' receives:</span>
+{
+  type: <span class="str">'broadcast'</span>,
+  room: <span class="str">'general'</span>,
+  from: <span class="str">'conn:you'</span>,
+  event: <span class="str">'message'</span>,
+  data: { text: <span class="str">'hello everyone'</span> }
+}</code></pre>
+  <div class="callout note">
+    <span class="label">No echo to self</span>
+    <code>deliverRoom</code> skips the originator, so you never receive your own
+    <code>peer-joined</code>, <code>peer-left</code>, or <code>broadcast</code>
+    echo. This is intentional — it avoids the "I see my own message" bug.
+  </div>
+
+  <h2>7. Full chat example — client-side JavaScript</h2>
+  <pre><code><span class="com">// chat.js — drop into a page with a &lt;ul id="log"&gt;&lt;/ul&gt; and &lt;input id="msg"&gt;</span>
+<span class="kw">let</span> ws;
+<span class="kw">let</span> myId;
+
+<span class="kw">function</span> connect(accessToken, room) {
+  ws = <span class="kw">new</span> WebSocket(<span class="str">'ws://localhost:4000/ws?token='</span> + accessToken);
+
+  ws.onopen = () =&gt; {
+    log(<span class="str">'⚡ connected'</span>);
+    send({ type: <span class="str">'join'</span>, room });
+  };
+
+  ws.onmessage = (e) =&gt; {
+    <span class="kw">const</span> msg = JSON.parse(e.data);
+    <span class="kw">switch</span> (msg.type) {
+      <span class="kw">case</span> <span class="str">'joined'</span>:
+        myId = msg.peers.length ? <span class="str">'conn:me'</span> : <span class="str">'conn:me'</span>; <span class="com">// id assigned by server</span>
+        log(<span class="str">'✓ joined '</span> + msg.room + <span class="str">' with peers: '</span> + msg.peers.join(<span class="str">', '</span>));
+        <span class="kw">break</span>;
+      <span class="kw">case</span> <span class="str">'peer-joined'</span>:
+        log(<span class="str">'→ '</span> + msg.peer + <span class="str">' joined'</span>);
+        <span class="kw">break</span>;
+      <span class="kw">case</span> <span class="str">'peer-left'</span>:
+        log(<span class="str">'← '</span> + msg.peer + <span class="str">' left'</span>);
+        <span class="kw">break</span>;
+      <span class="kw">case</span> <span class="str">'broadcast'</span>:
+        <span class="kw">if</span> (msg.event === <span class="str">'message'</span>) {
+          log(msg.from + <span class="str">': '</span> + (msg.data &amp;&amp; msg.data.text));
+        }
+        <span class="kw">break</span>;
+      <span class="kw">case</span> <span class="str">'left'</span>:
+        log(<span class="str">'✗ left '</span> + msg.room);
+        <span class="kw">break</span>;
+      <span class="kw">case</span> <span class="str">'error'</span>:
+        log(<span class="str">'✗ error: '</span> + msg.message);
+        <span class="kw">break</span>;
+    }
+  };
+
+  ws.onclose = () =&gt; log(<span class="str">'⚡ disconnected'</span>);
+}
+
+<span class="kw">function</span> send(obj) { ws.send(JSON.stringify(obj)); }
+
+<span class="kw">function</span> sendChat(text, room) {
+  send({ type: <span class="str">'broadcast'</span>, room, event: <span class="str">'message'</span>, data: { text } });
+}
+
+<span class="kw">function</span> leave(room) { send({ type: <span class="str">'leave'</span>, room }); }
+
+<span class="kw">function</span> log(line) {
+  <span class="kw">const</span> li = document.createElement(<span class="str">'li'</span>);
+  li.textContent = <span class="kw">new</span> Date().toLocaleTimeString() + <span class="str">' '</span> + line;
+  document.getElementById(<span class="str">'log'</span>).appendChild(li);
+}
+
+<span class="com">// Wire it up</span>
+connect(accessToken, <span class="str">'general'</span>);
+document.getElementById(<span class="str">'msg'</span>).addEventListener(<span class="str">'keydown'</span>, (e) =&gt; {
+  <span class="kw">if</span> (e.key === <span class="str">'Enter'</span> &amp;&amp; e.target.value.trim()) {
+    sendChat(e.target.value.trim(), <span class="str">'general'</span>);
+    e.target.value = <span class="str">''</span>;
+  }
+});</code></pre>
+
+  <h2>8. WebRTC signaling</h2>
+  <p>For 1:1 video/voice, peers exchange offers, answers, and ICE candidates
+     through the room. The server relays them peer-to-peer (same instance) or
+     via the <code>conn:&lt;to&gt;</code> pub/sub channel (cross-instance).</p>
+  <pre><code><span class="com">// Peer A — create offer</span>
+<span class="kw">const</span> pc = <span class="kw">new</span> RTCPeerConnection({ iceServers: [{ urls: <span class="str">'stun:stun.l.google.com:19302'</span> }] });
+pc.onicecandidate = (e) =&gt; {
+  <span class="kw">if</span> (e.candidate) {
+    send({ type: <span class="str">'candidate'</span>, to: peerBId, candidate: e.candidate.toJSON() });
+  }
+};
+<span class="kw">const</span> offer = <span class="kw">await</span> pc.createOffer();
+<span class="kw">await</span> pc.setLocalDescription(offer);
+send({ type: <span class="str">'offer'</span>, to: peerBId, sdp: offer.sdp });
+
+<span class="com">// Peer B — answer</span>
+ws.onmessage = (e) =&gt; {
+  <span class="kw">const</span> msg = JSON.parse(e.data);
+  <span class="kw">if</span> (msg.type === <span class="str">'offer'</span>) {
+    pc.setRemoteDescription({ type: <span class="str">'offer'</span>, sdp: msg.sdp });
+    <span class="kw">const</span> answer = <span class="kw">await</span> pc.createAnswer();
+    <span class="kw">await</span> pc.setLocalDescription(answer);
+    send({ type: <span class="str">'answer'</span>, to: msg.from, sdp: answer.sdp });
+  } <span class="kw">else if</span> (msg.type === <span class="str">'candidate'</span>) {
+    pc.addIceCandidate(msg.candidate);
+  }
+};</code></pre>
+  <p>For multi-party routing, the optional <code>mediasoup</code> SFU adapter
+     relays media via <code>type: 'media'</code> messages — see the
+     <a href="../api/realtime.html">Realtime API</a> reference for the full
+     <code>action</code> list.</p>
+
+  <h2>9. Heartbeat (ping/pong)</h2>
+  <pre><code><span class="com">// Client</span>
+setInterval(() =&gt; ws.readyState === WebSocket.OPEN &amp;&amp;
+  ws.send(JSON.stringify({ type: <span class="str">'ping'</span> })), <span class="num">30_000</span>);
+
+<span class="com">// Server responds</span>
+{ type: <span class="str">'pong'</span> }</code></pre>
+  <p>The server config also has <code>ws.heartbeatMs</code> (default 30s) for
+     connection liveness tracking.</p>
+
+  <h2>10. All message types</h2>
+  <h3>Client → server</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Fields</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>join</code></td><td><code>room</code></td><td>Join a room; server replies <code>joined</code> + notifies others with <code>peer-joined</code>.</td></tr>
+      <tr><td><code>leave</code></td><td><code>room</code></td><td>Leave a room; server replies <code>left</code> + notifies others with <code>peer-left</code>.</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>room</code>, <code>event</code>, <code>data?</code></td><td>Send an app event to every other member of the room.</td></tr>
+      <tr><td><code>offer</code></td><td><code>to</code>, <code>sdp</code>, <code>room?</code></td><td>WebRTC offer to a specific peer.</td></tr>
+      <tr><td><code>answer</code></td><td><code>to</code>, <code>sdp</code>, <code>room?</code></td><td>WebRTC answer to a specific peer.</td></tr>
+      <tr><td><code>candidate</code></td><td><code>to</code>, <code>candidate</code>, <code>room?</code></td><td>WebRTC ICE candidate to a specific peer.</td></tr>
+      <tr><td><code>media</code></td><td><code>action</code>, <code>payload</code></td><td>mediasoup SFU signaling (when enabled).</td></tr>
+      <tr><td><code>ping</code></td><td>—</td><td>Heartbeat probe; server replies <code>pong</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Server → client</h3>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Fields</th><th>Sent when</th></tr></thead>
+    <tbody>
+      <tr><td><code>joined</code></td><td><code>room</code>, <code>peers</code></td><td>You joined a room; <code>peers</code> lists the local members (excluding you).</td></tr>
+      <tr><td><code>left</code></td><td><code>room</code></td><td>You left a room.</td></tr>
+      <tr><td><code>peer-joined</code></td><td><code>room</code>, <code>peer</code></td><td>Another connection joined your room.</td></tr>
+      <tr><td><code>peer-left</code></td><td><code>room</code>, <code>peer</code></td><td>Another connection left your room.</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>room</code>, <code>from</code>, <code>event</code>, <code>data?</code></td><td>A peer broadcast an event to the room (not echoed to sender).</td></tr>
+      <tr><td><code>offer</code></td><td><code>from</code>, <code>sdp</code></td><td>A peer sent you a WebRTC offer.</td></tr>
+      <tr><td><code>answer</code></td><td><code>from</code>, <code>sdp</code></td><td>A peer sent you a WebRTC answer.</td></tr>
+      <tr><td><code>candidate</code></td><td><code>from</code>, <code>candidate</code></td><td>A peer sent you an ICE candidate.</td></tr>
+      <tr><td><code>media</code></td><td><code>action</code>, <code>payload</code></td><td>mediasoup SFU response.</td></tr>
+      <tr><td><code>pong</code></td><td>—</td><td>Reply to your <code>ping</code>.</td></tr>
+      <tr><td><code>error</code></td><td><code>message</code>, <code>code?</code></td><td>Invalid JSON, unknown type, or SFU not enabled.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Scaling across machines</span>
+    Members per room are tracked <em>per instance</em>. Direct peer messages
+    publish to <code>conn:&lt;id&gt;</code>; room events publish to
+    <code>room:&lt;room&gt;</code>. With the <code>RedisPubSubAdapter</code>, any
+    instance delivers to its local members — that's how chat scales across
+    machines without changing the client code.
+  </div>
+
+  <p class="foot"><a href="guide-auth.html">&larr; Login &amp; Auth Flow</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-email.html">Send Email →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · WebSocket Chat</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>12 · Apps — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 12</div>
+  <h1>The Apps <span class="sub">The four terminals — how the backend boots everything, how the frontend signs in and calls the APIs, how the admin SPA operates the platform, and how Docker packages it all.</span></h1>
+
+  <h2>1 · Backend (<code>apps/backend</code>)</h2>
+  <p><code>src/main.ts</code> is the whole bootstrap. Order of operations:</p>
+  <ol>
+    <li>Load config (<code>loadConfigAuto</code>) + logger.</li>
+    <li>Connect MongoDB (required at boot) + the shared <code>nexus_projects</code> store.</li>
+    <li>Build an <code>AuthService</code> shared by realtime + GraphQL.</li>
+    <li>Register routes in dependency order.</li>
+    <li>Construct <code>NexusServer</code> with the security stack.</li>
+    <li>Attach realtime WS, GraphQL subscriptions, plugins, cluster.</li>
+  </ol>
+  <pre><code><span class="kw">const</span> server = <span class="kw">new</span> NexusServer({
+  router,
+  bodyLimit: config.server.bodyLimit,
+  middleware: [
+    securityHeaders(), cors({ origin: <span class="num">true</span>, credentials: <span class="num">true</span> }),
+    serveStatic(uploadsDir, { prefix: config.uploads.path }),
+    bodyParser(config.server.bodyLimit),
+    csrf({ trustedOrigins: trustedOrigins(config) }),
+    rateLimit({ windowMs: <span class="num">60_000</span>, max: <span class="num">300</span> }),
+  ],
+});
+<span class="kw">await</span> server.listen(config.server.port, config.server.host);</code></pre>
+  <p>Modules under <code>src/modules/</code>:</p>
+  <table>
+    <thead><tr><th>Module</th><th>Endpoints / role</th></tr></thead>
+    <tbody>
+      <tr><td><code>auth/authRoutes.ts</code></td><td>register/login/refresh/logout/me + Google/Facebook OAuth.</td></tr>
+      <tr><td><code>users/</code></td><td>User ODM model + GraphQL users subgraph.</td></tr>
+      <tr><td><code>ai/aiProxy.ts</code></td><td><code>/ai/*</code> proxy to the Python server (SSE re-emit).</td></tr>
+      <tr><td><code>payments/</code></td><td>Order/capture/status routes + persistent order/transaction store.</td></tr>
+      <tr><td><code>admin/</code></td><td>Config/env/users/databases/cluster/metrics + lint/preflight/schema.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2 · Frontend (<code>apps/frontend</code>)</h2>
+  <p><code>App.tsx</code> shows a landing page until a user is present, then the demo tabs:
+     Home (GraphQL), AI Chat (SSE), Checkout (payments), Live Stream (WebRTC), Realtime Room (WS).</p>
+  <p>The <code>lib/</code> folder is the API client layer:</p>
+  <table>
+    <thead><tr><th>File</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>auth.ts</code></td><td>CSRF + register/login/logout/refresh, in-memory access token, OAuth <code>?token</code> promote.</td></tr>
+      <tr><td><code>graphql.ts</code></td><td>GraphQL query client (POST /graphql).</td></tr>
+      <tr><td><code>ai.ts</code></td><td>AI chat client (POST /ai/chat/completions, SSE).</td></tr>
+      <tr><td><code>payments.ts</code></td><td>Order create/capture/status helpers.</td></tr>
+      <tr><td><code>realtime.ts</code> / <code>stream.ts</code></td><td>WS room client / WebRTC stream client.</td></tr>
+    </tbody>
+  </table>
+  <p>Notable security detail in <code>auth.ts</code>: the access token lives <strong>in memory only</strong>
+     (not <code>localStorage</code>) to reduce XSS exposure; refresh uses the HttpOnly cookie. CSRF uses the
+      double-submit scheme — a <code>nexus_csrf</code> cookie plus an <code>x-csrf-token</code> header.</p>
+
+  <h3>CSS pipeline</h3>
+  <p>Both the frontend and admin use <strong>Tailwind CSS</strong> with the framework-owned
+     <code>@bhooai/nexus-postcss</code> preset. The preset loads 6 PostCSS plugins in order:</p>
+  <ol>
+    <li><code>postcss-import</code> — <code>@import</code> resolution</li>
+    <li><code>postcss-nested</code> — native CSS nesting</li>
+    <li><code>tailwindcss</code> — base/components/utilities + content scanning</li>
+    <li><code>postcss-preset-env</code> — future CSS features (stage 2)</li>
+    <li><code>autoprefixer</code> — vendor prefixes</li>
+    <li><code>cssnano</code> — minification (production only)</li>
+  </ol>
+  <p>A <code>theme.css</code> design-token stylesheet provides 22 CSS custom properties
+     (<code>--nexus-bg</code>, <code>--nexus-ink</code>, <code>--nexus-surface</code>,
+     <code>--nexus-accent</code>, etc.) for a consistent dark theme across all Nexus apps.
+     See the <a href="../api/postcss.html">PostCSS API reference</a> and the
+     <a href="../guides/guide-frontend-styling.html">Frontend Styling guide</a>.</p>
+
+  <pre><code><span class="kw">async</span> <span class="kw">function</span> postJson(path, body) {
+  <span class="kw">await</span> refreshCsrf();
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(path, {
+    method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+    headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, ...csrfHeaders(), ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  <span class="com">// ...throws data.error.message on !r.ok</span>
+}</code></pre>
+
+  <h2>3 · Admin (<code>packages/nexus-admin</code> + <code>apps/admin</code>)</h2>
+  <p><code>apps/admin</code> is a thin Vite launcher; the console lives in
+     <code>packages/nexus-admin/src/App.tsx</code> (2,000+ lines). Tabs: Overview, Processes, Config JSON,
+     Environment, Plugins, Users, Monitoring, Payments, Databases, AI Schema, Cluster, Theme Centre.
+     It talks to the backend via <code>src/api.ts</code> (proxied <code>/admin/*</code>) and drives the
+     supervisor control API at <code>:7474</code>.</p>
+
+  <h2>4 · Docker</h2>
+  <p>The <code>Dockerfile</code> builds backend + built frontend + built admin into one image;
+     <code>bin/serve-all.mjs</code> spawns them. MongoDB/Redis/Python stay on the host
+     (<code>host.docker.internal</code>). <code>docker.ps1</code>/<code>docker.sh</code> wrap build/run/logs.</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: model the frontend's in-memory token + CSRF flow. Live API: register → login → me.</p>
+
+  <section data-playground='{
+    "title": "Apps — token + CSRF flow",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: the frontend auth client (simplified)\nlet csrfToken = \"\";\nlet accessToken = \"\";\nlet currentUser = null;\n\nasync function refreshCsrf() {\n  if (csrfToken) return;\n  csrfToken = \"tok-\" + Math.random().toString(36).slice(2);  // GET /csrf-token\n}\nasync function postJson(path, body) {\n  await refreshCsrf();\n  const headers = { \"x-csrf-token\": csrfToken };\n  if (accessToken) headers.authorization = \"Bearer \" + accessToken;\n  return { path, body, headers };\n}\n\n(async () => {\n  const loginReq = await postJson(\"/auth/login\", { email: \"a@b.com\", password: \"x\" });\n  console.log(\"login request headers:\", JSON.stringify(loginReq.headers));\n  accessToken = \"jwt.access.123\";\n  const meReq = await postJson(\"/auth/me\", {});\n  console.log(\"me request headers:\", JSON.stringify(meReq.headers));\n})();\n\n// Model: view switch (landing vs app)\nconst hasUser = (user) => user ? \"show demo tabs\" : \"show landing\";\nconsole.log(hasUser(null), \"->\", hasUser({ id: \"1\" }));",
+    "api": { "method": "POST", "path": "/auth/login", "body": { "email": "demo@nexus.local", "password": "password" } }
+  }'></section>
+
+  <p class="foot"><a href="11-cli.html">&larr; 11 · CLI</a> · <a href="index.html">Build Guide</a> · Next: <a href="13-tests.html">13 · Tests →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 12 Apps</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

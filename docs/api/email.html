@@ -1,0 +1,345 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Email API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-email</span> Email API
+    <span class="sub">SMTP via nodemailer, a template engine, and an optional send queue with retries.</span></h1>
+
+  <p>Transactional email for the framework. Pick a provider (<code>smtp</code> for nodemailer or
+     <code>log</code> for dev), optionally register named templates, and either <code>send()</code>
+     synchronously or <code>queue()</code> for background delivery with exponential-backoff retries.
+     No Handlebars — the template engine is a tiny in-house string renderer sufficient for
+     transactional email.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>factory (index.ts)</td><td><code>EmailConfigLike</code>, <code>CreateEmailOptions</code>, <code>createEmail</code></td></tr>
+      <tr><td>types (types.ts)</td><td><code>EmailAttachment</code>, <code>EmailInput</code>, <code>EmailResult</code>, <code>EmailProvider</code>, <code>QueueBackend</code></td></tr>
+      <tr><td>templates (TemplateEngine.ts)</td><td><code>TemplateEngine</code></td></tr>
+      <tr><td>providers (providers.ts)</td><td><code>SmtpProvider</code>, <code>LogProvider</code>, <code>renderTemplate</code></td></tr>
+      <tr><td>queue (queue.ts)</td><td><code>MemoryQueue</code>, <code>RedisQueue</code></td></tr>
+      <tr><td>service (EmailService.ts)</td><td><code>EmailServiceOptions</code>, <code>EmailService</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="createEmail">Factory — createEmail(config, opts?)</h2>
+  <pre><code><span class="kw">function</span> createEmail(config: EmailConfigLike, opts: CreateEmailOptions = {}): EmailService</code></pre>
+  <p>Build an <a href="#EmailService"><code>EmailService</code></a> from the <code>email</code> config
+     section. If <code>opts.provider</code> is supplied it wins (useful for tests); otherwise
+     <code>provider:'smtp'</code> with <code>config.smtp</code> constructs an
+     <a href="#SmtpProvider"><code>SmtpProvider</code></a>, and anything else falls back to a
+     <a href="#LogProvider"><code>LogProvider</code></a> (dev/test — never sends).</p>
+  <h3>EmailConfigLike</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider</code></td><td><code>'smtp' | 'log'</code></td><td>Which provider to construct when <code>opts.provider</code> is absent.</td></tr>
+      <tr><td><code>smtp?</code></td><td><code>{ host; port; secure; user; pass }</code></td><td>SMTP server config (required when <code>provider:'smtp'</code>).</td></tr>
+      <tr><td><code>from</code></td><td><code>string</code></td><td>Default From address.</td></tr>
+    </tbody>
+  </table>
+  <h3>CreateEmailOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider?</code></td><td><code>EmailProvider</code></td><td>—</td><td>Inject a custom provider (e.g. a test double). Wins over <code>config.provider</code>.</td></tr>
+      <tr><td><code>queue?</code></td><td><code>QueueBackend</code></td><td>—</td><td>Inject a queue backend. When absent, <code>send()</code> is synchronous and <code>queue()</code> throws.</td></tr>
+      <tr><td><code>templates?</code></td><td><code>TemplateEngine</code></td><td>—</td><td>Template engine used by <code>send()</code>/<code>queue()</code> to render named templates.</td></tr>
+      <tr><td><code>maxAttempts?</code></td><td><code>number</code></td><td><code>3</code></td><td>Max send attempts per queued job (exponential backoff; see <a href="#EmailService">EmailService</a>).</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">import</span> { createEmail, TemplateEngine, MemoryQueue } <span class="kw">from</span> <span class="str">'@bhooai/nexus-email'</span>;
+
+<span class="kw">const</span> templates = <span class="kw">new</span> TemplateEngine();
+templates.register(<span class="str">'welcome'</span>, <span class="str">'&lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;&lt;p&gt;Verify {{email}}.&lt;/p&gt;'</span>);
+
+<span class="kw">const</span> email = createEmail(config.email, {
+  templates,
+  queue: <span class="kw">new</span> MemoryQueue(),
+  maxAttempts: 5,
+});
+email.startWorker();
+<span class="kw">await</span> email.send({ to: <span class="str">'ravi@x.com'</span>, subject: <span class="str">'Welcome'</span>, template: <span class="str">'welcome'</span>, vars: { name: <span class="str">'Ravi'</span>, email: <span class="str">'ravi@x.com'</span> } });</code></pre>
+
+  <h2 id="types">Shared types — types.ts</h2>
+
+  <h3>EmailAttachment</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>filename</code></td><td><code>string</code></td><td>Attachment filename as seen by the recipient.</td></tr>
+      <tr><td><code>content</code></td><td><code>string | Buffer</code></td><td>Inline attachment contents (alternative to <code>path</code>).</td></tr>
+      <tr><td><code>contentType?</code></td><td><code>string</code></td><td>MIME type (e.g. <code>'text/plain'</code>).</td></tr>
+      <tr><td><code>path?</code></td><td><code>string</code></td><td>Path to a file on disk (alternative to inline <code>content</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmailInput</h3>
+  <p>The single payload accepted by <code>EmailService.send()</code>/<code>queue()</code> and by every
+     <code>EmailProvider.send()</code>. At least one of <code>html</code>/<code>text</code> or a named
+     <code>template</code> should be supplied.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>to</code></td><td><code>string | string[]</code></td><td>Recipient(s).</td></tr>
+      <tr><td><code>cc?</code></td><td><code>string | string[]</code></td><td>CC recipient(s).</td></tr>
+      <tr><td><code>bcc?</code></td><td><code>string | string[]</code></td><td>BCC recipient(s).</td></tr>
+      <tr><td><code>subject</code></td><td><code>string</code></td><td>Subject line. May contain <code>{{var}}</code> tokens rendered when a template engine is set.</td></tr>
+      <tr><td><code>html?</code></td><td><code>string</code></td><td>HTML body.</td></tr>
+      <tr><td><code>text?</code></td><td><code>string</code></td><td>Plain-text body.</td></tr>
+      <tr><td><code>template?</code></td><td><code>string</code></td><td>Named template to render (consumed by <code>EmailService</code> via <code>renderTemplate</code>, not by providers directly).</td></tr>
+      <tr><td><code>vars?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Variables for the template.</td></tr>
+      <tr><td><code>attachments?</code></td><td><code>EmailAttachment[]</code></td><td>Attachments.</td></tr>
+      <tr><td><code>replyTo?</code></td><td><code>string</code></td><td>Reply-To address.</td></tr>
+      <tr><td><code>headers?</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Custom headers.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmailResult</h3>
+  <p>Returned by <code>EmailProvider.send()</code> (and thus by <code>EmailService.send()</code>).
+     <code>queue()</code> returns <code>void</code> — the result is only available inside the worker.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>messageId?</code></td><td><code>string</code></td><td>Provider message id (nodemailer for SMTP; <code>log-&lt;ts&gt;</code> for LogProvider).</td></tr>
+      <tr><td><code>envelope?</code></td><td><code>unknown</code></td><td>Provider response envelope (nodemailer).</td></tr>
+      <tr><td><code>raw?</code></td><td><code>unknown</code></td><td>Raw provider response for debugging.</td></tr>
+      <tr><td><code>input</code></td><td><code>EmailInput</code></td><td>The (rendered) input that was sent — useful for queue/audit.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmailProvider</h3>
+  <pre><code><span class="kw">interface</span> EmailProvider {
+  <span class="kw">readonly</span> name: <span class="kw">string</span>;
+  send(input: EmailInput): Promise&lt;EmailResult&gt;;
+}</code></pre>
+  <p>The transport abstraction. Implementations: <a href="#SmtpProvider"><code>SmtpProvider</code></a>,
+     <a href="#LogProvider"><code>LogProvider</code></a>. Inject a custom one via
+     <code>CreateEmailOptions.provider</code> (or construct <code>EmailService</code> directly).</p>
+
+  <h3>QueueBackend</h3>
+  <pre><code><span class="kw">interface</span> QueueBackend {
+  push(job: EmailInput): Promise&lt;<span class="kw">void</span>&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Generic send-queue backend. Implementations also expose a <code>subscribe(consumer)</code> method
+     the <code>EmailService</code> worker hooks into, but that is not part of the interface contract.
+     <strong>Queues only push/subscribe/drain</strong> — retry/backoff lives in
+     <a href="#EmailService"><code>EmailService</code></a>, not the queues.</p>
+
+  <h2 id="TemplateEngine">Templates — TemplateEngine</h2>
+  <pre><code><span class="kw">class</span> TemplateEngine {
+  register(name: <span class="kw">string</span>, body: <span class="kw">string</span>): <span class="kw">void</span>;
+  has(name: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  render(name: <span class="kw">string</span>, vars?: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">string</span>;
+  renderString(tpl: <span class="kw">string</span>, vars: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): <span class="kw">string</span>;
+}</code></pre>
+  <p>A minimal, dependency-free template engine for emails. Supports <code>{{var}}</code>
+     interpolation, nested paths (<code>{{a.b.c}}</code>), <code>{{#if cond}}…{{else}}…{{/if}}</code>
+     conditionals (empty arrays are falsy), and <code>{{#each items}}…{{this}}…{{/each}}</code>
+     iteration over arrays. Each transformation is applied as a sequential render chain
+     (each → if → interpolate); <code>#each</code> bodies are rendered recursively per item with
+     <code>this</code> merged into the vars. Unknown interpolation keys render as <code>''</code>.</p>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>register(name, body)</code></td><td>Store a template body string under <code>name</code>.</td></tr>
+      <tr><td><code>has(name)</code></td><td>True if a template is registered under <code>name</code>.</td></tr>
+      <tr><td><code>render(name, vars?)</code></td><td>Render the named template; throws if <code>name</code> is unknown. <code>vars</code> defaults to <code>{}</code>.</td></tr>
+      <tr><td><code>renderString(tpl, vars)</code></td><td>Render an arbitrary template string (used internally by <code>render</code> and to render <code>subject</code> tokens).</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">const</span> tpl = <span class="kw">new</span> TemplateEngine();
+tpl.register(<span class="str">'receipt'</span>, <span class="str">'{{#if paid}}Paid{{else}}Pending{{/if}}: {{amount}} ({{#each items}}{{this}} {{/each}})'</span>);
+tpl.has(<span class="str">'receipt'</span>);          <span class="com">// true</span>
+tpl.render(<span class="str">'receipt'</span>, { paid: <span class="kw">true</span>, amount: <span class="str">'$10'</span>, items: [<span class="str">'a'</span>, <span class="str">'b'</span>] }); <span class="com">// "Paid: $10 (a b )"</span>
+tpl.renderString(<span class="str">'Hi {{user.name}}'</span>, { user: { name: <span class="str">'Maya'</span> } });     <span class="com">// "Hi Maya"</span></code></pre>
+
+  <h2 id="providers">Providers — providers.ts</h2>
+
+  <h3 id="SmtpProvider">SmtpProvider</h3>
+  <pre><code><span class="kw">class</span> SmtpProvider <span class="kw">implements</span> EmailProvider {
+  <span class="kw">readonly</span> name = <span class="str">'smtp'</span>;
+  constructor(opts: { host; port; secure; user; pass }, customTransport?: Transport);
+  send(input: EmailInput): Promise&lt;EmailResult&gt;;
+}</code></pre>
+  <p>SMTP provider backed by nodemailer. The transport is injectable via the optional
+     <code>customTransport</code> argument — tests pass nodemailer's <code>jsonTransport</code> so no
+     network is touched. <code>send()</code> forwards <code>to</code>/<code>cc</code>/<code>bcc</code>/
+     <code>subject</code>/<code>html</code>/<code>text</code>/<code>attachments</code>/<code>replyTo</code>/
+     <code>headers</code> straight to <code>sendMail</code> and returns
+     <code>{ messageId, envelope, raw, input }</code>.</p>
+
+  <h3 id="LogProvider">LogProvider</h3>
+  <pre><code><span class="kw">class</span> LogProvider <span class="kw">implements</span> EmailProvider {
+  <span class="kw">readonly</span> name = <span class="str">'log'</span>;
+  constructor(log?: (line: <span class="kw">string</span>) =&gt; <span class="kw">void</span>);
+  send(input: EmailInput): Promise&lt;EmailResult&gt;;
+}</code></pre>
+  <p>Dev/test provider: writes a JSON line (<code>{ name, subject, text|html }</code>) to the logger
+     instead of sending. The default logger is <code>console.log('[nexus-email] …')</code>; pass a
+     custom <code>log</code> to capture in tests. Returns <code>{ messageId: 'log-&lt;ts&gt;', input }</code>.</p>
+
+  <h3 id="renderTemplate">renderTemplate(input, engine)</h3>
+  <pre><code><span class="kw">function</span> renderTemplate(input: EmailInput, engine: TemplateEngine): EmailInput</code></pre>
+  <p>If <code>input.template</code> is set, render it against <code>engine</code> and write the result
+     into <code>html</code> (only when <code>html</code> is not already provided). Also, if the
+     <code>subject</code> contains <code>{{</code> tokens, render it via <code>renderString</code>.
+     Returns a new <code>EmailInput</code> with <code>html</code>/<code>subject</code> populated; if no
+     template is named, returns <code>input</code> unchanged. Used internally by
+     <code>EmailService.send()</code>/<code>queue()</code>.</p>
+
+  <h2 id="queues">Queues — queue.ts</h2>
+  <p>Both queue backends expose <code>push(job)</code>, <code>subscribe(consumer)</code>, and
+     <code>close()</code>. They <strong>only</strong> enqueue and drain — they do not retry. Retry
+     with exponential backoff is the <code>EmailService</code> worker's job (see
+     <a href="#EmailService">EmailService.processWithRetry</a>).</p>
+
+  <h3 id="MemoryQueue">MemoryQueue</h3>
+  <pre><code><span class="kw">class</span> MemoryQueue <span class="kw">implements</span> QueueBackend {
+  constructor(pollMs = 50);
+  push(job: EmailInput): Promise&lt;<span class="kw">void</span>&gt;;
+  subscribe(consumer: (job: EmailInput) =&gt; Promise&lt;<span class="kw">void</span>&gt;): <span class="kw">void</span>;
+  <span class="kw">get</span> pending(): <span class="kw">number</span>;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>In-memory queue: <code>push</code> appends to an array; a <code>setInterval</code> poller
+     (<code>pollMs</code>) drains pending jobs to all subscribed consumers. Sufficient for
+     single-instance apps and tests; <a href="#RedisQueue"><code>RedisQueue</code></a> is the
+     horizontal-scale option. The queue never blocks the sender. <code>push</code> throws if the
+     queue is closed; <code>close()</code> clears the interval.</p>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>constructor(pollMs = 50)</code></td><td>Start the drain poller on the given interval (ms).</td></tr>
+      <tr><td><code>push(job)</code></td><td>Append a job; throws <code>'[nexus-email] queue closed'</code> after <code>close()</code>.</td></tr>
+      <tr><td><code>subscribe(consumer)</code></td><td>Register an async consumer; called per job during drain.</td></tr>
+      <tr><td><code>pending</code> (getter)</td><td>Number of jobs waiting in the buffer.</td></tr>
+      <tr><td><code>close()</code></td><td>Mark closed and stop the poller.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RedisQueue">RedisQueue</h3>
+  <pre><code><span class="kw">class</span> RedisQueue <span class="kw">implements</span> QueueBackend {
+  constructor(createClient: () =&gt; <span class="kw">any</span>, key = <span class="str">'nexus:email:queue'</span>, pollMs = 100);
+  ensureConnected(): Promise&lt;<span class="kw">void</span>&gt;;
+  push(job: EmailInput): Promise&lt;<span class="kw">void</span>&gt;;
+  subscribe(consumer: (job: EmailInput) =&gt; Promise&lt;<span class="kw">void</span>&gt;): <span class="kw">void</span>;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Redis-backed queue using <code>LPUSH</code> (producer) + <code>RPOP</code> (consumer poll) on a
+     dedicated redis client (the <code>redis</code> package). Jobs are JSON-serialized
+     <code>EmailInput</code>s. <code>ensureConnected()</code> lazily creates and connects the client on
+     first <code>push</code>; the poller calls it indirectly. Transient redis errors during drain are
+     swallowed so the poller survives. Callers that need guaranteed delivery should check
+     connectivity at boot — <code>push</code> will throw if <code>connect()</code> fails.</p>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>constructor(createClient, key?, pollMs?)</code></td><td><code>createClient</code> returns a redis client (factory for lazy connect); <code>key</code> defaults to <code>'nexus:email:queue'</code>; poller defaults to 100 ms.</td></tr>
+      <tr><td><code>ensureConnected()</code></td><td>Create + <code>connect()</code> the client on first use; no-op once connected.</td></tr>
+      <tr><td><code>push(job)</code></td><td><code>LPUSH</code> the JSON-serialized job (connects first).</td></tr>
+      <tr><td><code>subscribe(consumer)</code></td><td>Register an async consumer; called per <code>RPOP</code>'d job during drain.</td></tr>
+      <tr><td><code>close()</code></td><td>Clear the poller interval and <code>quit()</code> the client if connected.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="EmailService">Service — EmailService</h2>
+  <pre><code><span class="kw">class</span> EmailService {
+  <span class="kw">readonly</span> provider: EmailProvider;
+  constructor(opts: EmailServiceOptions);
+  send(input: EmailInput): Promise&lt;EmailResult&gt;;
+  queue(input: EmailInput): Promise&lt;<span class="kw">void</span>&gt;;
+  startWorker(): <span class="kw">void</span>;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Ties a provider + template engine + optional queue together. <code>send()</code> renders (if a
+     template is named) and sends immediately. <code>queue()</code> renders then enqueues for
+     background delivery; <code>startWorker()</code> subscribes the service to the queue so jobs are
+     drained with retries. <code>close()</code> stops the worker and closes the queue backend.</p>
+
+  <h3>EmailServiceOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider</code></td><td><code>EmailProvider</code></td><td>—</td><td>Required transport.</td></tr>
+      <tr><td><code>templates?</code></td><td><code>TemplateEngine</code></td><td>—</td><td>Engine used to render named templates / subject tokens.</td></tr>
+      <tr><td><code>queue?</code></td><td><code>QueueBackend</code></td><td>—</td><td>Optional queue; when set, <code>queue()</code> enqueues and a worker drains it.</td></tr>
+      <tr><td><code>maxAttempts?</code></td><td><code>number</code></td><td><code>3</code></td><td>Max send attempts per queued job (exponential backoff).</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>send(input)</code></td><td>Render via the template engine (if set) then call <code>provider.send()</code>; returns the <code>EmailResult</code>.</td></tr>
+      <tr><td><code>queue(input)</code></td><td>Render then <code>queueBackend.push()</code>. Throws <code>'[nexus-email] no queue configured'</code> if no queue was supplied.</td></tr>
+      <tr><td><code>startWorker()</code></td><td>Idempotent. Subscribes <code>processWithRetry</code> to the queue backend so queued jobs are drained with retry/backoff. No-op if no queue or already running.</td></tr>
+      <tr><td><code>close()</code></td><td>Stop the worker (<code>running = false</code>) and close the queue backend (if any).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>processWithRetry(job) — private</h3>
+  <pre><code><span class="kw">private async</span> processWithRetry(job: EmailInput): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Internal worker handler subscribed by <code>startWorker()</code>. Sends the (already rendered)
+     job up to <code>maxAttempts</code> times. On failure it waits with exponential backoff
+     <code>250 * 2 ** (attempt - 1)</code> ms (attempt is 1-indexed after the first failure:
+     <code>250, 500, 1000, 2000, …</code>) before the next attempt. After <code>maxAttempts</code>
+     failures it gives up and logs
+     <code>'[nexus-email] delivery failed after &lt;n&gt; attempts: &lt;err&gt;'</code> — in production
+     route these to a dead-letter store.</p>
+  <pre><code><span class="com">// backoff sequence (maxAttempts = 3): attempt 1 fails → wait 250ms → attempt 2 fails → wait 500ms → attempt 3 fails → give up + log</span></code></pre>
+  <div class="callout note">
+    <span class="label">Retry lives in the service</span>
+    <code>MemoryQueue</code> / <code>RedisQueue</code> only <code>push</code> + <code>subscribe</code> +
+    drain. Exponential backoff and <code>maxAttempts</code> are <code>EmailService</code> behavior —
+    that's why a queue backend with no <code>EmailService</code> worker will not retry.
+  </div>
+  <div class="callout warn">
+    <span class="label">Render-then-enqueue</span>
+    <code>queue()</code> renders the template <em>before</em> pushing, so the worker sends already-rendered
+    <code>EmailInput</code>s. The worker does <strong>not</strong> re-render — don't put raw template
+    tokens in a queued job expecting them to resolve on send.
+  </div>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { createEmail, TemplateEngine, MemoryQueue } <span class="kw">from</span> <span class="str">'@bhooai/nexus-email'</span>;
+
+<span class="kw">const</span> templates = <span class="kw">new</span> TemplateEngine();
+templates.register(<span class="str">'welcome'</span>, <span class="str">'&lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;&lt;p&gt;Verify {{email}}.&lt;/p&gt;'</span>);
+
+<span class="kw">const</span> email = createEmail(config.email, { templates, queue: <span class="kw">new</span> MemoryQueue() });
+email.startWorker();
+
+<span class="com">// synchronous send (renders template, returns EmailResult)</span>
+<span class="kw">await</span> email.send({ to: <span class="str">'ravi@x.com'</span>, subject: <span class="str">'Welcome {{name}}'</span>, template: <span class="str">'welcome'</span>, vars: { name: <span class="str">'Ravi'</span>, email: <span class="str">'ravi@x.com'</span> } });
+
+<span class="com">// background send (renders, enqueues; retried up to maxAttempts on failure)</span>
+<span class="kw">await</span> email.queue({ to: <span class="str">'maya@x.com'</span>, subject: <span class="str">'Receipt'</span>, template: <span class="str">'welcome'</span>, vars: { name: <span class="str">'Maya'</span>, email: <span class="str">'maya@x.com'</span> } });
+
+<span class="kw">await</span> email.close();</code></pre>
+
+  <div class="callout note">
+    <span class="label">Dev provider</span>
+    In development, <code>LogProvider</code> prints the rendered email instead of sending — no SMTP
+    server needed. Tests use <code>jsonTransport</code>; no network.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Email API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Email - template engine","apiBase":"http://localhost:4000","js":"function render(template, data) {\n  return template.replace(/\\{\\{(\\w+)\\}\\}/g, (m, k) =\u003e (data[k] !== undefined ? data[k] : m));\n}\nconsole.log(render(\"Welcome, {{name}}! Verify: {{url}}\", { name: \"Maya\", url: \"https://x/verify\" }));\n\nconst provider = (cfg) =\u003e cfg.provider === \"smtp\" \u0026\u0026 cfg.smtp ? \"smtp (nodemailer)\" : \"log (dev)\";\nconsole.log(\"dev:\", provider({ provider: \"log\" }));\nconsole.log(\"prod:\", provider({ provider: \"smtp\", smtp: { host: \"smtp.x\" } }));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

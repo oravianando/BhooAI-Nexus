@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Chat Streaming — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>AI Chat Streaming <span class="sub">Stream AI chat completions end to end — Browser → Node proxy (CSRF) → Python FastAPI → upstream provider — with Server-Sent Events re-emitted at every hop.</span></h1>
+
+  <h2>The streaming flow</h2>
+  <pre><code>Browser ──&gt; Node backend (:4000) ──&gt; Python FastAPI (:8000) ──&gt; OpenAI / Together / Ollama
+        fetch + ReadableStream     POST /ai/chat/completions    providers/base.py
+        parse SSE chunks           re-emits SSE                  StreamingResponse</code></pre>
+
+  <h2>1. AI server setup — Python FastAPI</h2>
+  <p>The Python AI gateway lives in <code>apps/ai-server/main.py</code> and listens on port <code>8000</code>.
+     One <code>Provider</code> class (in <code>providers/base.py</code>) covers every OpenAI-compatible backend
+     (OpenAI, Together AI, Ollama, Groq, …). Start it with:</p>
+  <pre><code><span class="com"># from the repo root</span>
+<span class="kw">cd</span> apps/ai-server
+pip install -r requirements.txt
+uvicorn main:app --host <span class="str">0.0.0.0</span> --port <span class="num">8000</span> --reload</code></pre>
+  <p>Verify it is alive:</p>
+  <pre><code>curl http://localhost:<span class="num">8000</span>/health
+<span class="com"># {"status":"ok","provider":"auto"}</span></code></pre>
+
+  <div class="callout note">
+    <span class="label">OpenAI-compatible</span>
+    Every supported provider speaks the OpenAI Chat Completions shape, so the Python side routes purely on
+    <code>base_url</code> + auth header. The <code>provider</code> field in the request body is stripped before
+    forwarding upstream.
+  </div>
+
+  <h2>2. Backend proxy — POST /ai/chat/completions</h2>
+  <p>The Node backend never lets the browser call Python directly. <code>apps/backend/src/modules/ai/aiProxy.ts</code>
+     exposes <code>POST /ai/chat/completions</code>, is CSRF protected, re-emits the SSE stream so CSRF + auth stay
+     in Node, and re-injects the <code>provider</code> tag into each chunk:</p>
+  <pre><code>router.post(<span class="str">'/ai/chat/completions'</span>,
+  authToken(authService, { required: <span class="num">false</span> }),
+  csrf(),                        <span class="com">// double-submit CSRF</span>
+  aiChatHandler);                <span class="com">// pipes upstream SSE straight through</span></code></pre>
+
+  <h2>3. Provider configuration — nexus.config.ts</h2>
+  <p>20 providers are pre-configured in <code>nexus.config.ts</code> under <code>ai.providers</code>. Each entry
+     has <code>enabled</code>, <code>baseUrl</code>, and an env var name for its API key:</p>
+  <pre><code>ai: {
+  serverUrl: <span class="str">'http://localhost:8000'</span>,
+  providers: {
+    openai:   { enabled: <span class="num">true</span>,  baseUrl: <span class="str">'https://api.openai.com/v1'</span>,   apiKeyEnv: <span class="str">'NEXUS_AI_OPENAI_API_KEY'</span> },
+    together: { enabled: <span class="num">true</span>,  baseUrl: <span class="str">'https://api.together.xyz/v1'</span>, apiKeyEnv: <span class="str">'NEXUS_AI_TOGETHER_API_KEY'</span> },
+    ollama:   { enabled: <span class="num">true</span>,  baseUrl: <span class="str">'http://localhost:11434/v1'</span>,    apiKeyEnv: <span class="kw">null</span> },
+    groq:     { enabled: <span class="num">false</span>, baseUrl: <span class="str">'https://api.groq.com/openai/v1'</span>, apiKeyEnv: <span class="str">'NEXUS_AI_GROQ_API_KEY'</span> },
+    <span class="com">// ... 16 more pre-configured providers</span>
+  },
+}</code></pre>
+
+  <h3>API keys in .env</h3>
+  <p>Keys follow the <code>NEXUS_AI_&lt;PROVIDER&gt;_API_KEY</code> convention. They are read by the Python server,
+     never by the browser:</p>
+  <pre><code><span class="com"># .env  (Python ai-server reads these)</span>
+NEXUS_AI_OPENAI_API_KEY=sk-...
+NEXUS_AI_TOGETHER_API_KEY=...
+NEXUS_AI_GROQ_API_KEY=...
+<span class="com"># Ollama needs NO key — it runs locally</span></code></pre>
+
+  <h2>4. Admin AI Providers tab</h2>
+  <p>The admin console exposes an <strong>AI Providers</strong> tab where you can:</p>
+  <ul>
+    <li>enable / disable any of the 20 pre-configured providers,</li>
+    <li>set or rotate API keys (stored encrypted, surfaced to Python only),</li>
+    <li>add a <strong>custom provider</strong> — name, base URL, key env var — without editing code.</li>
+  </ul>
+  <div class="callout note">
+    <span class="label">No restart needed</span>
+    Provider toggles write to <code>nexus.runtime.json</code>; the Python server hot-reloads its settings on the
+    next request via <code>settings.py</code>.
+  </div>
+
+  <h2>5. Together AI direct SDK routing</h2>
+  <p>For <code>provider: "together"</code> the Node backend bypasses Python entirely and calls the Together AI SDK
+     directly. This removes one hop for the most common production path:</p>
+  <pre><code><span class="kw">if</span> (provider === <span class="str">'together'</span> &amp;&amp; config.ai.directSdk.together) {
+  <span class="kw">return</span> togetherSdk.chatStream(body);   <span class="com">// browser → Node → Together (no Python)</span>
+}
+<span class="com">// every other provider → Node proxy → Python → upstream</span></code></pre>
+
+  <h2>6. Ollama local — no API key</h2>
+  <p>Set <code>provider: "ollama"</code> to hit a local Ollama daemon. No key is required; the base URL defaults to
+     <code>http://localhost:11434/v1</code>. Great for offline dev and CI:</p>
+  <pre><code>{
+  <span class="str">"model"</span>: <span class="str">"llama3.1:8b"</span>,
+  <span class="str">"provider"</span>: <span class="str">"ollama"</span>,
+  <span class="str">"messages"</span>: [{ <span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Hello, local LLM!"</span> }],
+  <span class="str">"stream"</span>: <span class="num">true</span>
+}</code></pre>
+
+  <h2>7. Browser streaming — full chat example</h2>
+  <p>The browser uses <code>fetch</code> + a <code>ReadableStream</code> reader to parse SSE chunks as they arrive.
+     First fetch a CSRF token, then POST to the proxy:</p>
+  <pre><code><span class="com">// 1. get CSRF token</span>
+<span class="kw">const</span> csrfRes = <span class="kw">await</span> fetch(<span class="str">'/csrf-token'</span>);
+<span class="kw">const</span> { token } = <span class="kw">await</span> csrfRes.json();
+
+<span class="com">// 2. POST + stream the response</span>
+<span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">'/ai/chat/completions'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: {
+    <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>,
+    <span class="str">'x-csrf-token'</span>: token,
+  },
+  body: JSON.stringify({
+    model: <span class="str">'meta-llama/Llama-3.3-70B-Instruct-Turbo'</span>,
+    provider: <span class="str">'together'</span>,
+    messages: [{ role: <span class="str">'user'</span>, content: <span class="str">'Explain SSE in one line.'</span> }],
+    stream: <span class="num">true</span>,
+  }),
+});
+
+<span class="com">// 3. read SSE chunks from the ReadableStream</span>
+<span class="kw">const</span> reader = res.body.getReader();
+<span class="kw">const</span> decoder = <span class="kw">new</span> TextDecoder();
+<span class="kw">let</span> buffer = <span class="str">''</span>;
+<span class="kw">const</span> out = document.getElementById(<span class="str">'chat-out'</span>);
+
+<span class="kw">while</span> (<span class="num">true</span>) {
+  <span class="kw">const</span> { value, done } = <span class="kw">await</span> reader.read();
+  <span class="kw">if</span> (done) <span class="kw">break</span>;
+  buffer += decoder.decode(value, { stream: <span class="num">true</span> });
+
+  <span class="com">// SSE events are separated by blank lines</span>
+  <span class="kw">const</span> parts = buffer.split(<span class="str">'\n\n'</span>);
+  buffer = parts.pop();              <span class="com">// keep the partial tail</span>
+
+  <span class="kw">for</span> (<span class="kw">const</span> evt <span class="kw">of</span> parts) {
+    <span class="kw">for</span> (<span class="kw">const</span> line <span class="kw">of</span> evt.split(<span class="str">'\n'</span>)) {
+      <span class="kw">if</span> (!line.startsWith(<span class="str">'data: '</span>)) <span class="kw">continue</span>;
+      <span class="kw">const</span> data = line.slice(<span class="num">6</span>);
+      <span class="kw">if</span> (data === <span class="str">'[DONE]'</span>) <span class="kw">continue</span>;
+      <span class="kw">const</span> json = JSON.parse(data);
+
+      <span class="com">// error event from the proxy</span>
+      <span class="kw">if</span> (json.event === <span class="str">'error'</span>) {
+        out.textContent += <span class="str">'\n[error] '</span> + (json.message || json.error);
+        <span class="kw">continue</span>;
+      }
+
+      <span class="kw">const</span> delta = json.choices?.[<span class="num">0</span>]?.delta?.content || <span class="str">''</span>;
+      out.textContent += delta;      <span class="com">// append token-by-token</span>
+    }
+  }
+}</code></pre>
+
+  <div class="callout note">
+    <span class="label">Why a buffer?</span>
+    A single <code>read()</code> can return a partial SSE event (cut mid-line). Always split on <code>\n\n</code>,
+    keep the trailing partial in <code>buffer</code>, and only parse complete events.
+  </div>
+
+  <h2>8. Error handling</h2>
+  <p>The proxy emits an SSE <code>error</code> event when upstream fails — the stream stays open so the browser
+     can surface the message rather than seeing a blank <code>502</code>:</p>
+  <pre><code>data: {<span class="str">"event"</span>:<span class="str">"error"</span>,<span class="str">"message"</span>:<span class="str">"provider timeout (30s)"</span>,<span class="str">"status"</span>:<span class="num">504</span>}
+
+data: [DONE]</code></pre>
+  <p>Detect it in the parser (see the <code>json.event === 'error'</code> branch above) and show it inline.
+     Common cases:</p>
+  <table>
+    <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>event: error · 401</code></td><td>Missing/invalid API key</td><td>Set <code>NEXUS_AI_&lt;PROVIDER&gt;_API_KEY</code> in <code>.env</code>, restart Python</td></tr>
+      <tr><td><code>event: error · 429</code></td><td>Rate limited upstream</td><td>Retry with backoff; lower <code>maxTokens</code></td></tr>
+      <tr><td><code>event: error · timeout</code></td><td>Upstream &gt; 30s</td><td>Raise <code>ai.timeoutMs</code> in config or pick a faster model</td></tr>
+      <tr><td><code>Invalid CSRF token</code></td><td>Token rotated / missing</td><td>Re-<code>GET /csrf-token</code> before the POST</td></tr>
+      <tr><td>Empty stream, no chunks</td><td>Python server down</td><td>Check <code>http://localhost:8000/health</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <span class="label">CSRF rotates</span>
+    Every safe-method request (GET) issues a fresh <code>nexus_csrf</code> cookie. Fetch the CSRF token
+    <em>immediately before</em> the streaming POST; do not cache it across other requests.
+  </div>
+
+  <div class="callout danger">
+    <span class="label">Never call Python from the browser</span>
+    The Python server has no CSRF, CORS, or auth middleware — it trusts the Node backend. Exposing port 8000
+    directly to the web bypasses every security control.
+  </div>
+
+  <p class="foot"><a href="guide-uploads.html">← Upload Files</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-uploads.html">Upload Files →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · AI Chat Streaming</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

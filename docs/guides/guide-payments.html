@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Payments Integration — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Payments Integration <span class="sub">A gateway-agnostic <code>PaymentProvider</code> interface, five gateways, signature-verified webhooks, and the browser hosted-checkout flow — with a working Razorpay sandbox example.</span></h1>
+
+  <p><code>@bhooai/nexus-payments</code> gives you one <code>PaymentProvider</code>
+     interface across Razorpay, PayPal, PayU, Skrill, and Payoneer. The scaffold
+     already wires order/capture/status routes + a signature-verified webhook
+     router. This guide shows the full checkout flow.</p>
+
+  <h2>Providers at a glance</h2>
+  <table>
+    <thead><tr><th>Provider</th><th>Status</th><th>Credential fields</th></tr></thead>
+    <tbody>
+      <tr><td>Razorpay</td><td><span class="badge full">full</span></td><td><code>keyId</code>, <code>keySecret</code></td></tr>
+      <tr><td>PayPal</td><td><span class="badge full">full</span></td><td><code>clientId</code>, <code>clientSecret</code></td></tr>
+      <tr><td>PayU</td><td><span class="badge partial">happy-path</span></td><td><code>merchantKey</code>, <code>salt</code></td></tr>
+      <tr><td>Skrill</td><td><span class="badge partial">happy-path</span></td><td><code>merchantEmail</code></td></tr>
+      <tr><td>Payoneer</td><td><span class="badge partial">happy-path</span></td><td><code>programId</code>, <code>apiKey</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>1. Config in <code>nexus.config.ts</code></h2>
+  <p>The <code>payments</code> section sets the webhook path and default
+     currency. Provider credentials live in <code>.env</code>, not the config
+     file.</p>
+  <pre><code><span class="com">// nexus.config.ts</span>
+payments: {
+  webhookPath: <span class="str">'/payments/webhook/:provider'</span>,
+  currency: <span class="str">'INR'</span>,
+  <span class="com">// Per-provider keys come from .env (NEXUS_PAYMENTS_*). The framework</span>
+  <span class="com">// default does NOT include provider blocks — they auto-activate on keys.</span>
+}</code></pre>
+
+  <h2>2. Provider keys in <code>.env</code></h2>
+  <p>Providers <strong>auto-enable</strong> when their keys are present (or when
+     <code>enabled: true</code> is set in config). You don't need to touch code
+     to turn a gateway on — just add the env vars.</p>
+  <pre><code><span class="com"># .env — Razorpay (sandbox test keys)</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_ID=<span class="str">rzp_test_1DP5XXXXXXXX</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_SECRET=<span class="str">xxxxxxxxxxxxxxxxxxxx</span>
+
+<span class="com"># PayPal (optional)</span>
+NEXUS_PAYMENTS_PAYPAL_CLIENT_ID=<span class="str">AeA1...</span>
+NEXUS_PAYMENTS_PAYPAL_CLIENT_SECRET=<span class="str">ELB1...</span>
+NEXUS_PAYMENTS_PAYPAL_SANDBOX=<span class="kw">true</span></code></pre>
+  <div class="callout note">
+    <span class="label">Compound env keys</span>
+    <code>NEXUS_PAYMENTS_RAZORPAY_KEY_ID</code> maps to
+    <code>payments.razorpay.keyId</code> — the <code>KEY_ID</code> pair collapses
+    into a single <code>keyId</code> field (not <code>key.id</code>). The env
+    loader has a known list of these compound segments.
+  </div>
+  <pre><code><span class="com">// How a provider activates (createPayments)</span>
+<span class="kw">const</span> active = (cfg, keys) =&gt;
+  cfg?.enabled ?? keys.every(<span class="kw">(k) =&gt;</span> <span class="kw">typeof</span> cfg[k] === <span class="str">'string'</span> &amp;&amp; cfg[k].length &gt; <span class="num">0</span>);
+
+<span class="kw">if</span> (active(config.razorpay, [<span class="str">'keyId'</span>, <span class="str">'keySecret'</span>])) {
+  providers.set(<span class="str">'razorpay'</span>, <span class="kw">new</span> RazorpayProvider(config.razorpay));
+}</code></pre>
+
+  <h2>3. <code>createPayments(config.payments)</code></h2>
+  <p>The factory builds a <code>PaymentsService</code> with a <code>providers</code>
+     map keyed by name. The scaffold already calls it in <code>main.ts</code>:</p>
+  <pre><code><span class="com">// apps/backend/src/main.ts (already generated)</span>
+<span class="kw">const</span> payments = createPayments(config.payments);
+
+<span class="kw">const</span> webhookRouter = payments.webhookRouter((ev) =&gt; {
+  log.info(<span class="str">'payment webhook event'</span>, { provider: ev.provider, event: ev.event, verified: ev.verified });
+  <span class="kw">if</span> (ev.provider &amp;&amp; ev.event) {
+    recordTransaction(ev.provider, ev).catch((err) =&gt; log.warn(<span class="str">'failed to record payment transaction'</span>, { msg: err.message }));
+  }
+});
+<span class="kw">if</span> (config.payments.webhookPath) {
+  router.post(config.payments.webhookPath, webhookRouter.handler);
+}
+registerPaymentRoutes(router, config, payments, authService);</code></pre>
+
+  <h2>4. Create order</h2>
+  <p>The browser-facing order route is auth-guarded. Amounts are in
+     <strong>major units</strong> (e.g. <code>99.50</code>); Razorpay converts
+     to paise internally via <code>toMinor</code>.</p>
+  <pre><code>POST /payments/order
+Authorization: Bearer &lt;accessToken&gt;
+Content-Type: application/json
+x-csrf-token: &lt;token&gt;
+Origin: http://localhost:3000
+
+{
+  <span class="str">"provider"</span>: <span class="str">"razorpay"</span>,
+  <span class="str">"amount"</span>: <span class="num">99.50</span>,
+  <span class="str">"currency"</span>: <span class="str">"INR"</span>,
+  <span class="str">"reference"</span>: <span class="str">"order_2026_001"</span>,
+  <span class="str">"description"</span>: <span class="str">"Pro plan — monthly"</span>
+}</code></pre>
+  <pre><code><span class="com">// 200 response</span>
+{
+  <span class="str">"provider"</span>: <span class="str">"razorpay"</span>,
+  <span class="str">"order"</span>: {
+    <span class="str">"orderId"</span>: <span class="str">"order_Nktp..."</span>,
+    <span class="str">"paymentUrl"</span>: <span class="str">"https://api.razorpay.com/v1/checkout/embedded?..."</span>,
+    <span class="str">"amount"</span>: <span class="num">9950</span>,
+    <span class="str">"currency"</span>: <span class="str">"INR"</span>,
+    <span class="str">"status"</span>: <span class="str">"created"</span>
+  }
+}</code></pre>
+  <div class="callout note">
+    <span class="label">Minor units</span>
+    <code>toMinor</code> converts major → minor based on ISO 4217. INR/USD/EUR
+    multiply by 100 (paise/cents); JPY/KRW are zero-dp (no multiplier); KWD/BHD
+    multiply by 1000 (three decimal places).
+  </div>
+
+  <h2>5. Hosted checkout — redirect to <code>paymentUrl</code></h2>
+  <p>For hosted-checkout providers (Razorpay, PayU, Skrill, Payoneer), the
+     <code>order.paymentUrl</code> is where the customer completes payment.
+     Redirect the browser there; the gateway redirects back to your
+     <code>returnUrl</code> (or <code>cancelUrl</code> on cancellation).</p>
+  <pre><code><span class="com">// Browser — after creating the order</span>
+<span class="kw">const</span> { order } = <span class="kw">await</span> fetch(<span class="str">'/payments/order'</span>, {
+  method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+  headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, ...csrfHeaders(), ...authHeaders() },
+  body: JSON.stringify({ provider: <span class="str">'razorpay'</span>, amount: <span class="num">99.50</span>, currency: <span class="str">'INR'</span> }),
+}).then(r =&gt; r.json());
+
+<span class="com">// Redirect to the hosted checkout page</span>
+window.location.href = order.paymentUrl;</code></pre>
+
+  <h2>6. Webhook — signature verified, no auth/CSRF</h2>
+  <p>Webhooks are mounted <strong>separately</strong> from the auth-guarded
+     checkout routes. They have no auth/CSRF — security comes from the signature.
+     The <code>WebhookRouter</code> verifies the <strong>raw body</strong> (kept on
+     <code>ctx.state.__rawBody</code>) against the provider signature, rejects
+     with 401 on mismatch, and ACKs 200 so the gateway doesn't retry.</p>
+  <pre><code>POST /payments/webhook/razorpay
+X-Razorpay-Signature: &lt;hmac-sha256 hex&gt;
+Content-Type: application/json
+
+{ <span class="str">"entity"</span>: <span class="str">"payment"</span>, <span class="str">"id"</span>: <span class="str">"pay_..."</span>, ... }</code></pre>
+  <pre><code><span class="com">// Server-side verification (WebhookRouter)</span>
+<span class="kw">const</span> event = <span class="kw">await</span> provider.verifyWebhook({ rawBody, headers, params: ctx.params });
+<span class="kw">if</span> (!event.verified) {
+  ctx.json({ error: <span class="str">'signature verification failed'</span> }, <span class="num">401</span>);
+  <span class="kw">return</span>;
+}
+<span class="kw">try</span> { <span class="kw">await this</span>.onEvent(event); }
+<span class="kw">catch</span> { ctx.json({ ok: <span class="kw">false</span> }, <span class="num">200</span>); <span class="kw">return</span>; }
+ctx.json({ ok: <span class="kw">true</span> }, <span class="num">200</span>);</code></pre>
+  <div class="callout danger">
+    <span class="label">Webhook = source of truth</span>
+    Never trust a client-side "payment succeeded" callback. The webhook is the
+    authoritative event. Persist every verified webhook as a transaction (the
+    scaffold does this via <code>recordTransaction</code>); the admin dashboard
+    reads from that store.
+  </div>
+
+  <h2>7. Capture an authorized order</h2>
+  <p>For providers that separate authorization from capture (e.g. Razorpay
+     for card flows that authorize but don't auto-capture), call capture after
+     the webhook confirms payment.</p>
+  <pre><code>POST /payments/order/:id/capture
+Authorization: Bearer &lt;accessToken&gt;
+x-csrf-token: &lt;token&gt;
+
+{ <span class="str">"provider"</span>: <span class="str">"razorpay"</span>, <span class="str">"amount"</span>: <span class="num">99.50</span> }</code></pre>
+  <pre><code><span class="com">// 200 response</span>
+{
+  <span class="str">"provider"</span>: <span class="str">"razorpay"</span>,
+  <span class="str">"order"</span>: { <span class="str">"orderId"</span>: <span class="str">"order_Nktp..."</span>, <span class="str">"status"</span>: <span class="str">"captured"</span>, ... }
+}</code></pre>
+
+  <h2>8. Order status</h2>
+  <pre><code>GET /payments/order/:id?provider=razorpay
+Authorization: Bearer &lt;accessToken&gt;
+
+<span class="com">// 200 response</span>
+{ <span class="str">"provider"</span>: <span class="str">"razorpay"</span>, <span class="str">"order"</span>: { <span class="str">"orderId"</span>: <span class="str">"..."</span>, <span class="str">"status"</span>: <span class="str">"paid"</span>, ... } }</code></pre>
+  <div class="callout warn">
+    <span class="label">Pass the provider in the query string</span>
+    The status route needs <code>?provider=razorpay</code> (or whichever) so the
+    service knows which gateway to query. Without it the route returns
+    <code>400</code> with <code>"Unknown or disabled provider (pass ?provider=)"</code>.
+  </div>
+
+  <h2>9. Admin endpoints</h2>
+  <p>Admin routes are bearer + <code>requireRole('admin')</code> guarded. They
+     read the persisted order/transaction stores (populated by
+     <code>registerPaymentRoutes</code> + webhooks).</p>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/orders</code></td><td>Persisted payment orders (newest first; <code>?limit=&amp;provider=</code> filters).</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/transactions</code></td><td>Webhook event log (verified events only; same filters).</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/status</code></td><td>Per-provider status: <code>enabled</code>, <code>configured</code>, <code>sandbox</code>, <code>live</code>, and a <code>testConnection</code> probe when supported.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="com">// Per-provider status check (admin test console)</span>
+{
+  <span class="str">"checkedAt"</span>: <span class="str">"2026-08-10T03:10:06.129Z"</span>,
+  <span class="str">"providers"</span>: [
+    { <span class="str">"name"</span>: <span class="str">"razorpay"</span>, <span class="str">"enabled"</span>: <span class="kw">true</span>, <span class="str">"configured"</span>: <span class="kw">true</span>, <span class="str">"sandbox"</span>: <span class="kw">true</span>, <span class="str">"live"</span>: <span class="kw">true</span>, <span class="str">"ok"</span>: <span class="kw">true</span> },
+    { <span class="str">"name"</span>: <span class="str">"paypal"</span>, <span class="str">"enabled"</span>: <span class="kw">false</span>, <span class="str">"configured"</span>: <span class="kw">false</span>, <span class="str">"live"</span>: <span class="kw">false</span>, <span class="str">"ok"</span>: <span class="kw">false</span> },
+    { <span class="str">"name"</span>: <span class="str">"payu"</span>, <span class="str">"enabled"</span>: <span class="kw">false</span>, <span class="str">"configured"</span>: <span class="kw">false</span>, <span class="str">"live"</span>: <span class="kw">false</span> }
+  ]
+}</code></pre>
+
+  <h2>10. Razorpay sandbox example (end to end)</h2>
+  <p>Get sandbox test keys from the Razorpay dashboard (Dashboard → Settings →
+     API Keys → Generate Test Key). The <code>rzp_test_*</code> prefix marks
+     test mode — no real money moves.</p>
+  <pre><code><span class="com"># .env</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_ID=<span class="str">rzp_test_1DP5XXXXXXXX</span>
+NEXUS_PAYMENTS_RAZORPAY_KEY_SECRET=<span class="str">xxxxxxxxxxxxxxxxxxxx</span></code></pre>
+  <p>Restart <code>npm run dev</code>. The log will show the provider activating:
+     <code>payments provider active: razorpay</code>. Test cards:</p>
+  <table>
+    <thead><tr><th>Card number</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td><code>4111 1111 1111 1111</code></td><td>Success (Visa)</td></tr>
+      <tr><td><code>5111 1111 1111 1111</code></td><td>Success (Mastercard)</td></tr>
+      <tr><td><code>4000 0000 0000 0002</code></td><td>Decline (insufficient funds)</td></tr>
+    </tbody>
+  </table>
+  <p>Any expiry in the future and any CVV work for test cards.</p>
+
+  <h2>11. Browser checkout flow — full example</h2>
+  <pre><code><span class="com">// checkout.ts — the frontend pattern (simplified from apps/frontend/lib/payments.ts)</span>
+<span class="kw">async function</span> refreshCsrf() { /* GET /csrf-token — see Auth guide */ }
+<span class="kw">function</span> csrfHeaders() { <span class="kw">return</span> { <span class="str">'x-csrf-token'</span>: csrfToken }; }
+<span class="kw">function</span> authHeaders() { <span class="kw">return</span> { authorization: <span class="str">'Bearer '</span> + accessToken }; }
+
+<span class="kw">async function</span> createOrder(provider, amount, currency) {
+  <span class="kw">await</span> refreshCsrf();
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">'/payments/order'</span>, {
+    method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+    headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, ...csrfHeaders(), ...authHeaders() },
+    body: JSON.stringify({ provider, amount, currency }),
+  });
+  <span class="kw">if</span> (!r.ok) <span class="kw">throw new</span> Error((<span class="kw">await</span> r.json()).error ?? r.statusText);
+  <span class="kw">return</span> (<span class="kw">await</span> r.json()).order;
+}
+
+<span class="kw">async function</span> captureOrder(orderId, provider, amount) {
+  <span class="kw">await</span> refreshCsrf();
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">`/payments/order/${orderId}/capture`</span>, {
+    method: <span class="str">'POST'</span>, credentials: <span class="str">'include'</span>,
+    headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, ...csrfHeaders(), ...authHeaders() },
+    body: JSON.stringify({ provider, amount }),
+  });
+  <span class="kw">return</span> (<span class="kw">await</span> r.json()).order;
+}
+
+<span class="kw">async function</span> getOrderStatus(orderId, provider) {
+  <span class="kw">const</span> r = <span class="kw">await</span> fetch(<span class="str">`/payments/order/${orderId}?provider=${provider}`</span>, {
+    headers: { ...authHeaders() },
+    credentials: <span class="str">'include'</span>,
+  });
+  <span class="kw">return</span> (<span class="kw">await</span> r.json()).order;
+}
+
+<span class="com">// Full checkout flow</span>
+<span class="kw">async function</span> checkout() {
+  <span class="com">// 1. Create the order with the gateway</span>
+  <span class="kw">const</span> order = <span class="kw">await</span> createOrder(<span class="str">'razorpay'</span>, <span class="num">99.50</span>, <span class="str">'INR'</span>);
+
+  <span class="com">// 2. Redirect to hosted checkout (customer pays on the gateway page)</span>
+  window.location.href = order.paymentUrl;
+
+  <span class="com">// 3. Gateway redirects back to returnUrl — poll status there</span>
+  <span class="com">//    (the webhook is the authoritative confirmation; this is for UI)</span>
+}
+
+<span class="com">// On the return page (e.g. /checkout/return?order_id=...)</span>
+<span class="kw">async function</span> confirmAndCapture(orderId) {
+  <span class="kw">const</span> order = <span class="kw">await</span> getOrderStatus(orderId, <span class="str">'razorpay'</span>);
+  <span class="kw">if</span> (order.status === <span class="str">'authorized'</span>) {
+    <span class="kw">await</span> captureOrder(orderId, <span class="str">'razorpay'</span>, order.amount);
+  }
+  <span class="com">// Show success/failed UI based on order.status</span>
+}</code></pre>
+
+  <div class="callout note">
+    <span class="label">Testing without live keys</span>
+    The <code>HttpTransport</code> is injectable, so unit/integration tests pass
+    a mock transport — no live gateway calls. The <code>log</code>-equivalent for
+    payments is to simply not set keys: <code>createPayments</code> returns a
+    service with an empty <code>providers</code> map, and the order route
+    returns <code>400</code> with a clear <code>"Enabled: none"</code> message.
+  </div>
+
+  <h2>Endpoint reference</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/payments/order</code></td><td>Bearer + CSRF</td><td>Create an order with a named provider.</td></tr>
+      <tr><td><code>POST</code></td><td><code>/payments/order/:id/capture</code></td><td>Bearer + CSRF</td><td>Capture an authorized order.</td></tr>
+      <tr><td><code>GET</code></td><td><code>/payments/order/:id</code></td><td>Bearer</td><td>Get order status (<code>?provider=</code> required).</td></tr>
+      <tr><td><code>POST</code></td><td><code>/payments/webhook/:provider</code></td><td>signature</td><td>Gateway webhook (no auth/CSRF — verified by signature).</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/orders</code></td><td>admin</td><td>Persisted orders (admin dashboard).</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/transactions</code></td><td>admin</td><td>Webhook event log.</td></tr>
+      <tr><td><code>GET</code></td><td><code>/admin/payments/status</code></td><td>admin</td><td>Per-provider enabled/configured/sandbox/live status.</td></tr>
+    </tbody>
+  </table>
+
+  <p class="foot"><a href="guide-email.html">&larr; Send Email</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-empty-project.html">From Empty Project →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · Payments Integration</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

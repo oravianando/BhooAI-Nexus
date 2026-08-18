@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Send Email — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Send Email <span class="sub">The Nexus email service — providers (log for dev, SMTP for prod), a tiny template engine, and a retry queue, with working register-confirmation and password-reset examples.</span></h1>
+
+  <p><code>@bhooai/nexus-email</code> is a small, dependency-light email service:
+     a pluggable provider (<code>log</code> or <code>smtp</code> via nodemailer),
+     a template engine with <code>{{var}}</code> / <code>{{#if}}</code> /
+     <code>{{#each}}</code>, and an optional send queue with exponential backoff
+     retries. No Handlebars, no external queue daemon.</p>
+
+  <h2>1. Config in <code>nexus.config.ts</code></h2>
+  <p>The <code>email</code> section of the config selects the provider and the
+     <code>from</code> address. SMTP connection details go in <code>.env</code>,
+     not the config file.</p>
+  <pre><code><span class="com">// nexus.config.ts</span>
+email: {
+  provider: <span class="str">'log'</span>,              <span class="com">// 'log' for dev, 'smtp' for prod</span>
+  from: <span class="str">'no-reply@myapp.com'</span>,
+  <span class="com">// smtp: { host, port, secure, user, pass } — set via .env in prod</span>
+}</code></pre>
+
+  <h2>2. SMTP settings in <code>.env</code></h2>
+  <p>When <code>provider: 'smtp'</code>, the service reads SMTP connection details
+     from config. The cleanest path is to put them in <code>.env</code> via
+     <code>NEXUS_EMAIL_SMTP_*</code> env vars, which map to
+     <code>email.smtp.{host,port,secure,user,pass}</code>.</p>
+  <pre><code><span class="com"># .env — SMTP provider (production)</span>
+NEXUS_EMAIL_PROVIDER=smtp
+NEXUS_EMAIL_FROM=no-reply@myapp.com
+NEXUS_EMAIL_SMTP_HOST=smtp.your-provider.com
+NEXUS_EMAIL_SMTP_PORT=587
+NEXUS_EMAIL_SMTP_SECURE=false          <span class="com"># true for port 465 (implicit TLS)</span>
+NEXUS_EMAIL_SMTP_USER=apikey
+NEXUS_EMAIL_SMTP_PASS=SG.xxxxxxxxxxxxx</code></pre>
+  <div class="callout warn">
+    <span class="label">Env → config mapping</span>
+    <code>NEXUS_*</code> env vars map to nested config by splitting on
+    <code>_</code>. So <code>NEXUS_EMAIL_SMTP_HOST</code> becomes
+    <code>email.smtp.host</code>. Boolean fields (<code>secure</code>) coerce
+    <code>true</code>/<code>false</code> strings; numeric fields
+    (<code>port</code>) parse to integers.
+  </div>
+
+  <h2>3. The <code>TemplateEngine</code></h2>
+  <p>The engine supports <code>{{var}}</code> interpolation, nested paths
+     (<code>{{a.b.c}}</code>), <code>{{#if cond}}…{{else}}…{{/if}}</code>
+     conditionals, and <code>{{#each items}}…{{this}}…{{/each}}</code> iteration
+     over arrays. Each transformation runs as a sequential render chain:
+     <code>each → if → interpolate</code>.</p>
+  <pre><code><span class="kw">import</span> { TemplateEngine } <span class="kw">from</span> <span class="str">'@bhooai/nexus-email'</span>;
+
+<span class="kw">const</span> templates = <span class="kw">new</span> TemplateEngine();
+templates.register(<span class="str">'welcome'</span>, <span class="str">`
+  &lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;
+  &lt;p&gt;Verify your email to get started.&lt;/p&gt;
+  &lt;a href="{{verifyUrl}}"&gt;Verify now&lt;/a&gt;
+`</span>);
+
+templates.register(<span class="str">'reset'</span>, <span class="str">`
+  &lt;h1&gt;Reset your password&lt;/h1&gt;
+  &lt;p&gt;We received a request to reset your password.&lt;/p&gt;
+  {{#if resetUrl}}
+    &lt;a href="{{resetUrl}}"&gt;Reset now&lt;/a&gt;
+  {{else}}
+    &lt;p&gt;If this wasn't you, ignore this email.&lt;/p&gt;
+  {{/if}}
+`</span>);
+
+templates.register(<span class="str">'digest'</span>, <span class="str">`
+  &lt;h1&gt;Your weekly digest&lt;/h1&gt;
+  &lt;ul&gt;
+  {{#each items}}
+    &lt;li&gt;{{this.title}} — {{this.url}}&lt;/li&gt;
+  {{/each}}
+  &lt;/ul&gt;
+`</span>);</code></pre>
+
+  <h2>4. <code>email.send()</code> API</h2>
+  <p><code>createEmail(config, { templates })</code> returns an
+     <code>EmailService</code> with <code>send()</code> and <code>queue()</code>.
+     When <code>template</code> is named, the service renders it against
+     <code>vars</code> before handing the rendered HTML to the provider.</p>
+  <pre><code><span class="kw">import</span> { createEmail, TemplateEngine } <span class="kw">from</span> <span class="str">'@bhooai/nexus-email'</span>;
+
+<span class="kw">const</span> templates = <span class="kw">new</span> TemplateEngine();
+templates.register(<span class="str">'welcome'</span>, <span class="str">'&lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;&lt;p&gt;Verify {{email}}.&lt;/p&gt;'</span>);
+<span class="kw">const</span> email = createEmail(config.email, { templates });
+
+<span class="kw">await</span> email.send({
+  to: <span class="str">'ravi@example.com'</span>,
+  template: <span class="str">'welcome'</span>,
+  vars: { name: <span class="str">'Ravi'</span>, email: <span class="str">'ravi@example.com'</span> },
+});</code></pre>
+  <table>
+    <thead><tr><th><code>EmailInput</code> field</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>to</code></td><td><code>string | string[]</code></td><td>Required.</td></tr>
+      <tr><td><code>subject</code></td><td><code>string</code></td><td>Required; <code>{{var}}</code> is rendered when a template is used.</td></tr>
+      <tr><td><code>template</code></td><td><code>string</code></td><td>Named template to render (must be registered).</td></tr>
+      <tr><td><code>vars</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Variables for the template.</td></tr>
+      <tr><td><code>html</code></td><td><code>string</code></td><td>Inline HTML body (alternative to <code>template</code>).</td></tr>
+      <tr><td><code>text</code></td><td><code>string</code></td><td>Plain-text body.</td></tr>
+      <tr><td><code>cc</code> / <code>bcc</code></td><td><code>string | string[]</code></td><td>Optional.</td></tr>
+      <tr><td><code>attachments</code></td><td><code>EmailAttachment[]</code></td><td>Inline content or file path.</td></tr>
+      <tr><td><code>replyTo</code></td><td><code>string</code></td><td>Optional.</td></tr>
+      <tr><td><code>headers</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Optional custom headers.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. Example: welcome email on user registration</h2>
+  <p>The scaffold already registers a <code>welcome</code> template in
+     <code>main.ts</code>. To send it, hook into your registration flow.</p>
+  <pre><code><span class="com">// apps/backend/src/modules/auth/authRoutes.ts (inside /auth/register)</span>
+<span class="kw">const</span> [user] = <span class="kw">await</span> User.create({ email, name, passwordHash, roles });
+<span class="kw">const</span> pair = <span class="kw">await</span> service.login({ userId: String(user._id), roles });
+
+<span class="com">// Send the welcome email (fire-and-forget; don't block registration)</span>
+email.send({
+  to: user.email,
+  template: <span class="str">'welcome'</span>,
+  vars: { name: user.name ?? user.email, verifyUrl: <span class="str">`https://myapp.com/verify?token=...`</span> },
+}).catch((err) =&gt; log.warn(<span class="str">'welcome email failed'</span>, { msg: err.message }));
+
+setAuthCookies(ctx, pair, { ... });
+ctx.json({ user: publicUser(user), accessToken: pair.accessToken, refreshToken: pair.refreshToken });</code></pre>
+  <pre><code><span class="com">// The 'welcome' template (registered in main.ts)</span>
+templates.register(<span class="str">'welcome'</span>, <span class="str">`
+  &lt;h1&gt;Welcome, {{name}}!&lt;/h1&gt;
+  &lt;p&gt;Verify your email to get started.&lt;/p&gt;
+  &lt;a href="{{verifyUrl}}"&gt;Verify now&lt;/a&gt;
+`</span>);</code></pre>
+
+  <h2>6. Example: password reset email</h2>
+  <pre><code><span class="com">// Register the template</span>
+templates.register(<span class="str">'reset'</span>, <span class="str">`
+  &lt;h1&gt;Reset your password&lt;/h1&gt;
+  &lt;p&gt;We received a request to reset your password.&lt;/p&gt;
+  &lt;a href="{{resetUrl}}"&gt;Reset now&lt;/a&gt;
+  &lt;p&gt;If this wasn't you, ignore this email.&lt;/p&gt;
+`</span>);
+
+<span class="com">// Route: POST /auth/password/request-reset</span>
+router.post(<span class="str">'/auth/password/request-reset'</span>, <span class="kw">async</span> (ctx) =&gt; {
+  <span class="kw">const</span> { email } = (ctx.body ?? {}) <span class="kw">as</span> { email?: <span class="kw">string</span> };
+  <span class="kw">const</span> User = getUserModel();
+  <span class="kw">const</span> user = <span class="kw">await</span> User.findOne({ email: email?.toLowerCase() }).lean();
+  <span class="com">// Don't reveal whether the email exists — always 200</span>
+  <span class="kw">if</span> (!user) { ctx.json({ ok: <span class="kw">true</span> }); <span class="kw">return</span>; }
+
+  <span class="kw">const</span> resetToken = randomBytes(<span class="num">24</span>).toString(<span class="str">'hex'</span>);
+  <span class="kw">await</span> User.updateOne({ _id: user._id }, { $set: { resetToken, resetExpires: <span class="kw">new</span> Date(Date.now() + <span class="num">15</span> * <span class="num">60_000</span>) } });
+
+  <span class="kw">await</span> email.send({
+    to: user.email,
+    template: <span class="str">'reset'</span>,
+    vars: { name: user.name ?? user.email, resetUrl: <span class="str">`https://myapp.com/reset?token=${resetToken}`</span> },
+  });
+
+  ctx.json({ ok: <span class="kw">true</span> });
+});</code></pre>
+  <div class="callout note">
+    <span class="label">Don't leak account existence</span>
+    Always return <code>{ ok: true }</code> for password-reset requests,
+    regardless of whether the email exists. Otherwise you've built an
+    email-enumeration endpoint.
+  </div>
+
+  <h2>7. Using the <code>log</code> provider for development</h2>
+  <p>When <code>email.provider === 'log'</code>, the <code>LogProvider</code>
+     prints the rendered email to the console (or a custom logger) instead of
+     sending it. No SMTP server needed.</p>
+  <pre><code><span class="com">// nexus.config.ts — development default</span>
+email: { provider: <span class="str">'log'</span>, from: <span class="str">'no-reply@myapp.local'</span> }</code></pre>
+  <pre><code><span class="com">// Console output when email.send() is called</span>
+[nexus-email] {<span class="str">"name"</span>:<span class="str">"ravi@example.com"</span>,<span class="str">"subject"</span>:<span class="str">"Welcome"</span>,<span class="str">"text"</span>:<span class="str">"&lt;h1&gt;Welcome, Ravi!&lt;/h1&gt;..."</span>}</code></pre>
+  <div class="callout note">
+    <span class="label">Tests use a JSON transport</span>
+    The <code>SmtpProvider</code> accepts an injectable nodemailer
+    <code>Transport</code>. Tests pass <code>jsonTransport</code> so no network
+    is involved and the rendered email is captured in-memory.
+  </div>
+
+  <h2>8. Switching to <code>smtp</code> for production</h2>
+  <p>Flip the provider and add the SMTP env vars. No code changes — the same
+     <code>email.send()</code> call now goes through nodemailer.</p>
+  <pre><code><span class="com"># .env (production)</span>
+NEXUS_EMAIL_PROVIDER=smtp
+NEXUS_EMAIL_FROM=no-reply@myapp.com
+NEXUS_EMAIL_SMTP_HOST=smtp.sendgrid.net
+NEXUS_EMAIL_SMTP_PORT=587
+NEXUS_EMAIL_SMTP_SECURE=false
+NEXUS_EMAIL_SMTP_USER=apikey
+NEXUS_EMAIL_SMTP_PASS=SG.xxxxxxxxxxxxx</code></pre>
+  <p>Common providers: SendGrid (<code>smtp.sendgrid.net</code>, user
+     <code>apikey</code>), Mailgun, Postmark, AWS SES, Gmail (for low volume
+     only — use an app password, not your main password).</p>
+
+  <h2>9. The send queue (optional)</h2>
+  <p>For background delivery with retries, configure a queue backend. The
+     worker drains it with exponential backoff up to <code>maxAttempts</code>
+     (default 3).</p>
+  <pre><code><span class="kw">const</span> email = createEmail(config.email, { templates, queue: <span class="kw">new</span> MemoryQueue() });
+
+<span class="kw">await</span> email.queue({ to: user.email, template: <span class="str">'welcome'</span>, vars: { ... } });
+email.startWorker();   <span class="com">// idempotent — drains the queue with retries</span></code></pre>
+  <p>The backoff is <code>250ms * 2^(attempt-1)</code>. After
+     <code>maxAttempts</code> failures the job is dropped (in production this
+     should go to a dead-letter store).</p>
+
+  <div class="callout warn">
+    <span class="label">From-address reputation</span>
+    Use a real <code>from</code> on a domain you control, with SPF/DKIM/DMARC
+    configured. <code>no-reply@myapp.local</code> is fine for <code>log</code>
+    mode but will be rejected or spam-foldered by every real inbox.
+  </div>
+
+  <p class="foot"><a href="guide-websocket.html">&larr; WebSocket Chat</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-payments.html">Payments Integration →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · Send Email</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,796 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Core API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-core</span> Core API
+    <span class="sub">Config, DI, errors, and the inbuilt HTTP server.</span></h1>
+
+  <p>The framework core. Everything else builds on it. No express — the HTTP server is custom on
+     <code>node:http</code> with a trie router and a middleware pipeline.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>config (loaders)</td><td><code>loadConfig</code>, <code>loadConfigAuto</code>, <code>mergeConfig</code></td></tr>
+      <tr><td>config (env)</td><td><code>configFromEnv</code>, <code>loadEnvFile</code></td></tr>
+      <tr><td>config (helpers)</td><td><code>resolvePath</code>, <code>frameworkDefaultConfigPath</code>, <code>discoverUserConfigPath</code></td></tr>
+      <tr><td>config (merge/validate)</td><td><code>deepMerge</code>, <code>isPlainObject</code>, <code>nexusConfigSchema</code>, <code>defaults</code></td></tr>
+      <tr><td>config (types)</td><td><code>NexusConfig</code>, <code>UserNexusConfig</code>, <code>DeepPartial</code>, <code>Env</code>, <code>LoadOptions</code>, <code>ValidatedNexusConfig</code> + all sub-interfaces (see <a href="#config-types">Config types</a>)</td></tr>
+      <tr><td>http (server/router)</td><td><code>Router</code>, <code>NexusServer</code>, <code>ServerOptions</code></td></tr>
+      <tr><td>http (body/uploads)</td><td><code>bodyParser</code>, <code>readBody</code>, <code>parseUrlEncoded</code>, <code>parseMultipart</code>, <code>UploadedFile</code>, <code>registerUploadRoutes</code>, <code>uploadedFiles</code>, <code>UploadRouteOptions</code>, <code>SavedUpload</code></td></tr>
+      <tr><td>http (static/context)</td><td><code>serveStatic</code>, <code>createContext</code>, <code>isAlive</code>, <code>newRequestId</code></td></tr>
+      <tr><td>http (context types)</td><td><code>RequestContext</code>, <code>Params</code>, <code>State</code>, <code>Next</code>, <code>Middleware</code>, <code>Handler</code></td></tr>
+      <tr><td>di</td><td><code>Container</code>, <code>ResolutionError</code>, <code>Factory</code>, <code>Lifetime</code></td></tr>
+      <tr><td>errors</td><td><code>NexusError</code>, <code>ConfigError</code>, <code>ValidationError</code>, <code>AuthenticationError</code>, <code>AuthorizationError</code>, <code>NotFoundError</code>, <code>ConflictError</code>, <code>PaymentError</code>, <code>toNexusError</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Config — loaders</h2>
+
+  <h3 id="loadConfig">loadConfig(opts?)</h3>
+  <pre><code><span class="kw">async function</span> loadConfig(opts?: LoadOptions): Promise&lt;NexusConfig&gt;</code></pre>
+  <p>Load and merge configuration in precedence order, then validate with the zod schema and return a
+     <strong>frozen</strong>, typed config. The precedence (low → high):</p>
+  <pre><code>code defaults &lt; framework default (nexus.config.ts) &lt; user config
+        &lt; nexus.runtime.json &lt; NEXUS_* env vars &lt; CLI flags</code></pre>
+  <pre><code><span class="kw">const</span> config = <span class="kw">await</span> loadConfig({
+  root: process.cwd(),
+  userConfigPath: <span class="str">'./nexus.config.ts'</span>,   <span class="com">// optional — auto-imported if omitted</span>
+  defaultConfigPath: <span class="str">'./nexus/nexus.config.ts'</span>, <span class="com">// optional framework base layer</span>
+  runtimePath: <span class="str">'./nexus.runtime.json'</span>,   <span class="com">// optional — defaults to &lt;root&gt;/nexus.runtime.json</span>
+  env: process.env,                       <span class="com">// optional override (tests)</span>
+  cli: { server: { port: 5000 } },        <span class="com">// optional — highest precedence</span>
+});
+config.server.port; config.db.uri; config.graphql.path;</code></pre>
+  <div class="callout note">
+    <span class="label">Frozen</span>
+    The returned object is <code>Object.freeze</code>d. Mutate by writing <code>nexus.runtime.json</code>
+    (admin write-back) or setting <code>NEXUS_*</code> env vars.
+  </div>
+
+  <h3 id="loadConfigAuto">loadConfigAuto(opts?)</h3>
+  <pre><code><span class="kw">async function</span> loadConfigAuto(
+  opts?: Omit&lt;LoadOptions, <span class="str">'userConfig'</span> | <span class="str">'userConfigPath'</span> | <span class="str">'defaultConfigPath'</span>&gt;
+): Promise&lt;NexusConfig&gt;</code></pre>
+  <p>Auto-discover and load config with the framework's two-level model — this is what
+     <code>apps/backend/src/main.ts</code> and the CLI use. It locates the framework's shipped default
+     (<code>nexus/nexus.config.ts</code>) via <code>frameworkDefaultConfigPath()</code> and the nearest
+     user <code>nexus.config.{ts,js,mjs,cjs}</code> walking <em>up</em> from <code>root</code> via
+     <code>discoverUserConfigPath()</code>, skipping the default path so the framework's own example config
+     doesn't shadow a user-editable one at the project root.</p>
+  <pre><code><span class="kw">const</span> config = <span class="kw">await</span> loadConfigAuto({ root: process.cwd() });
+<span class="com">//   = defaults &lt; framework default &lt; user config &lt; runtime.json &lt; env &lt; cli</span></code></pre>
+  <div class="callout note">
+    <span class="label">When to use which</span>
+    Use <code>loadConfigAuto</code> for app boot (it discovers config for you). Use <code>loadConfig</code>
+    in tests or when you already have the user config object in hand and want explicit control over every layer.
+  </div>
+
+  <h3 id="mergeConfig">mergeConfig(...sources)</h3>
+  <pre><code><span class="kw">function</span> mergeConfig(...sources: DeepPartial&lt;NexusConfig&gt;[]): NexusConfig</code></pre>
+  <p>Read-only accessor for tests/bootstrap that don't need file loading. Deep-merges the given sources
+     over the code <code>defaults</code>, validates with the zod schema, and returns a frozen config.</p>
+  <pre><code><span class="kw">const</span> cfg = mergeConfig({ server: { port: 5000 } }, { graphql: { introspection: <span class="kw">false</span> } });</code></pre>
+
+  <h2>Config — environment</h2>
+
+  <h3 id="configFromEnv">configFromEnv(env?)</h3>
+  <pre><code><span class="kw">function</span> configFromEnv(env: NodeJS.ProcessEnv = process.env): DeepPartial&lt;NexusConfig&gt;</code></pre>
+  <p>Build a config-override object from <code>NEXUS_*</code> environment variables. Nested keys use
+     <code>_</code> as a separator: <code>NEXUS_SERVER_PORT</code> → <code>{ server: { port } }</code>.</p>
+  <p>Type coercion is applied: integers for numeric fields, booleans for <code>true</code>/<code>false</code>,
+     otherwise strings. Known two-segment compounds collapse into a single camelCase key so that, for
+     example, <code>NEXUS_PAYMENTS_RAZORPAY_KEY_ID</code> maps to <code>payments.razorpay.keyId</code>
+     (not <code>payments.razorpay.key.id</code>).</p>
+  <table>
+    <thead><tr><th>Compound env suffix</th><th>Config key</th></tr></thead>
+    <tbody>
+      <tr><td><code>key_id</code> / <code>key_secret</code></td><td><code>keyId</code> / <code>keySecret</code></td></tr>
+      <tr><td><code>client_id</code> / <code>client_secret</code></td><td><code>clientId</code> / <code>clientSecret</code></td></tr>
+      <tr><td><code>merchant_key</code> / <code>merchant_email</code></td><td><code>merchantKey</code> / <code>merchantEmail</code></td></tr>
+      <tr><td><code>program_id</code> / <code>api_key</code></td><td><code>programId</code> / <code>apiKey</code></td></tr>
+      <tr><td><code>webhook_secret</code> / <code>customer_id</code></td><td><code>webhookSecret</code> / <code>customerId</code></td></tr>
+      <tr><td><code>developer_token</code> / <code>refresh_token</code></td><td><code>developerToken</code> / <code>refreshToken</code></td></tr>
+      <tr><td><code>access_ttl</code> / <code>refresh_ttl</code></td><td><code>accessTtl</code> / <code>refreshTtl</code></td></tr>
+      <tr><td><code>callback_path</code> / <code>registry_file</code></td><td><code>callbackPath</code> / <code>registryFile</code></td></tr>
+      <tr><td><code>lb_port</code> / <code>lb_host</code></td><td><code>lbPort</code> / <code>lbHost</code></td></tr>
+      <tr><td><code>node_agent_port</code> / <code>node_agent_host</code></td><td><code>nodeAgentPort</code> / <code>nodeAgentHost</code></td></tr>
+      <tr><td><code>min_nodes</code> / <code>max_nodes</code></td><td><code>minNodes</code> / <code>maxNodes</code></td></tr>
+      <tr><td><code>cooldown_ms</code> / <code>cpu_high</code></td><td><code>cooldownMs</code> / <code>cpuHigh</code></td></tr>
+      <tr><td><code>rps_per_node_high</code> / <code>rps_per_node_low</code></td><td><code>rpsPerNodeHigh</code> / <code>rpsPerNodeLow</code></td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">const</span> override = configFromEnv(process.env);
+<span class="com">// NEXUS_SERVER_PORT=5000 → { server: { port: 5000 } }</span>
+<span class="com">// NEXUS_AUTH_GOOGLE_CLIENT_SECRET=abc → { auth: { google: { clientSecret: 'abc' } } }</span></code></pre>
+
+  <h3 id="loadEnvFile">loadEnvFile(root, env)</h3>
+  <pre><code><span class="kw">function</span> loadEnvFile(root: <span class="kw">string</span>, env: NodeJS.ProcessEnv): <span class="kw">void</span></code></pre>
+  <p>Load <code>&lt;root&gt;/.env</code> into the given <code>env</code> object <strong>without overriding</strong>
+     variables that are already set (a real environment value always wins). Dependency-free: parses
+     <code>KEY=VALUE</code> (optional <code>export </code> prefix), <code>#</code> comments, blank lines,
+     and optional single/double quotes.</p>
+  <p><code>loadConfig</code> calls this for you when <code>opts.env</code> is not passed. Call it directly
+     only if you need <code>.env</code> loaded outside the config flow (e.g. a CLI that reads secrets
+     before the config stack is built). Double-loading is harmless — it's idempotent.</p>
+
+  <h2>Config — helpers</h2>
+
+  <h3 id="resolvePath">resolvePath(cfg, rel)</h3>
+  <pre><code><span class="kw">function</span> resolvePath(cfg: NexusConfig, rel: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Resolve a path. (Currently resolves against <code>process.cwd()</code>; accepts a config for API
+     symmetry with future root-aware resolution.)</p>
+
+  <h3 id="frameworkDefaultConfigPath">frameworkDefaultConfigPath()</h3>
+  <pre><code><span class="kw">function</span> frameworkDefaultConfigPath(): <span class="kw">string</span></code></pre>
+  <p>Path to the framework's own shipped <code>nexus.config.ts</code>, resolved relative to this module
+     so it works both via <code>tsx</code> (src) and compiled (dist). When <code>@bhooai/nexus-core</code>
+     is installed inside a user app's <code>node_modules/</code>, this resolves to a non-existent path —
+     it is then simply skipped (a user app does not inherit the framework's example config).</p>
+
+  <h3 id="discoverUserConfigPath">discoverUserConfigPath(root, exclude?)</h3>
+  <pre><code><span class="kw">function</span> discoverUserConfigPath(root: <span class="kw">string</span>, exclude?: <span class="kw">string</span>): <span class="kw">string</span> | <span class="kw">undefined</span></code></pre>
+  <p>First <code>nexus.config.{ts,js,mjs,cjs}</code> found walking <strong>up</strong> from <code>root</code>,
+     skipping <code>exclude</code>. Stops at the filesystem root. Used by <code>loadConfigAuto</code> to
+     find the user config while skipping the framework default.</p>
+
+  <h2>Config — merge &amp; validate</h2>
+
+  <h3 id="deepMerge">deepMerge(base, ...sources)</h3>
+  <pre><code><span class="kw">function</span> deepMerge&lt;T&gt;(base: T, ...sources: <span class="kw">unknown</span>[]): T</code></pre>
+  <p>Deep merge of plain objects. Later sources win. <strong>Arrays are replaced, not concatenated</strong>
+     (config arrays are declarative). Non-plain objects (e.g. <code>Date</code>, <code>RegExp</code>) are
+     assigned by reference. <code>undefined</code> values in sources are skipped.</p>
+
+  <h3 id="isPlainObject">isPlainObject(v)</h3>
+  <pre><code><span class="kw">function</span> isPlainObject(v: <span class="kw">unknown</span>): v <span class="kw">is</span> Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;</code></pre>
+  <p>True if <code>v</code> is a plain object (prototype is <code>Object.prototype</code> or <code>null</code>).
+     Used by <code>deepMerge</code> to decide between recursive merge and reference assignment.</p>
+
+  <h3 id="nexusConfigSchema">nexusConfigSchema</h3>
+  <pre><code><span class="kw">const</span> nexusConfigSchema: z.ZodObject&lt;...&gt;</code></pre>
+  <p>Zod validation schema for the merged <code>NexusConfig</code>. Validates types and the most
+     error-prone fields (ports, URLs, TTLs, JWT secret length ≥ 8). Provider sub-configs use a permissive
+     record so custom keys flow through. <code>loadConfig</code> and <code>mergeConfig</code> both
+     <code>.parse()</code> through this schema before returning.</p>
+  <pre><code><span class="kw">import</span> { nexusConfigSchema } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+<span class="kw">const</span> parsed = nexusConfigSchema.parse(maybeConfig);</code></pre>
+
+  <h3 id="defaults">defaults</h3>
+  <pre><code><span class="kw">const</span> defaults: NexusConfig</code></pre>
+  <p>The code-level defaults — the lowest-precedence layer of the config stack. Every field is present
+     so a config that supplies nothing still boots. See the <a href="#config-types">Config types</a>
+     section for the per-field defaults.</p>
+
+  <h2 id="config-types">Config types</h2>
+  <p>The single config object is typed by <code>NexusConfig</code>; user config files use
+     <code>UserNexusConfig = DeepPartial&lt;NexusConfig&gt;</code>.</p>
+
+  <h3>NexusConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>env</code></td><td><code>Env</code> = <code>'development'|'production'|'test'</code></td><td><code>'development'</code></td><td>Runtime environment.</td></tr>
+      <tr><td><code>server</code></td><td><code>ServerConfig</code></td><td>—</td><td>HTTP server.</td></tr>
+      <tr><td><code>uploads</code></td><td><code>UploadsConfig</code></td><td>—</td><td>Multipart upload storage.</td></tr>
+      <tr><td><code>db</code></td><td><code>DbConfig</code></td><td>—</td><td>MongoDB connection.</td></tr>
+      <tr><td><code>redis</code></td><td><code>RedisConfig</code></td><td>—</td><td>Redis connection.</td></tr>
+      <tr><td><code>graphql</code></td><td><code>GraphqlConfig</code></td><td>—</td><td>GraphQL endpoint &amp; federation.</td></tr>
+      <tr><td><code>ws</code></td><td><code>WsConfig</code></td><td>—</td><td>WebSocket server.</td></tr>
+      <tr><td><code>auth</code></td><td><code>AuthConfig</code></td><td>—</td><td>JWT, cookies, OAuth.</td></tr>
+      <tr><td><code>payments</code></td><td><code>PaymentsConfig</code></td><td>—</td><td>Payment gateways &amp; webhooks.</td></tr>
+      <tr><td><code>email</code></td><td><code>EmailConfig</code></td><td>—</td><td>Email provider.</td></tr>
+      <tr><td><code>certs</code></td><td><code>CertsConfig</code></td><td>—</td><td>TLS cert / key generation.</td></tr>
+      <tr><td><code>ads</code></td><td><code>AdsConfig</code></td><td>—</td><td>Google Ads.</td></tr>
+      <tr><td><code>webrtc</code></td><td><code>WebRtcConfig</code></td><td>—</td><td>mediasoup SFU.</td></tr>
+      <tr><td><code>ai</code></td><td><code>AiConfig</code></td><td>—</td><td>AI server &amp; providers.</td></tr>
+      <tr><td><code>logging</code></td><td><code>LoggingConfig</code></td><td>—</td><td>Logger.</td></tr>
+      <tr><td><code>plugins</code></td><td><code>PluginsConfig</code></td><td>—</td><td>Plugin directory &amp; entries.</td></tr>
+      <tr><td><code>frontend</code></td><td><code>FrontendConfig</code></td><td>—</td><td>User-facing Vite app.</td></tr>
+      <tr><td><code>admin</code></td><td><code>AdminConfig</code></td><td>—</td><td>Admin console Vite app.</td></tr>
+      <tr><td><code>cluster</code></td><td><code>ClusterConfig</code></td><td>—</td><td>Mesh / LB / autoscaler.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ServerConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>port</code></td><td><code>number</code></td><td><code>4000</code></td><td>Listen port.</td></tr>
+      <tr><td><code>host</code></td><td><code>string</code></td><td><code>'127.0.0.1'</code></td><td>Bind host.</td></tr>
+      <tr><td><code>https</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Serve over HTTPS using <code>certFile</code>/<code>keyFile</code>.</td></tr>
+      <tr><td><code>certFile?</code></td><td><code>string</code></td><td>—</td><td>TLS cert path (relative to root).</td></tr>
+      <tr><td><code>keyFile?</code></td><td><code>string</code></td><td>—</td><td>TLS key path (relative to root).</td></tr>
+      <tr><td><code>trustProxy</code></td><td><code>boolean | number</code></td><td><code>false</code></td><td>Trust <code>X-Forwarded-*</code> — number of hops or <code>true</code>.</td></tr>
+      <tr><td><code>bodyLimit</code></td><td><code>number</code></td><td><code>12582912</code> (12 MiB)</td><td>Max request body in bytes.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>UploadsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>dir</code></td><td><code>string</code></td><td><code>'uploads'</code></td><td>Persisted files dir (relative to root).</td></tr>
+      <tr><td><code>path</code></td><td><code>string</code></td><td><code>'/uploads'</code></td><td>Public URL path.</td></tr>
+      <tr><td><code>maxFileSize</code></td><td><code>number</code></td><td><code>10485760</code> (10 MiB)</td><td>Max size of one file in bytes.</td></tr>
+      <tr><td><code>maxFiles</code></td><td><code>number</code></td><td><code>20</code></td><td>Max files per request.</td></tr>
+      <tr><td><code>allowedTypes</code></td><td><code>string[]</code></td><td><code>[]</code></td><td>Empty = all MIME types.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>DbConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>uri</code></td><td><code>string</code></td><td><code>'mongodb://localhost:27017/nexus'</code></td><td>MongoDB URI.</td></tr>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>—</td><td>DB name override (else taken from the URI).</td></tr>
+      <tr><td><code>maxPoolSize</code></td><td><code>number</code></td><td><code>10</code></td><td>Connection pool size.</td></tr>
+      <tr><td><code>autoIndex</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Auto-create schema-declared indexes on boot.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>RedisConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>url</code></td><td><code>string</code></td><td><code>'redis://localhost:6379'</code></td><td>Redis URL.</td></tr>
+      <tr><td><code>keyPrefix</code></td><td><code>string</code></td><td><code>'nexus:'</code></td><td>Key prefix for namespacing.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>GraphqlConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>path</code></td><td><code>string</code></td><td><code>'/graphql'</code></td><td>Mount path.</td></tr>
+      <tr><td><code>federation</code></td><td><code>'in-process' | 'distributed'</code></td><td><code>'in-process'</code></td><td>Monolith vs HTTP subgraphs.</td></tr>
+      <tr><td><code>subscriptions</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Enable GraphQL over WebSocket.</td></tr>
+      <tr><td><code>introspection</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Disable in production.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>WsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>path</code></td><td><code>string</code></td><td><code>'/ws'</code></td><td>WS listen path.</td></tr>
+      <tr><td><code>heartbeatMs</code></td><td><code>number</code></td><td><code>30000</code></td><td>Ping interval in ms.</td></tr>
+      <tr><td><code>requireCsrf</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Require CSRF token + origin check on upgrade.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AuthConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>jwt</code></td><td><code>JwtConfig</code></td><td>—</td><td>JWT settings (below).</td></tr>
+      <tr><td><code>cookieName</code></td><td><code>string</code></td><td><code>'nexus_sid'</code></td><td>Access-token cookie.</td></tr>
+      <tr><td><code>refreshCookieName</code></td><td><code>string</code></td><td><code>'nexus_rid'</code></td><td>Refresh-token cookie.</td></tr>
+      <tr><td><code>google?</code></td><td><code>OAuthProviderConfig</code></td><td>—</td><td>Google OAuth.</td></tr>
+      <tr><td><code>facebook?</code></td><td><code>OAuthProviderConfig</code></td><td>—</td><td>Facebook OAuth.</td></tr>
+      <tr><td><code>requireEmailVerification</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Require email verification before login.</td></tr>
+    </tbody>
+  </table>
+  <h4>JwtConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>secret</code></td><td><code>string</code></td><td><code>'change-me-please'</code></td><td>JWT signing secret (≥ 8 chars per schema).</td></tr>
+      <tr><td><code>accessTtl</code></td><td><code>number</code> (seconds)</td><td><code>900</code> (15 min)</td><td>Access-token TTL in <strong>seconds</strong>.</td></tr>
+      <tr><td><code>refreshTtl</code></td><td><code>number</code> (seconds)</td><td><code>2592000</code> (30 days)</td><td>Refresh-token TTL in <strong>seconds</strong>.</td></tr>
+      <tr><td><code>issuer</code></td><td><code>string</code></td><td><code>'bhooai-nexus'</code></td><td>JWT issuer.</td></tr>
+      <tr><td><code>audience</code></td><td><code>string</code></td><td><code>'bhooai-nexus-client'</code></td><td>JWT audience.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <span class="label">TTLs are numbers (seconds)</span>
+    <code>accessTtl</code> / <code>refreshTtl</code> are <strong>numbers of seconds</strong>, not duration
+    strings. Pass e.g. <code>60 * 15</code> or <code>900</code>, not <code>'15m'</code>.
+  </div>
+  <h4>OAuthProviderConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>clientId</code></td><td><code>string</code></td><td>OAuth client id.</td></tr>
+      <tr><td><code>clientSecret</code></td><td><code>string</code></td><td>OAuth client secret.</td></tr>
+      <tr><td><code>callbackPath</code></td><td><code>string</code></td><td>OAuth redirect path relative to the server root (e.g. <code>/auth/google/callback</code>).</td></tr>
+      <tr><td><code>scope</code></td><td><code>string</code></td><td>Space-separated OAuth scopes.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>PaymentsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>razorpay?</code></td><td><code>PaymentsProviderConfig</code></td><td>—</td><td>Razorpay.</td></tr>
+      <tr><td><code>paypal?</code></td><td><code>PaymentsProviderConfig</code></td><td>—</td><td>PayPal.</td></tr>
+      <tr><td><code>payu?</code></td><td><code>PaymentsProviderConfig</code></td><td>—</td><td>PayU.</td></tr>
+      <tr><td><code>skrill?</code></td><td><code>PaymentsProviderConfig</code></td><td>—</td><td>Skrill.</td></tr>
+      <tr><td><code>payoneer?</code></td><td><code>PaymentsProviderConfig</code></td><td>—</td><td>Payoneer.</td></tr>
+      <tr><td><code>webhookPath</code></td><td><code>string</code></td><td><code>'/payments/webhook/:provider'</code></td><td>Webhook mount path (must include <code>:provider</code>).</td></tr>
+      <tr><td><code>currency</code></td><td><code>string</code> (ISO 4217)</td><td><code>'INR'</code></td><td>Default currency.</td></tr>
+    </tbody>
+  </table>
+  <h4>PaymentsProviderConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>—</td><td>Provider on/off.</td></tr>
+      <tr><td><code>sandbox</code></td><td><code>boolean</code></td><td>—</td><td>Sandbox/test mode.</td></tr>
+      <tr><td><code>[key]</code></td><td><code>unknown</code></td><td>—</td><td>Provider-specific keys (apiKey, etc.).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmailConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider</code></td><td><code>'smtp' | 'log'</code></td><td><code>'log'</code></td><td><code>'log'</code> never sends; <code>'smtp'</code> uses nodemailer.</td></tr>
+      <tr><td><code>smtp?</code></td><td><code>{ host, port, secure, user, pass }</code></td><td>—</td><td>SMTP server config (required when <code>provider:'smtp'</code>).</td></tr>
+      <tr><td><code>from</code></td><td><code>string</code></td><td><code>'no-reply@nexus.local'</code></td><td>From address.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>CertsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>dir</code></td><td><code>string</code></td><td><code>'certs'</code></td><td>Cert/key output dir (relative to root).</td></tr>
+      <tr><td><code>keyType</code></td><td><code>'rsa' | 'ec'</code></td><td><code>'rsa'</code></td><td>Default key type.</td></tr>
+      <tr><td><code>rsaModulus</code></td><td><code>number</code></td><td><code>2048</code></td><td>RSA key size in bits.</td></tr>
+      <tr><td><code>ecCurve</code></td><td><code>'prime256v1'|'secp384r1'|'secp521r1'</code></td><td><code>'prime256v1'</code></td><td>EC curve.</td></tr>
+      <tr><td><code>validityDays</code></td><td><code>number</code></td><td><code>365</code></td><td>Self-signed cert validity in days.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AdsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Google Ads on/off.</td></tr>
+      <tr><td><code>developerToken</code></td><td><code>string</code></td><td><code>''</code></td><td>Google Ads developer token.</td></tr>
+      <tr><td><code>clientId</code> / <code>clientSecret</code></td><td><code>string</code></td><td><code>''</code></td><td>OAuth client creds.</td></tr>
+      <tr><td><code>refreshToken</code></td><td><code>string</code></td><td><code>''</code></td><td>OAuth refresh token.</td></tr>
+      <tr><td><code>customerId</code></td><td><code>string</code></td><td><code>''</code></td><td>Google Ads customer id.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>WebRtcConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>rtcMinPort</code> / <code>rtcMaxPort</code></td><td><code>number</code></td><td><code>40000</code> / <code>40100</code></td><td>mediasoup worker RTC listen ports.</td></tr>
+      <tr><td><code>announceIp</code></td><td><code>string</code></td><td><code>'127.0.0.1'</code></td><td>IP announced to clients (must be reachable from the browser).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AiConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>serverUrl</code></td><td><code>string</code></td><td><code>'http://localhost:8000'</code></td><td>Python AI server base URL.</td></tr>
+      <tr><td><code>timeoutMs</code></td><td><code>number</code></td><td><code>60000</code></td><td>Request timeout in ms.</td></tr>
+      <tr><td><code>defaultProvider</code></td><td><code>'openai'|'ollama'|'auto'</code></td><td><code>'auto'</code></td><td>Default provider.</td></tr>
+      <tr><td><code>schemaModel</code></td><td><code>string</code></td><td><code>'gpt-4o-mini'</code></td><td>Model for the admin schema generator.</td></tr>
+      <tr><td><code>providers?</code></td><td><code>AiProviderConfig[]</code></td><td>20 providers</td><td>Provider list with API keys + enable state. API keys live in <code>.env</code> as <code>NEXUS_AI_&lt;ID&gt;_API_KEY</code>, never in config.</td></tr>
+    </tbody>
+  </table>
+  <h4>AiProviderConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Unique provider id (e.g. <code>'openai'</code>, <code>'ollama'</code>).</td></tr>
+      <tr><td><code>label</code></td><td><code>string</code></td><td>Human-readable label.</td></tr>
+      <tr><td><code>baseUrl</code></td><td><code>string</code></td><td>API base URL.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Selectable &amp; has a valid API key.</td></tr>
+      <tr><td><code>apiKey?</code></td><td><code>string</code></td><td>API key (from <code>.env</code>, not config).</td></tr>
+      <tr><td><code>defaultModel?</code></td><td><code>string</code></td><td>Default model for this provider.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>LoggingConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>level</code></td><td><code>'trace'|'debug'|'info'|'warn'|'error'|'fatal'</code></td><td><code>'info'</code></td><td>Minimum level.</td></tr>
+      <tr><td><code>format</code></td><td><code>'json'|'pretty'</code></td><td><code>'pretty'</code></td><td>Machine vs colored dev output.</td></tr>
+      <tr><td><code>console</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Write to stdout in addition to file.</td></tr>
+      <tr><td><code>dir</code></td><td><code>string</code></td><td><code>'logs'</code></td><td>Rotating log file directory.</td></tr>
+      <tr><td><code>maxFileSize</code></td><td><code>number</code></td><td><code>10485760</code> (10 MiB)</td><td>Max file size before rotation.</td></tr>
+      <tr><td><code>maxFiles</code></td><td><code>number</code></td><td><code>7</code></td><td>Rotated files to keep.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>PluginsConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>dir</code></td><td><code>string</code></td><td><code>'plugins'</code></td><td>Local plugins directory.</td></tr>
+      <tr><td><code>entries</code></td><td><code>PluginEntry[]</code></td><td><code>[]</code></td><td>Plugin entries (path + enabled + config).</td></tr>
+    </tbody>
+  </table>
+  <h4>PluginEntry</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>Package or path to the plugin.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>On/off.</td></tr>
+      <tr><td><code>config?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Plugin-specific config.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>FrontendConfig &amp; AdminConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default (frontend / admin)</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>port</code></td><td><code>number</code></td><td><code>3000</code> / <code>3001</code></td><td>Vite dev server port.</td></tr>
+      <tr><td><code>host</code></td><td><code>string</code></td><td><code>'localhost'</code></td><td>Bind host (<code>'0.0.0.0'</code> = LAN).</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Launch under <code>nexus dev</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ClusterConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td><code>false</code></td><td>Turn the cluster (registry + LB + autoscaler) on.</td></tr>
+      <tr><td><code>failOpenSingleNode</code></td><td><code>boolean</code></td><td><code>true</code></td><td>LB fails open to a single direct node (no scaling) when off.</td></tr>
+      <tr><td><code>lbHost</code> / <code>lbPort</code></td><td><code>string</code> / <code>number</code></td><td><code>'127.0.0.1'</code> / <code>8080</code></td><td>Central LB bind address.</td></tr>
+      <tr><td><code>nodeAgentHost</code> / <code>nodeAgentPort</code></td><td><code>string</code> / <code>number</code></td><td><code>'127.0.0.1'</code> / <code>7575</code></td><td>Node agent control API bind.</td></tr>
+      <tr><td><code>registryFile</code></td><td><code>string</code></td><td><code>'cluster.runtime.json'</code></td><td>Persisted registry path (relative to this config's root).</td></tr>
+      <tr><td><code>token</code></td><td><code>string</code></td><td><code>''</code></td><td>Shared pairing secret (minted at node setup, pasted into the central).</td></tr>
+      <tr><td><code>autoscale</code></td><td><code>ClusterAutoscaleConfig</code></td><td>—</td><td>Autoscaler (below).</td></tr>
+    </tbody>
+  </table>
+  <h4>ClusterAutoscaleConfig</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Autoscaler on/off.</td></tr>
+      <tr><td><code>mode</code></td><td><code>'auto' | 'manual'</code></td><td><code>'auto'</code></td><td>Deterministic+AI vs manual.</td></tr>
+      <tr><td><code>minNodes</code> / <code>maxNodes</code></td><td><code>number</code></td><td><code>1</code> / <code>4</code></td><td>Min/max backend nodes the LB keeps ready / may scale to.</td></tr>
+      <tr><td><code>cooldownMs</code></td><td><code>number</code></td><td><code>60000</code></td><td>Min wait between autoscale decisions.</td></tr>
+      <tr><td><code>cpuHigh</code></td><td><code>number</code></td><td><code>80</code></td><td>CPU% at/above which a node is overloaded.</td></tr>
+      <tr><td><code>rpsPerNodeHigh</code></td><td><code>number</code></td><td><code>15</code></td><td>RPS/node at/above which the cluster scales up.</td></tr>
+      <tr><td><code>rpsPerNodeLow</code></td><td><code>number</code></td><td><code>5</code></td><td>RPS/node below which the cluster scales down.</td></tr>
+    </tbody>
+  </table>
+  <h4>NodeInfo / NodeMetrics / NodeRole</h4>
+  <p>Cluster node types live here too:</p>
+  <ul>
+    <li><code>NodeRole</code> = <code>'backend' | 'files' | 'database' | 'ai'</code> — the service profile a node advertises.</li>
+    <li><code>NodeInfo</code> — a registered remote node (<code>id</code>, <code>baseUrl</code>, <code>role</code>, <code>version?</code>, <code>registeredAt</code>, <code>lastSeenAt</code>, <code>lastMetrics?</code>, <code>status: 'pending'|'ready'|'unreachable'</code>).</li>
+    <li><code>NodeMetrics</code> — a rolling snapshot (<code>rps</code>, <code>cpu</code>, <code>memoryMb</code>, <code>sampledAt</code>).</li>
+  </ul>
+
+  <h3>Supporting types</h3>
+  <ul>
+    <li><code>Env</code> = <code>'development' | 'production' | 'test'</code></li>
+    <li><code>DeepPartial&lt;T&gt;</code> — recursive partial used for user config files &amp; runtime overrides.</li>
+    <li><code>UserNexusConfig</code> = <code>DeepPartial&lt;NexusConfig&gt;</code></li>
+    <li><code>LoadOptions</code> — options for <code>loadConfig</code> (see the <a href="#loadConfig">loadConfig</a> example).</li>
+    <li><code>ValidatedNexusConfig</code> — the zod-inferred type of <code>nexusConfigSchema</code> (equivalent to <code>NexusConfig</code>).</li>
+  </ul>
+
+  <h2>HTTP — router &amp; server</h2>
+
+  <h3 id="Router">Router</h3>
+  <pre><code><span class="kw">class</span> Router {
+  use(mw: Middleware): <span class="kw">this</span>;
+  use(path: <span class="kw">string</span>, mw: Middleware): <span class="kw">this</span>;
+  get(path: <span class="kw">string</span>, handler: Handler, mw: Middleware[] = []): <span class="kw">this</span>;
+  post(path: <span class="kw">string</span>, handler: Handler, mw: Middleware[] = []): <span class="kw">this</span>;
+  put / patch / delete / head / options(...): <span class="kw">this</span>;
+  add(method: <span class="kw">string</span>, path: <span class="kw">string</span>, handler: Handler, mw: Middleware[] = []): <span class="kw">this</span>;
+  match(method: <span class="kw">string</span>, path: <span class="kw">string</span>): { handler; params; middleware; pattern } | <span class="kw">null</span>;
+  routes(): Array&lt;{ method: <span class="kw">string</span>; path: <span class="kw">string</span> }&gt;;
+  <span class="kw">get</span> size(): <span class="kw">number</span>;
+}</code></pre>
+  <p>Trie router supporting static segments, <code>:param</code> segments (on <code>ctx.params</code>),
+     and <code>*</code> wildcards. Per-route middleware runs <strong>before</strong> the handler;
+     router-level middleware (via <code>use</code>) runs for all matched routes under its mount path.
+     Unknown methods on a known path return <code>405</code> (with an <code>allow</code> header).</p>
+  <pre><code><span class="kw">const</span> router = <span class="kw">new</span> Router();
+router.get(<span class="str">'/health'</span>, (ctx) =&gt; ctx.json({ status: <span class="str">'ok'</span> }));
+router.post(<span class="str">'/users/:id/publish'</span>, handler, [authToken, requireRole(<span class="str">'user'</span>)]);
+
+<span class="com">// router-level middleware (global)</span>
+router.use(securityHeaders());
+<span class="com">// ...or path-scoped</span>
+router.use(<span class="str">'/admin'</span>, requireAdmin);
+
+<span class="com">// introspection</span>
+router.routes(); <span class="com">// [{ method:'GET', path:'/health' }, ...]</span>
+router.size;      <span class="com">// number of registered routes</span></code></pre>
+  <div class="callout warn">
+    <span class="label">Signature</span>
+    <code>router.method(path, handler, mw: Middleware[] = [])</code> — middleware is the <strong>3rd argument as
+    an array</strong>, and runs <strong>before</strong> the handler.
+  </div>
+
+  <h3 id="NexusServer">NexusServer</h3>
+  <pre><code><span class="kw">class</span> NexusServer {
+  constructor(opts: ServerOptions);
+  use(mw: Middleware): <span class="kw">this</span>;            <span class="com">// append middleware after construction</span>
+  listen(port: <span class="kw">number</span>, host?: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+  <span class="kw">get</span> address(): AddressInfo | <span class="kw">string</span> | <span class="kw">null</span>;
+  <span class="kw">get</span> httpServer(): HttpServer;   <span class="com">// reuse for WS / subscriptions</span>
+}</code></pre>
+  <pre><code><span class="kw">const</span> server = <span class="kw">new</span> NexusServer({
+  router,
+  bodyLimit: config.server.bodyLimit,
+  middleware: [securityHeaders(), cors({...}), bodyParser(...), csrf(...), rateLimit(...)],
+  trustProxy: config.server.trustProxy,
+  certFile: config.server.certFile, keyFile: config.server.keyFile,
+  onError: (err, ctx) =&gt; ({ error: { code: err.code, message: err.message } }),
+});
+<span class="kw">await</span> server.listen(config.server.port, config.server.host);
+server.use(myExtraMiddleware); <span class="com">// also available post-construction</span>
+server.httpServer; <span class="com">// attach WS upgrades here</span>
+<span class="kw">await</span> server.close();</code></pre>
+  <p>Middleware is the <code>middleware</code> array passed to the constructor (or appended via
+     <code>server.use()</code>). There is no global <code>app.use()</code> semantics — middleware runs
+     in the order it was added.</p>
+
+  <h4>ServerOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>router</code></td><td><code>Router</code></td><td>Required. The router to dispatch to.</td></tr>
+      <tr><td><code>middleware?</code></td><td><code>Middleware[]</code></td><td>Global middleware run before routing.</td></tr>
+      <tr><td><code>trustProxy?</code></td><td><code>boolean | number</code></td><td>Trust <code>X-Forwarded-*</code> (hops or <code>true</code>).</td></tr>
+      <tr><td><code>bodyLimit?</code></td><td><code>number</code></td><td>Max request body in bytes (default 1 MiB).</td></tr>
+      <tr><td><code>certFile?</code> / <code>keyFile?</code></td><td><code>string</code></td><td>Enables TLS when both present.</td></tr>
+      <tr><td><code>onError?</code></td><td><code>(err, ctx) =&gt; unknown</code></td><td>Shape the JSON error body; default produces <code>{ error: { code, message, details? } }</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>HTTP — body parsing &amp; uploads</h2>
+
+  <h3 id="bodyParser">bodyParser(limit?)</h3>
+  <pre><code><span class="kw">function</span> bodyParser(limit = 1024 * 1024): Middleware</code></pre>
+  <p>Parses <code>application/json</code>, <code>application/x-www-form-urlencoded</code>,
+     <code>text/plain</code>, and <code>multipart/form-data</code>. Multipart file uploads populate
+     <code>ctx.state.files</code> with <code>UploadedFile[]</code>. The raw body buffer is preserved on
+     <code>ctx.state.__rawBody</code> (needed for webhook signature verification). Skips <code>GET</code>/<code>HEAD</code>.</p>
+  <pre><code>router.post(<span class="str">'/webhook'</span>, webhookHandler, [bodyParser(config.server.bodyLimit)]);</code></pre>
+
+  <h3>readBody(req, limit)</h3>
+  <pre><code><span class="kw">function</span> readBody(req: IncomingMessage, limit: <span class="kw">number</span>): Promise&lt;Buffer&gt;</code></pre>
+  <p>Read the full request body into a Buffer, capped at <code>limit</code> bytes. Throws a
+     <code>NexusError</code> (<code>code: 'BODY_TOO_LARGE'</code>, status 413) if exceeded. Used by
+     <code>bodyParser</code>; also useful for raw-body handlers.</p>
+
+  <h3>parseUrlEncoded(input)</h3>
+  <pre><code><span class="kw">function</span> parseUrlEncoded(input: <span class="kw">string</span>): Record&lt;<span class="kw">string</span>, <span class="kw">string</span> | <span class="kw">string</span>[]&gt;</code></pre>
+  <p>Parse a urlencoded string into a record. Repeated keys become arrays. <code>+</code> is decoded to space.</p>
+
+  <h3>parseMultipart(buf, boundary?)</h3>
+  <pre><code><span class="kw">function</span> parseMultipart(buf: Buffer, boundary?: <span class="kw">string</span>): {
+  fields: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt;;
+  files: UploadedFile[];
+}</code></pre>
+  <p>Minimal multipart/form-data parser sufficient for file uploads. Used by <code>bodyParser</code>;
+     also usable directly on a raw body buffer.</p>
+
+  <h3>UploadedFile</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>field</code></td><td><code>string</code></td><td>Form field name.</td></tr>
+      <tr><td><code>filename</code></td><td><code>string</code></td><td>Original filename (untrusted).</td></tr>
+      <tr><td><code>contentType</code></td><td><code>string</code></td><td>MIME type from the part header.</td></tr>
+      <tr><td><code>data</code></td><td><code>Buffer</code></td><td>File contents.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="registerUploadRoutes">registerUploadRoutes(router, options)</h3>
+  <pre><code><span class="kw">function</span> registerUploadRoutes(router: Router, options: UploadRouteOptions): <span class="kw">void</span></code></pre>
+  <p>Register a safe multipart upload endpoint backed by a local directory. Validates per-file size,
+     file count, and MIME allowlist; persists with a generated UUID filename (extension validated to
+     <code>/^\.[a-z0-9]{1,10}$/</code>); returns <code>201</code> with the saved file descriptors.</p>
+  <pre><code><span class="kw">import</span> { join } <span class="kw">from</span> <span class="str">'node:path'</span>;
+<span class="kw">import</span> { registerUploadRoutes, serveStatic } <span class="kw">from</span> <span class="str">'@bhooai/nexus-core'</span>;
+
+<span class="kw">const</span> uploadsDir = join(process.cwd(), config.uploads.dir);
+registerUploadRoutes(router, {
+  directory: uploadsDir,
+  path: config.uploads.path,            <span class="com">// POST /uploads</span>
+  publicPath: config.uploads.path,     <span class="com">// /uploads/&lt;name&gt;</span>
+  maxFileSize: config.uploads.maxFileSize,
+  maxFiles: config.uploads.maxFiles,
+  allowedTypes: config.uploads.allowedTypes,
+  middleware: [authToken],             <span class="com">// optional route middleware</span>
+});</code></pre>
+  <h4>UploadRouteOptions</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>directory</code></td><td><code>string</code></td><td>—</td><td>Where to persist files (resolved with <code>resolve</code>).</td></tr>
+      <tr><td><code>path?</code></td><td><code>string</code></td><td><code>'/uploads'</code></td><td>POST endpoint path.</td></tr>
+      <tr><td><code>publicPath?</code></td><td><code>string</code></td><td>= <code>path</code></td><td>Public URL prefix returned for saved files.</td></tr>
+      <tr><td><code>maxFileSize?</code></td><td><code>number</code></td><td><code>10485760</code></td><td>Per-file size cap (bytes).</td></tr>
+      <tr><td><code>maxFiles?</code></td><td><code>number</code></td><td><code>20</code></td><td>Max files per request.</td></tr>
+      <tr><td><code>allowedTypes?</code></td><td><code>string[]</code></td><td><code>[]</code> (all)</td><td>Allowed MIME types.</td></tr>
+      <tr><td><code>middleware?</code></td><td><code>Middleware[]</code></td><td><code>[]</code></td><td>Route middleware (e.g. auth).</td></tr>
+    </tbody>
+  </table>
+  <h4>SavedUpload</h4>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>field</code></td><td><code>string</code></td><td>Form field name.</td></tr>
+      <tr><td><code>originalName</code></td><td><code>string</code></td><td>Original filename (basename only).</td></tr>
+      <tr><td><code>filename</code></td><td><code>string</code></td><td>Generated UUID filename.</td></tr>
+      <tr><td><code>contentType</code></td><td><code>string</code></td><td>MIME type.</td></tr>
+      <tr><td><code>size</code></td><td><code>number</code></td><td>Bytes written.</td></tr>
+      <tr><td><code>url</code></td><td><code>string</code></td><td>Public URL (<code>&lt;publicPath&gt;/&lt;filename&gt;</code>).</td></tr>
+    </tbody>
+  </table>
+  <p>Response: <code>{ files: SavedUpload[] }</code> with status <code>201</code>.</p>
+
+  <h3>uploadedFiles(ctx)</h3>
+  <pre><code><span class="kw">function</span> uploadedFiles(ctx: RequestContext): UploadedFile[]</code></pre>
+  <p>Type guard for handlers that consume the parsed multipart state — returns
+     <code>ctx.state.files</code> (or <code>[]</code> if absent).</p>
+
+  <h3 id="serveStatic">serveStatic(root, options?)</h3>
+  <pre><code><span class="kw">function</span> serveStatic(root: <span class="kw">string</span>, options: { index?: <span class="kw">string</span>; prefix?: <span class="kw">string</span> } = {}): Middleware</code></pre>
+  <p>Serve static files from <code>root</code>. Safe against path traversal. Serves <code>index.html</code>
+     for directories. Only handles <code>GET</code>/<code>HEAD</code>. <code>prefix</code> strips that URL
+     prefix before mapping to disk.</p>
+  <pre><code>router.<span class="kw">use</span>(serveStatic(uploadsDir, { prefix: config.uploads.path }));</code></pre>
+  <p>The default storage directory is <code>uploads/</code>, the upload endpoint is
+     <code>POST /uploads</code>, and saved files are available as <code>/uploads/&lt;generated-name&gt;</code>.
+     Uploads require the normal CSRF token when CSRF middleware is enabled. Do not expose arbitrary user
+     filenames or disable MIME/size validation in production.</p>
+
+  <h2 id="RequestContext">HTTP — RequestContext &amp; helpers</h2>
+
+  <h3>RequestContext (ctx)</h3>
+  <pre><code><span class="kw">interface</span> RequestContext {
+  req: IncomingMessage; res: ServerResponse;
+  method: <span class="kw">string</span>; path: <span class="kw">string</span>;
+  query: Record&lt;<span class="kw">string</span>, <span class="kw">string</span> | <span class="kw">string</span>[]&gt;;
+  params: Params;
+  headers: Record&lt;<span class="kw">string</span>, <span class="kw">string</span> | <span class="kw">string</span>[] | <span class="kw">undefined</span>&gt;;
+  body: <span class="kw">unknown</span>;
+  state: State;
+  requestId: <span class="kw">string</span>;
+  routePattern?: <span class="kw">string</span>;
+  json(data: <span class="kw">unknown</span>, status?: <span class="kw">number</span>): <span class="kw">void</span>;
+  text(data: <span class="kw">string</span>, status?: <span class="kw">number</span>): <span class="kw">void</span>;
+  html(data: <span class="kw">string</span>, status?: <span class="kw">number</span>): <span class="kw">void</span>;
+  status(status: <span class="kw">number</span>): <span class="kw">void</span>;
+  redirect(location: <span class="kw">string</span>, status?: <span class="kw">number</span>): <span class="kw">void</span>;
+  setHeader(name: <span class="kw">string</span>, value: <span class="kw">string</span> | <span class="kw">string</span>[]): <span class="kw">void</span>;
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ctx.req</code> / <code>ctx.res</code></td><td>raw <code>IncomingMessage</code> / <code>ServerResponse</code> (use <code>ctx.res</code> for SSE).</td></tr>
+      <tr><td><code>ctx.method</code> / <code>ctx.path</code></td><td>request method (uppercased) and URL pathname (no query).</td></tr>
+      <tr><td><code>ctx.params</code></td><td>route params (<code>:id</code>).</td></tr>
+      <tr><td><code>ctx.query</code></td><td>parsed query string (repeated keys → arrays).</td></tr>
+      <tr><td><code>ctx.headers</code></td><td>request headers (lowercased keys).</td></tr>
+      <tr><td><code>ctx.body</code></td><td>parsed body (JSON / urlencoded / text / multipart fields / Buffer).</td></tr>
+      <tr><td><code>ctx.state</code></td><td>mutable per-request state (e.g. <code>ctx.state.user</code>, <code>ctx.state.files</code>, <code>ctx.state.__rawBody</code>).</td></tr>
+      <tr><td><code>ctx.requestId</code></td><td>request id (also in the <code>x-request-id</code> response header).</td></tr>
+      <tr><td><code>ctx.routePattern</code></td><td>matched route pattern (e.g. <code>/users/:id</code>); set after routing.</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ctx.json(obj, status=200)</code></td><td>send JSON.</td></tr>
+      <tr><td><code>ctx.text(str, status=200)</code></td><td>send <code>text/plain</code>.</td></tr>
+      <tr><td><code>ctx.html(str, status=200)</code></td><td>send <code>text/html</code>.</td></tr>
+      <tr><td><code>ctx.status(code)</code></td><td>send an empty/status-only response.</td></tr>
+      <tr><td><code>ctx.redirect(url, status=302)</code></td><td>redirect.</td></tr>
+      <tr><td><code>ctx.setHeader(name, value)</code></td><td>set a response header.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Context helper types</h3>
+  <ul>
+    <li><code>Params = Record&lt;string, string&gt;</code> — route params.</li>
+    <li><code>State = Record&lt;string, unknown&gt;</code> — per-request mutable state.</li>
+    <li><code>Next = () =&gt; Promise&lt;void&gt; | void</code></li>
+    <li><code>Middleware = (ctx, next) =&gt; Promise&lt;void&gt; | void</code></li>
+    <li><code>Handler = (ctx) =&gt; void | Promise&lt;void&gt;</code></li>
+  </ul>
+
+  <h3>createContext(req, res, requestId)</h3>
+  <pre><code><span class="kw">function</span> createContext(req: IncomingMessage, res: ServerResponse, requestId: <span class="kw">string</span>): RequestContext</code></pre>
+  <p>Build a <code>RequestContext</code> from raw Node objects. Parses the URL into <code>path</code> +
+     <code>query</code>; wires the <code>json</code>/<code>text</code>/<code>html</code>/<code>status</code>/
+     <code>redirect</code>/<code>setHeader</code> helpers. Used internally by <code>NexusServer</code>.</p>
+
+  <h3>isAlive(socket)</h3>
+  <pre><code><span class="kw">function</span> isAlive(socket: Socket | <span class="kw">undefined</span>): <span class="kw">boolean</span></code></pre>
+  <p>True if the socket is still writable (not destroyed). Useful for WS / SSE health checks.</p>
+
+  <h3>newRequestId()</h3>
+  <pre><code><span class="kw">function</span> newRequestId(): <span class="kw">string</span></code></pre>
+  <p>Generate a request id (<code>crypto.randomUUID()</code>). Overridable for tests/injection. Used by
+     <code>NexusServer</code> when no <code>x-request-id</code> header is present.</p>
+
+  <h2 id="Container">DI — Container</h2>
+  <pre><code><span class="kw">type</span> Factory&lt;T&gt; = (container: Container, ...deps: <span class="kw">unknown</span>[]) =&gt; T | Promise&lt;T&gt;;
+<span class="kw">type</span> Lifetime = <span class="str">'singleton'</span> | <span class="str">'transient'</span>;
+
+<span class="kw">class</span> Container {
+  register&lt;T&gt;(id: <span class="kw">string</span>, factory: Factory&lt;T&gt;, options?: { lifetime?: Lifetime; deps?: <span class="kw">readonly</span> <span class="kw">string</span>[] }): <span class="kw">this</span>;
+  instance&lt;T&gt;(id: <span class="kw">string</span>, value: T): <span class="kw">this</span>;
+  has(id: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  resolve&lt;T&gt;(id: <span class="kw">string</span>): T;
+  resolveAsync&lt;T&gt;(id: <span class="kw">string</span>): Promise&lt;T&gt;;
+  child(): Container;
+  clear(): <span class="kw">void</span>;
+}
+
+<span class="kw">class</span> ResolutionError <span class="kw">extends</span> Error {
+  <span class="kw">readonly</span> serviceId: <span class="kw">string</span>;
+}</code></pre>
+  <p>A minimal inbuilt dependency-injection container. Supports factory-based registration (factories
+     receive the container and any declared dependencies), singletons, transients, and an
+     already-constructed <code>instance</code> registration. Detects circular dependencies. Intentionally
+     small — this is the service backbone used by the framework and plugins.</p>
+  <pre><code><span class="kw">const</span> container = <span class="kw">new</span> Container();
+container.register(<span class="str">'db'</span>, (c) =&gt; connectDb(), { lifetime: <span class="str">'singleton'</span> });
+container.register(<span class="str">'userRepo'</span>, (c) =&gt; <span class="kw">new</span> UserRepo(c.resolve(<span class="str">'db'</span>)), { deps: [<span class="str">'db'</span>] });
+container.instance(<span class="str">'config'</span>, config);
+
+<span class="kw">const</span> repo = container.resolve&lt;UserRepo&gt;(<span class="str">'userRepo'</span>);     <span class="com">// sync</span>
+<span class="kw">const</span> async = <span class="kw">await</span> container.resolveAsync(<span class="str">'thing'</span>); <span class="com">// awaits an async factory</span>
+
+container.has(<span class="str">'db'</span>); <span class="com">// true</span>
+<span class="kw">const</span> child = container.child();   <span class="com">// inherits registrations/values, can override locally</span>
+container.clear();</code></pre>
+  <div class="callout warn">
+    <span class="label">Circular deps</span>
+    Resolving a service that transitively depends on itself throws a <code>ResolutionError</code>.
+  </div>
+
+  <h2 id="Errors">Errors</h2>
+  <p>Throw a typed error from any handler/middleware; <code>onError</code> shapes the response. Every
+     error carries a stable <code>code</code> (for programmatic handling) and a <code>statusCode</code>.</p>
+  <pre><code><span class="kw">if</span> (!body.email) <span class="kw">throw new</span> ValidationError(<span class="str">'email is required'</span>);
+<span class="kw">if</span> (!ctx.state.user) <span class="kw">throw new</span> AuthenticationError(<span class="str">'login required'</span>);</code></pre>
+  <table>
+    <thead><tr><th>Class</th><th>code</th><th>statusCode</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>NexusError</code></td><td><code>'NEXUS_ERROR'</code></td><td><code>500</code></td><td>Framework-wide base. Construct as <code>new NexusError(message, { code?, statusCode?, details? })</code>.</td></tr>
+      <tr><td><code>ConfigError</code></td><td><code>'CONFIG_ERROR'</code></td><td><code>500</code></td><td>Config loading/validation failure.</td></tr>
+      <tr><td><code>ValidationError</code></td><td><code>'VALIDATION_ERROR'</code></td><td><code>400</code></td><td>Bad input. <code>new ValidationError(message, details?)</code>.</td></tr>
+      <tr><td><code>AuthenticationError</code></td><td><code>'AUTHENTICATION_ERROR'</code></td><td><code>401</code></td><td>Login required (default message: <code>'Authentication required'</code>).</td></tr>
+      <tr><td><code>AuthorizationError</code></td><td><code>'AUTHORIZATION_ERROR'</code></td><td><code>403</code></td><td>Insufficient permissions (default: <code>'Insufficient permissions'</code>).</td></tr>
+      <tr><td><code>NotFoundError</code></td><td><code>'NOT_FOUND'</code></td><td><code>404</code></td><td>Resource not found (default: <code>'Not found'</code>).</td></tr>
+      <tr><td><code>ConflictError</code></td><td><code>'CONFLICT'</code></td><td><code>409</code></td><td>Duplicate / version conflict. <code>new ConflictError(message, details?)</code>.</td></tr>
+      <tr><td><code>PaymentError</code></td><td><code>'PAYMENT_ERROR'</code></td><td><code>402</code></td><td>Payment-domain failure. <code>new PaymentError(message, details?)</code>.</td></tr>
+    </tbody>
+  </table>
+  <h3>toNexusError(err)</h3>
+  <pre><code><span class="kw">function</span> toNexusError(err: <span class="kw">unknown</span>): NexusError</code></pre>
+  <p>Normalize an unknown thrown value into a <code>NexusError</code>. A <code>NexusError</code> passes
+     through; an <code>Error</code> becomes a new <code>NexusError(err.message)</code>; anything else
+     becomes <code>NexusError(String(err))</code>. Used by <code>NexusServer</code> internally.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Core API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Core - router + config merge","apiBase":"http://localhost:4000","js":"// Mini trie matcher: static, :params, *\nfunction match(route, path) {\n  const rs = route.split(\"/\").filter(Boolean);\n  const ps = path.split(\"/\").filter(Boolean);\n  if (rs.length \u003e ps.length) return null;\n  const params = {};\n  for (let i = 0; i \u003c rs.length; i++) {\n    if (rs[i] === \"*\") return params;\n    if (rs[i].startsWith(\":\")) { params[rs[i].slice(1)] = ps[i]; continue; }\n    if (rs[i] !== ps[i]) return null;\n  }\n  return rs.length === ps.length ? params : null;\n}\nconsole.log(\"users/42\", match(\"/users/:id\", \"/users/42\"));\nconsole.log(\"missing\", match(\"/users/:id\", \"/users/42/publish\"));\n\n// Config precedence: defaults \u003c user \u003c env\nconst merge = (a, b) =\u003e ({ ...a, ...b, nested: { ...(a.nested||{}), ...(b.nested||{}) } });\nconst effective = merge(merge({ port: 4000 }, { port: 4000 }), { port: 5000 });\nconsole.log(\"effective port:\", effective.port);","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Troubleshooting — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">SOLVE</div>
+  <h1>Troubleshooting <span class="sub">Common errors, fixes, and debugging tips for Nexus apps.</span></h1>
+
+  <p>Solutions to the most common issues encountered when building and running
+     BhooAI Nexus projects. Organized by area — jump to the section you need.</p>
+
+  <ul>
+    <li><a href="#install">Install &amp; Setup</a></li>
+    <li><a href="#postcss">PostCSS &amp; Tailwind</a></li>
+    <li><a href="#dev-server">Dev Server</a></li>
+    <li><a href="#auth">Auth &amp; Security</a></li>
+    <li><a href="#cluster">Cluster &amp; Mesh</a></li>
+    <li><a href="#mongodb">MongoDB &amp; Data</a></li>
+    <li><a href="#ai">AI Server</a></li>
+    <li><a href="#admin">Admin Console</a></li>
+    <li><a href="#build">Build &amp; Deploy</a></li>
+  </ul>
+
+  <!-- =================== INSTALL =================== -->
+  <h2 id="install">Install &amp; Setup</h2>
+
+  <h3>npm install fails on mediasoup native build</h3>
+  <p><strong>Symptom:</strong> <code>npm install</code> hangs or errors on
+     <code>mediasoup</code> with a C++ compiler error.</p>
+  <p><strong>Fix:</strong> Mediasoup compiles a native worker binary. Ensure you have
+     build tools installed:</p>
+  <ul>
+    <li><strong>Windows:</strong> <code>npm install -g windows-build-tools</code> or install Visual Studio Build Tools with the "Desktop development with C++" workload</li>
+    <li><strong>macOS:</strong> <code>xcode-select --install</code></li>
+    <li><strong>Linux:</strong> <code>sudo apt install build-essential python3</code></li>
+  </ul>
+  <p>If you don't need WebRTC, skip mediasoup by removing <code>mediasoup</code> from
+     <code>apps/frontend/package.json</code> and disabling the realtime module in
+     <code>nexus.config.ts</code>.</p>
+
+  <h3>nexus init can't find templates</h3>
+  <p><strong>Symptom:</strong> <code>Error: templates directory not found at ...</code></p>
+  <p><strong>Fix:</strong> The CLI resolves templates relative to its own location.
+     If you're running from a global install, the templates may not be included.
+     Install locally instead: <code>npm install bhooai-nexus && npx nexus init my-app</code>.</p>
+
+  <h3>nexus doctor reports MongoDB unreachable</h3>
+  <p><strong>Symptom:</strong> <code>[X] mongodb localhost:27017 unreachable</code></p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Verify MongoDB is running: <code>mongosh --eval "db.runCommand({ ping: 1 })"</code></li>
+    <li>Check <code>MONGODB_URI</code> in <code>.env</code> — format: <code>mongodb://localhost:27017/my-app</code></li>
+    <li>Start MongoDB with Docker: <code>docker run -d -p 27017:27017 mongo:7</code></li>
+  </ul>
+
+  <h3>nexus doctor reports Redis unreachable</h3>
+  <p><strong>Symptom:</strong> <code>[X] redis localhost:6379 unreachable</code></p>
+  <p><strong>Fix:</strong> Redis is optional — the framework degrades gracefully without it.
+     To use it: <code>docker run -d -p 6379:6379 redis:7</code></p>
+
+  <h3>Port already in use</h3>
+  <p><strong>Symptom:</strong> <code>EADDRINUSE: address already in use 0.0.0.0:4000</code></p>
+  <p><strong>Fix:</strong> <code>nexus dev</code> auto-allocates the next free port, but
+     if a stale process holds the port:</p>
+  <pre><code><span class="com"># Find and kill the process</span>
+lsof -i :4000       <span class="com"># macOS/Linux</span>
+netstat -ano | findstr :4000  <span class="com"># Windows</span></code></pre>
+  <p>Or set <code>NEXUS_SERVER_PORT=4001</code> in <code>.env</code>.</p>
+
+  <!-- =================== POSTCSS =================== -->
+  <h2 id="postcss">PostCSS &amp; Tailwind</h2>
+
+  <h3>Cannot find module 'postcss-import'</h3>
+  <p><strong>Symptom:</strong></p>
+  <pre><code>Loading PostCSS Plugin failed: Cannot find module 'postcss-import'
+Require stack:
+- apps/frontend/postcss.config.js</code></pre>
+  <p><strong>Cause:</strong> The preset returns plugin names as strings, so PostCSS tries
+     to resolve them from the consumer's <code>node_modules</code> instead of the preset's.</p>
+  <p><strong>Fix:</strong> Update <code>@bhooai/nexus-postcss</code> to the latest version.
+     The preset imports and instantiates plugins internally — consumer projects don't need
+     <code>postcss-import</code>, <code>postcss-nested</code>, etc. installed directly.</p>
+  <pre><code><span class="com"># In the framework root</span>
+npm update @bhooai/nexus-postcss
+npm install  <span class="com"># re-hoist workspaces</span></pre></code></pre>
+
+  <h3>No utility classes were detected</h3>
+  <p><strong>Symptom:</strong> Tailwind build succeeds but outputs a warning:</p>
+  <pre><code>warn - No utility classes were detected in your source files.</code></pre>
+  <p><strong>Cause:</strong> Your <code>tailwind.config.js</code> <code>content</code> paths
+     don't match where your JSX/TSX files are, or your components don't use any Tailwind
+     class names yet.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Check <code>content</code> in <code>tailwind.config.js</code> includes <code>'./src/**/*.{ts,tsx}'</code></li>
+    <li>If using <code>createPreset()</code>, pass <code>content: ['./src/**/*.{ts,tsx}']</code></li>
+    <li>If your components only use inline styles, this warning is expected and harmless</li>
+  </ul>
+
+  <h3>@apply fails in custom CSS</h3>
+  <p><strong>Symptom:</strong> <code>Error: @apply is not supported</code> or
+     <code>Cannot apply unknown utility class</code></p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Ensure <code>@tailwind base</code> / <code>components</code> / <code>utilities</code> directives are present <strong>before</strong> any <code>@apply</code> usage in your CSS file</li>
+    <li>Ensure the <code>postcss-nested</code> plugin runs <strong>before</strong> <code>tailwindcss</code> — the preset handles this automatically</li>
+    <li>Check the class name exists in your Tailwind theme (custom classes need to be defined first)</li>
+  </ul>
+
+  <h3>theme.css tokens not appearing in built CSS</h3>
+  <p><strong>Symptom:</strong> <code>var(--nexus-bg)</code> resolves to nothing in the browser.</p>
+  <p><strong>Fix:</strong> Ensure the <code>@import</code> is the <strong>first line</strong> of
+     <code>index.css</code>, before <code>@tailwind</code> directives:</p>
+  <pre><code>@<span class="kw">import</span> <span class="str">'@bhooai/nexus-postcss/theme.css'</span>;
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;</code></pre>
+  <p>If the <code>@import</code> comes after <code>@tailwind</code>, <code>postcss-import</code>
+     may not inline it correctly. Verify <code>postcss.config.js</code> uses
+     <code>createPreset()</code> with <code>import: true</code> (the default).</p>
+
+  <h3>ERR_MODULE_NOT_FOUND on postcss.config.js</h3>
+  <p><strong>Symptom:</strong> <code>Failed to load PostCSS config: ERR_MODULE_NOT_FOUND:
+     Cannot find module '@bhooai/nexus-postcss/src/plugins.js'</code></p>
+  <p><strong>Cause:</strong> The preset's <code>package.json</code> exports point at a
+     <code>.ts</code> file instead of <code>.js</code>.</p>
+  <p><strong>Fix:</strong> Update to the latest <code>@bhooai/nexus-postcss</code> — the
+     package ships <code>.js</code> files. Run <code>npm install</code> in the framework
+     root to re-hoist the workspace.</p>
+
+  <!-- =================== DEV SERVER =================== -->
+  <h2 id="dev-server">Dev Server</h2>
+
+  <h3>Vite proxy 404 on /auth or /graphql</h3>
+  <p><strong>Symptom:</strong> Frontend requests to <code>/auth/login</code> return 404.</p>
+  <p><strong>Cause:</strong> The Vite dev server proxies API routes to the backend. If the
+     backend isn't running or is on a different port, the proxy fails.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Verify the backend is running: <code>curl http://localhost:4000/health</code></li>
+    <li>Check <code>NEXUS_SERVER_PORT</code> in <code>.env</code> matches the Vite proxy target</li>
+    <li>Run <code>npm run dev</code> (supervisor) instead of starting only the frontend</li>
+  </ul>
+
+  <h3>Frontend builds but page is blank</h3>
+  <p><strong>Symptom:</strong> Vite dev server starts, page loads, but nothing renders.</p>
+  <p><strong>Fix:</strong> Check browser console for errors. Common causes:</p>
+  <ul>
+    <li><code>#root</code> element missing in <code>index.html</code></li>
+    <li>CSS <code>@import</code> failing silently — check Network tab for 404 on <code>theme.css</code></li>
+    <li>React component throwing in render — check console for the stack trace</li>
+  </ul>
+
+  <h3>CSS not hot-reloading</h3>
+  <p><strong>Symptom:</strong> Edits to <code>index.css</code> don't appear in the browser.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Ensure <code>import './index.css'</code> is in <code>main.tsx</code> (not <code>App.tsx</code>)</li>
+    <li>Hard-refresh the browser (Ctrl+Shift+R) — Vite HMR can miss CSS-only changes</li>
+    <li>Check the Vite terminal for PostCSS errors that may silently fail</li>
+  </ul>
+
+  <!-- =================== AUTH =================== -->
+  <h2 id="auth">Auth &amp; Security</h2>
+
+  <h3>CSRF token mismatch</h3>
+  <p><strong>Symptom:</strong> <code>403 Forbidden — invalid csrf token</code> on POST
+     requests.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Fetch a CSRF token before any mutating request:
+        <code>GET /csrf-token</code> → read <code>token</code> from response</li>
+    <li>Include the token in the <code>x-csrf-token</code> header</li>
+    <li>Send credentials: <code>fetch(url, { credentials: 'include' })</code></li>
+    <li>The token is cookie-based — ensure cookies aren't blocked by browser settings</li>
+  </ul>
+
+  <h3>JWT secret mismatch across cluster nodes</h3>
+  <p><strong>Symptom:</strong> Auth works on the master but slaves reject the token.</p>
+  <p><strong>Fix:</strong> Set the same <code>NEXUS_AUTH_JWT_SECRET</code> in <code>.env</code>
+     on every node. Slaves verify the access token locally using the shared secret.</p>
+
+  <h3>OAuth redirect loop</h3>
+  <p><strong>Symptom:</strong> Google/Facebook OAuth redirects back to the login page
+     repeatedly.</p>
+  <p><strong>Fix:</strong> Check that the OAuth redirect URI in your provider's console
+     matches <code>http://localhost:4000/auth/google/callback</code> (or your deployed
+     domain). The path must be exactly <code>/auth/{provider}/callback</code>.</p>
+
+  <h3>Session reuse detection logs user out</h3>
+  <p><strong>Symptom:</strong> User is logged out with a "session reused" message.</p>
+  <p><strong>Cause:</strong> The same refresh token was used from two locations/tabs
+     simultaneously. Nexus detects this as a session hijack attempt and invalidates the session.</p>
+  <p><strong>Fix:</strong> This is expected security behavior. Use separate sessions per
+     device. If testing locally, use different browser profiles instead of tabs.</p>
+
+  <!-- =================== CLUSTER =================== -->
+  <h2 id="cluster">Cluster &amp; Mesh</h2>
+
+  <h3>Slave node won't link to master</h3>
+  <p><strong>Symptom:</strong> <code>nexus cluster link http://master:7575</code> fails
+     or node doesn't appear in the admin Cluster tab.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Verify the master node agent is running on the target host</li>
+    <li>Check the pairing token matches — get it from the master admin Cluster tab</li>
+    <li>Ensure firewall allows the node agent port (default <code>7575</code>)</li>
+    <li>Use <code>--token &lt;token&gt;</code> if the token isn't in the config</li>
+  </ul>
+
+  <h3>Load balancer returns 503</h3>
+  <p><strong>Symptom:</strong> <code>503 pinned_node_down</code> or
+     <code>503 no_healthy_nodes</code></p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li><code>pinned_node_down</code> — the path-pinned node is offline. Start it or remove the pin from Cluster → Path routing</li>
+    <li><code>no_healthy_nodes</code> — no backend nodes are registered. Link at least one slave or enable <code>cluster.failOpenSingleNode</code> to fall back to the master's own backend</li>
+  </ul>
+
+  <h3>nexus sync overwrites Dockerfile edits</h3>
+  <p><strong>Symptom:</strong> Manual edits to <code>Dockerfile</code> disappear after
+     running <code>nexus sync</code>.</p>
+  <p><strong>Fix:</strong> <code>nexus sync</code> regenerates Dockerfiles from
+     <code>nexus.config.ts</code>. Don't edit Dockerfiles manually — put port changes,
+     service toggles, etc. in <code>nexus.config.ts</code> and re-run <code>nexus sync</code>.</p>
+
+  <!-- =================== MONGODB =================== -->
+  <h2 id="mongodb">MongoDB &amp; Data</h2>
+
+  <h3>Connection string format</h3>
+  <p><strong>Symptom:</strong> <code>MongoServerError: Authentication failed</code> or
+     <code>Invalid scheme</code>.</p>
+  <p><strong>Fix:</strong> Use the standard URI format:</p>
+  <pre><code>MONGODB_URI=mongodb://user:password@localhost:27017/dbname
+<span class="com"># Or with options:</span>
+MONGODB_URI=mongodb://localhost:27017/dbname?authSource=admin</code></pre>
+  <p>For MongoDB Atlas: <code>mongodb+srv://user:pass@cluster.xxxxx.mongodb.net/dbname</code></p>
+
+  <h3>ODM schema validation errors</h3>
+  <p><strong>Symptom:</strong> <code>ValidationError: path "email" is required</code> or
+     <code>ValidationError: expected string, got number</code>.</p>
+  <p><strong>Fix:</strong> Check your model schema definition. The Nexus ODM validates
+     types and required fields before writing to MongoDB. Ensure the data you're saving
+     matches the schema's field types.</p>
+
+  <h3>Transaction aborts</h3>
+  <p><strong>Symptom:</strong> <code>MongoServerError: Transaction aborted</code> or
+     <code>TransactionTooLarge</code>.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Ensure MongoDB is running as a replica set (transactions require it):
+        <code>mongod --replSet rs0 --bind_ip_all</code></li>
+    <li>Initialize: <code>mongosh --eval "rs.initiate()"</code></li>
+    <li>Keep transactions small — large bulk writes may exceed the 16MB BSON limit</li>
+  </ul>
+
+  <!-- =================== AI SERVER =================== -->
+  <h2 id="ai">AI Server</h2>
+
+  <h3>Python venv not activated</h3>
+  <p><strong>Symptom:</strong> <code>ModuleNotFoundError: No module named 'fastapi'</code>
+     when starting the AI server.</p>
+  <p><strong>Fix:</strong></p>
+  <pre><code><span class="com"># Create and activate venv</span>
+python -m venv .venv
+<span class="com"># Windows:</span>
+.venv\Scripts\activate
+<span class="com"># macOS/Linux:</span>
+source .venv/bin/activate
+
+<span class="com"># Install deps</span>
+pip install -r apps/ai-server/requirements.txt
+
+<span class="com"># Or use nexus pysetup</span>
+npm run pysetup</code></pre>
+
+  <h3>OpenAI API key missing</h3>
+  <p><strong>Symptom:</strong> <code>openai.AuthenticationError: Incorrect API key</code>
+     or the AI provider falls back to Ollama.</p>
+  <p><strong>Fix:</strong> Set the key in <code>.env</code>:</p>
+  <pre><code>AI_OPENAI_KEY=sk-...</code></pre>
+  <p>If no OpenAI key is set, the AI server automatically uses Ollama (if running on
+     <code>localhost:11434</code>).</p>
+
+  <h3>SSE stream cuts off</h3>
+  <p><strong>Symptom:</strong> AI chat streaming starts but stops mid-response.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Check the backend terminal for proxy errors — the Node backend proxies SSE from the Python server</li>
+    <li>Ensure the Python AI server is running: <code>curl http://localhost:8000/health</code></li>
+    <li>Some proxies/load balancers buffer SSE — disable response buffering in nginx if behind a reverse proxy</li>
+  </ul>
+
+  <h3>Ollama connection refused</h3>
+  <p><strong>Symptom:</strong> <code>ConnectionRefusedError: [Errno 111] Connection refused</code>
+     when the AI server tries Ollama.</p>
+  <p><strong>Fix:</strong> Start Ollama locally: <code>ollama serve</code> (defaults to
+     <code>localhost:11434</code>). Pull a model: <code>ollama pull llama3</code>.</p>
+
+  <!-- =================== ADMIN =================== -->
+  <h2 id="admin">Admin Console</h2>
+
+  <h3>Admin page is blank</h3>
+  <p><strong>Symptom:</strong> <code>http://localhost:3300</code> loads but renders nothing.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Check browser console for module loading errors</li>
+    <li>Ensure <code>@bhooai/admin</code> resolves — run <code>npm install</code> in the framework root</li>
+    <li>Check <code>tailwind.config.js</code> content paths include <code>../../packages/nexus-admin/src/**/*.{ts,tsx}</code> — missing paths cause Tailwind to not generate the admin's utility classes</li>
+  </ul>
+
+  <h3>@bhooai/admin/style.css 404</h3>
+  <p><strong>Symptom:</strong> <code>Failed to resolve module @bhooai/admin/style.css</code></p>
+  <p><strong>Fix:</strong> The <code>@bhooai/admin</code> package's <code>exports</code> map
+     includes <code>"./style.css": "./src/index.css"</code>. If this 404s, the package
+     version is stale. Run <code>npm install</code> to re-link the workspace.</p>
+
+  <h3>Mobile navbar hamburger missing</h3>
+  <p><strong>Symptom:</strong> On mobile screens, the navigation links disappear and there's
+     no way to open the menu.</p>
+  <p><strong>Fix:</strong> The navbar should include a hamburger toggle button that appears
+     on screens ≤ 900px. If it's missing:</p>
+  <ul>
+    <li>Check <code>App.tsx</code> has a <code>menuOpen</code> state and a
+        <code>.menu-toggle</code> button</li>
+    <li>Check <code>index.css</code> has <code>.menu-toggle { display: none }</code> on
+        desktop and <code>@media (max-width: 900px) { .menu-toggle { display: flex } }</code></li>
+    <li>Check <code>.mobile-links</code> panel is present and toggled by the button</li>
+  </ul>
+
+  <!-- =================== BUILD =================== -->
+  <h2 id="build">Build &amp; Deploy</h2>
+
+  <h3>tsc -b fails with project reference errors</h3>
+  <p><strong>Symptom:</strong> <code>error TS6306: Referenced project must have setting
+     "composite": true</code></p>
+  <p><strong>Fix:</strong> This is a known issue with the TypeScript project references in
+     the monorepo. Ensure <code>tsconfig.base.json</code> has <code>"composite": false</code>
+     (or remove the <code>references</code> from the failing project's <code>tsconfig.json</code>).
+     For a quick build, use <code>vite build</code> directly instead of <code>tsc -b && vite build</code>.</p>
+
+  <h3>Docker build fails on npm install</h3>
+  <p><strong>Symptom:</strong> Docker <code>RUN npm install</code> fails with workspace
+     resolution errors.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Ensure <code>Dockerfile</code> copies <code>package.json</code> and
+        <code>package-lock.json</code> before <code>npm install</code></li>
+    <li>The monorepo uses <code>file:</code> workspace links — all workspace packages must
+        be present in the build context</li>
+    <li>Use <code>.dockerignore</code> to exclude <code>node_modules</code> and <code>dist</code></li>
+  </ul>
+
+  <h3>vite build CSS missing Tailwind utilities</h3>
+  <p><strong>Symptom:</strong> Production build succeeds but the CSS file is tiny and
+     Tailwind utility classes don't work.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Check <code>tailwind.config.js</code> <code>content</code> paths include all
+        source directories with Tailwind class names</li>
+    <li>If using <code>createPreset()</code>, pass <code>content</code> or
+        <code>extraContent</code> to scan additional directories</li>
+    <li>Run <code>NODE_ENV=production npx vite build</code> — Tailwind purges unused
+        classes based on what it finds in <code>content</code> paths</li>
+  </ul>
+
+  <h3>PostCSS config not loaded</h3>
+  <p><strong>Symptom:</strong> <code>Failed to load PostCSS config</code> error during
+     <code>vite build</code>.</p>
+  <p><strong>Fix:</strong></p>
+  <ul>
+    <li>Ensure <code>postcss.config.js</code> is in the app root (same level as
+        <code>vite.config.ts</code>)</li>
+    <li>Check the file uses <code>export default</code> (ESM) not
+        <code>module.exports</code> (CJS) — the project <code>package.json</code> has
+        <code>"type": "module"</code></li>
+    <li>Verify <code>@bhooai/nexus-postcss</code> is in <code>devDependencies</code> and
+        installed: <code>npm ls @bhooai/nexus-postcss</code></li>
+  </ul>
+
+  <h2>Still stuck?</h2>
+  <p>If none of these solutions fix your issue:</p>
+  <ul>
+    <li>Run <code>nexus doctor</code> for an environment diagnostic</li>
+    <li>Check the <a href="getting-started.html">Getting Started guide</a></li>
+    <li>Review the <a href="architecture.html">Architecture overview</a></li>
+    <li>Report the issue at <a href="https://github.com/bhooai/nexus/issues">github.com/bhooai/nexus/issues</a></li>
+  </ul>
+</main>
+<script src="assets/docs.js"></script>
+</body>
+</html>

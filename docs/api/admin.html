@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin Client API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/admin</span> Admin Client API
+    <span class="sub">The client the admin React app uses to call the backend.</span></h1>
+
+  <p>These are the client-side functions the admin React app (<code>apps/admin</code>) uses to talk to
+     the backend's <code>/admin/*</code> endpoints. They are <strong>not</strong> imported by user
+     apps — they live in the <code>@bhooai/admin</code> package, whose single source file is
+     <code>packages/nexus-admin/src/api.ts</code>. The matching server-side route handlers are
+     registered by <code>registerAdminRoutes</code> in
+     <code>apps/backend/src/modules/admin/adminRoutes.ts</code>.</p>
+
+  <p>The module keeps two pieces of module-level state: the current JWT <strong>access token</strong>
+     (set after login, sent as <code>Authorization: Bearer &lt;token&gt;</code>) and the current
+     <strong>CSRF token</strong>, which is re-fetched from <code>/csrf-token</code> before every
+     mutating call (the server rotates the CSRF cookie on every safe request, so a cached token goes
+     stale the moment any other GET runs). Credentials (<code>cookies</code>) are always sent.</p>
+
+  <div class="callout note">
+    <span class="label">Two transports</span>
+    Auth, config, plugins, users, metrics, preflight, lint, payments, databases, AI, and cluster
+    calls go to the <strong>backend</strong> (same origin as the admin Vite app — proxied in dev).
+    Process-control calls (services, logs) go to the <strong>supervisor control API</strong>
+    (default <code>http://localhost:7474</code>), whose URL is resolved once via
+    <code>resolveSupervisor()</code> from <code>/admin/supervisor</code> or the
+    <code>VITE_SUPERVISOR_URL</code> env var.
+  </div>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>Auth</td><td><code>setAccessToken</code>, <code>getAccessToken</code>, <code>login</code>, <code>registerAndLogin</code></td></tr>
+      <tr><td>Admin config / env</td><td><code>ConfigFile</code>, <code>AdminConfig</code>, <code>EnvEntry</code>, <code>AdminEnv</code>, <code>getAdminConfig</code>, <code>getAdminEnv</code>, <code>putAdminEnv</code>, <code>putAdminConfig</code>, <code>putAdminConfigFile</code></td></tr>
+      <tr><td>Plugins</td><td><code>getPlugins</code></td></tr>
+      <tr><td>Users / roles</td><td><code>UserRecord</code>, <code>RoleDefinition</code>, <code>RolePermission</code>, <code>getUsers</code>, <code>getRoles</code>, <code>putUserRoles</code></td></tr>
+      <tr><td>Metrics</td><td><code>getMetrics</code></td></tr>
+      <tr><td>Preflight</td><td><code>PreflightCheck</code>, <code>PreflightReport</code>, <code>runPreflight</code></td></tr>
+      <tr><td>Lint</td><td><code>LintCheck</code>, <code>LintReport</code>, <code>runLintEnv</code>, <code>runLintConfig</code></td></tr>
+      <tr><td>Payments</td><td><code>PaymentProviderStatus</code>, <code>getPaymentOrders</code>, <code>getPaymentTransactions</code>, <code>getPaymentStatus</code>, <code>updatePaymentProvider</code>, <code>createPaymentOrder</code></td></tr>
+      <tr><td>Databases</td><td><code>DatabaseInfo</code>, <code>getDatabases</code>, <code>createDatabase</code>, <code>deleteDatabase</code>, <code>createCollection</code>, <code>modifyCollection</code>, <code>dropCollection</code>, <code>getCollectionDocs</code></td></tr>
+      <tr><td>AI</td><td><code>AiStatus</code>, <code>GeneratedSchema</code>, <code>generateSchema</code>, <code>AiModelInfo</code>, <code>AiModelsResponse</code>, <code>getAiModels</code>, <code>AiChatMessage</code>, <code>aiChat</code>, <code>aiChatStream</code>, <code>AiProviderView</code>, <code>getAiProviders</code>, <code>updateAiProvider</code>, <code>addAiProvider</code>, <code>deleteAiProvider</code></td></tr>
+      <tr><td>Cluster</td><td><code>ClusterNodeView</code>, <code>ClusterOverview</code>, <code>ClusterSetup</code>, <code>getClusterOverview</code>, <code>getClusterSetup</code>, <code>saveClusterSetup</code>, <code>clusterLink</code>, <code>generateClusterToken</code>, <code>clusterUnlink</code>, <code>clusterExec</code>, <code>clusterScale</code>, <code>clusterPoll</code>, <code>clusterStart</code>, <code>clusterStop</code></td></tr>
+      <tr><td>Supervisor client</td><td><code>resolveSupervisor</code>, <code>getServices</code>, <code>controlService</code>, <code>getServiceLogs</code>, <code>LogEntry</code>, <code>getAllLogs</code>, <code>clearLogs</code>, <code>getSupervisorInfo</code>, <code>ServiceState</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Auth</h2>
+
+  <h3 id="setAccessToken">setAccessToken(t)</h3>
+  <pre><code><span class="kw">function</span> setAccessToken(t: <span class="kw">string</span>): <span class="kw">void</span></code></pre>
+  <p>Store the JWT access token used as <code>Authorization: Bearer &lt;token&gt;</code> on subsequent
+     admin calls. <code>login</code> / <code>registerAndLogin</code> set this for you.</p>
+
+  <h3 id="getAccessToken">getAccessToken()</h3>
+  <pre><code><span class="kw">function</span> getAccessToken(): <span class="kw">string</span></code></pre>
+  <p>Return the currently stored access token (empty string until login).</p>
+
+  <h3 id="login">login(email, password)</h3>
+  <pre><code><span class="kw">async function</span> login(email: <span class="kw">string</span>, password: <span class="kw">string</span>): Promise&lt;{ user: <span class="kw">any</span>; accessToken: <span class="kw">string</span> }&gt;</code></pre>
+  <p>Refresh the CSRF token, then <code>POST /auth/login</code> with <code>{ email, password }</code>.
+     On success stores the returned access token and returns <code>{ user, accessToken }</code>. Throws
+     a friendly, human-readable error message on any failure (network down, 401, 429, etc.).</p>
+
+  <h3 id="registerAndLogin">registerAndLogin(email, password, name)</h3>
+  <pre><code><span class="kw">async function</span> registerAndLogin(email: <span class="kw">string</span>, password: <span class="kw">string</span>, name: <span class="kw">string</span>): Promise&lt;{ user: <span class="kw">any</span>; accessToken: <span class="kw">string</span> }&gt;</code></pre>
+  <p>Refresh the CSRF token, then <code>POST /auth/register</code> with <code>{ email, password, name }</code>.
+     On success stores the returned access token and returns <code>{ user, accessToken }</code>. Throws
+     a friendly error message on failure (e.g. <code>409</code> → "A user with that email already exists.").</p>
+
+  <div class="callout note">
+    <span class="label">Friendly errors</span>
+    Both auth helpers extract <code>error.message</code> from the JSON body, and fall back to
+    status-specific copy (<code>401</code> → "Invalid email or password.", <code>404</code> →
+    "Auth endpoint not found — is the backend running?", <code>429</code> → "Too many attempts…",
+    network failure → "Cannot reach the backend — is the server running?").
+  </div>
+
+  <h2>Admin config &amp; env</h2>
+
+  <h3>ConfigFile</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>Absolute path to the user config file on disk.</td></tr>
+      <tr><td><code>content</code></td><td><code>string</code></td><td>Raw file contents (for the editor view).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AdminConfig</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>runtime</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Effective runtime overrides (from <code>nexus.runtime.json</code>).</td></tr>
+      <tr><td><code>config</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>The full merged config object.</td></tr>
+      <tr><td><code>file</code></td><td><code>ConfigFile | null</code></td><td>The user config file (path + content) if present.</td></tr>
+      <tr><td><code>project?</code></td><td><code>{ name; path; dbName; status? }</code></td><td>Project metadata: name, root path, DB name, boot status.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EnvEntry</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>key</code></td><td><code>string</code></td><td>Env variable name.</td></tr>
+      <tr><td><code>value</code></td><td><code>string | null</code></td><td>Value (<code>null</code> if unset).</td></tr>
+      <tr><td><code>secret</code></td><td><code>boolean</code></td><td>Whether this key is masked in the UI.</td></tr>
+      <tr><td><code>configPath?</code></td><td><code>string</code></td><td>Config key path this env var maps to, if known.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>AdminEnv</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>fileName?</code></td><td><code>string</code></td><td>Resolved env file name.</td></tr>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>Absolute path to the env file.</td></tr>
+      <tr><td><code>exists</code></td><td><code>boolean</code></td><td>Whether the file exists on disk.</td></tr>
+      <tr><td><code>entries</code></td><td><code>EnvEntry[]</code></td><td>Parsed entries.</td></tr>
+      <tr><td><code>note?</code></td><td><code>string</code></td><td>Backend-supplied note (e.g. precedence hint).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getAdminConfig">getAdminConfig()</h3>
+  <pre><code><span class="kw">const</span> getAdminConfig = () =&gt; adminFetch(<span class="str">'/admin/config'</span>): Promise&lt;AdminConfig&gt;</code></pre>
+  <p>Fetch the merged config, runtime overrides, the user config file, and project metadata.</p>
+
+  <h3 id="getAdminEnv">getAdminEnv(file?)</h3>
+  <pre><code><span class="kw">const</span> getAdminEnv = (file?: <span class="kw">string</span>): Promise&lt;AdminEnv&gt; =&gt;
+  adminFetch(file ? `/admin/env?file=${encodeURIComponent(file)}` : <span class="str">'/admin/env'</span>)</code></pre>
+  <p>Read a parsed env file. Pass <code>file</code> to target a specific file.</p>
+
+  <h3 id="putAdminEnv">putAdminEnv(entries, file?)</h3>
+  <pre><code><span class="kw">async function</span> putAdminEnv(entries: EnvEntry[], file?: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/env</code> with <code>{ entries, file }</code> — write back
+     env entries to the env file.</p>
+
+  <h3 id="putAdminConfig">putAdminConfig(overrides)</h3>
+  <pre><code><span class="kw">async function</span> putAdminConfig(overrides: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/config</code> with a partial override object — writes back to
+     <code>nexus.runtime.json</code>.</p>
+
+  <h3 id="putAdminConfigFile">putAdminConfigFile(content)</h3>
+  <pre><code><span class="kw">async function</span> putAdminConfigFile(content: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/config/file</code> with <code>{ content }</code> — overwrite the
+     entire user config file with the given text.</p>
+
+  <h2>Plugins</h2>
+
+  <h3 id="getPlugins">getPlugins()</h3>
+  <pre><code><span class="kw">const</span> getPlugins = () =&gt; adminFetch(<span class="str">'/admin/plugins'</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>List discovered plugins and their loaded state.</p>
+
+  <h2>Users &amp; roles</h2>
+
+  <h3>UserRecord</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>_id</code></td><td><code>string</code></td><td>User id.</td></tr>
+      <tr><td><code>email</code></td><td><code>string</code></td><td>Email.</td></tr>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>Display name.</td></tr>
+      <tr><td><code>roles</code></td><td><code>string[]</code></td><td>Assigned role ids.</td></tr>
+      <tr><td><code>emailVerified?</code></td><td><code>boolean</code></td><td>Email verification state.</td></tr>
+      <tr><td><code>createdAt?</code> / <code>updatedAt?</code></td><td><code>string</code></td><td>Timestamps.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>RolePermission</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>label</code></td><td><code>string</code></td><td>Short human-readable grant name.</td></tr>
+      <tr><td><code>detail</code></td><td><code>string</code></td><td>Long-form description.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>RoleDefinition</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Role id (e.g. <code>'admin'</code>).</td></tr>
+      <tr><td><code>label</code></td><td><code>string</code></td><td>Display label.</td></tr>
+      <tr><td><code>icon</code></td><td><code>string</code></td><td>Icon id for the UI.</td></tr>
+      <tr><td><code>accent</code></td><td><code>string</code></td><td>Accent color.</td></tr>
+      <tr><td><code>description</code></td><td><code>string</code></td><td>Role summary.</td></tr>
+      <tr><td><code>grants</code></td><td><code>RolePermission[]</code></td><td>What this role permits.</td></tr>
+      <tr><td><code>restricts</code></td><td><code>RolePermission[]</code></td><td>What this role forbids.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getUsers">getUsers()</h3>
+  <pre><code><span class="kw">const</span> getUsers = () =&gt; adminFetch(<span class="str">'/admin/users'</span>): Promise&lt;UserRecord[]&gt;</code></pre>
+  <p>List all users with their roles.</p>
+
+  <h3 id="getRoles">getRoles()</h3>
+  <pre><code><span class="kw">const</span> getRoles = () =&gt; adminFetch(<span class="str">'/admin/roles'</span>): Promise&lt;RoleDefinition[]&gt;</code></pre>
+  <p>List the role catalogue (grants + restricts per role).</p>
+
+  <h3 id="putUserRoles">putUserRoles(id, roles)</h3>
+  <pre><code><span class="kw">async function</span> putUserRoles(id: <span class="kw">string</span>, roles: <span class="kw">string</span>[]): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/users/:id</code> with <code>{ roles }</code> — replace a user's
+     assigned roles.</p>
+
+  <h2>Metrics</h2>
+
+  <h3 id="getMetrics">getMetrics()</h3>
+  <pre><code><span class="kw">const</span> getMetrics = () =&gt; adminFetch(<span class="str">'/admin/metrics'</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Fetch backend runtime metrics (RPS, memory, request counts).</p>
+
+  <h2>Preflight diagnostics</h2>
+  <p>Computed by the Python AI server and surfaced through the backend.</p>
+
+  <h3>PreflightCheck</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Check name.</td></tr>
+      <tr><td><code>kind</code></td><td><code>string</code></td><td>Check category.</td></tr>
+      <tr><td><code>ok</code></td><td><code>boolean</code></td><td>Pass/fail.</td></tr>
+      <tr><td><code>latencyMs?</code></td><td><code>number</code></td><td>Probe latency.</td></tr>
+      <tr><td><code>status?</code></td><td><code>number | null</code></td><td>HTTP status observed.</td></tr>
+      <tr><td><code>url?</code></td><td><code>string</code></td><td>Probed URL.</td></tr>
+      <tr><td><code>host?</code> / <code>port?</code></td><td><code>string</code> / <code>number</code></td><td>Probed host/port.</td></tr>
+      <tr><td><code>error?</code></td><td><code>string</code></td><td>Error message on failure.</td></tr>
+      <tr><td><code>errorCategory?</code></td><td><code>string</code></td><td>Classified error category.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>PreflightReport</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ranAt</code></td><td><code>string</code></td><td>ISO timestamp.</td></tr>
+      <tr><td><code>durationMs</code></td><td><code>number</code></td><td>Total run time.</td></tr>
+      <tr><td><code>engineOk?</code></td><td><code>boolean</code></td><td>Whether the AI engine itself was reachable.</td></tr>
+      <tr><td><code>passed</code> / <code>warnings</code> / <code>failed</code></td><td><code>number</code></td><td>Counts.</td></tr>
+      <tr><td><code>checks</code></td><td><code>PreflightCheck[]</code></td><td>Per-check results.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="runPreflight">runPreflight()</h3>
+  <pre><code><span class="kw">async function</span> runPreflight(): Promise&lt;PreflightReport&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/preflight</code> — kick off a connectivity/config probe and
+     return the full report.</p>
+
+  <h2>Config &amp; env linting</h2>
+  <p>Computed by the Python AI server and surfaced through the backend.</p>
+
+  <h3>LintCheck</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>key</code></td><td><code>string</code></td><td>Config key / env var the finding relates to.</td></tr>
+      <tr><td><code>severity</code></td><td><code>'error' | 'warning' | 'info' | 'ok'</code></td><td>Finding severity.</td></tr>
+      <tr><td><code>kind</code></td><td><code>string</code></td><td>Finding category.</td></tr>
+      <tr><td><code>message</code></td><td><code>string</code></td><td>Human-readable message.</td></tr>
+      <tr><td><code>errorCategory?</code></td><td><code>string</code></td><td>Classified error category.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>LintReport</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ranAt</code></td><td><code>string</code></td><td>ISO timestamp.</td></tr>
+      <tr><td><code>engineOk?</code></td><td><code>boolean</code></td><td>AI engine reachable.</td></tr>
+      <tr><td><code>summary</code></td><td><code>{ error; warning; info; ok }</code></td><td>Counts by severity.</td></tr>
+      <tr><td><code>checks</code></td><td><code>LintCheck[]</code></td><td>Findings.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="runLintEnv">runLintEnv(file?)</h3>
+  <pre><code><span class="kw">async function</span> runLintEnv(file?: <span class="kw">string</span>): Promise&lt;LintReport&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/lint/env</code> with <code>{ env: file }</code> (or <code>{}</code>)
+     — lint the env file.</p>
+
+  <h3 id="runLintConfig">runLintConfig()</h3>
+  <pre><code><span class="kw">async function</span> runLintConfig(): Promise&lt;LintReport&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/lint/config</code> — lint the merged config.</p>
+
+  <h2>Payments</h2>
+
+  <h3>PaymentProviderStatus</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Provider id.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Provider on/off.</td></tr>
+      <tr><td><code>sandbox</code></td><td><code>boolean</code></td><td>Sandbox/test mode.</td></tr>
+      <tr><td><code>configured</code></td><td><code>boolean</code></td><td>Has the required credentials.</td></tr>
+      <tr><td><code>live</code></td><td><code>boolean</code></td><td>Live-mode reachable.</td></tr>
+      <tr><td><code>ok</code></td><td><code>boolean</code></td><td>Overall healthy.</td></tr>
+      <tr><td><code>detail?</code> / <code>error?</code> / <code>note?</code></td><td><code>string</code></td><td>Diagnostics.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getPaymentOrders">getPaymentOrders(provider?)</h3>
+  <pre><code><span class="kw">const</span> getPaymentOrders = (provider?: <span class="kw">string</span>) =&gt;
+  adminFetch(`/admin/payments/orders${provider ? `?provider=${encodeURIComponent(provider)}` : <span class="str">''</span>}`)</code></pre>
+  <p>List payment orders, optionally filtered by provider.</p>
+
+  <h3 id="getPaymentTransactions">getPaymentTransactions(provider?)</h3>
+  <pre><code><span class="kw">const</span> getPaymentTransactions = (provider?: <span class="kw">string</span>) =&gt;
+  adminFetch(`/admin/payments/transactions${provider ? `?provider=${encodeURIComponent(provider)}` : <span class="str">''</span>}`)</code></pre>
+  <p>List payment transactions, optionally filtered by provider.</p>
+
+  <h3 id="getPaymentStatus">getPaymentStatus()</h3>
+  <pre><code><span class="kw">const</span> getPaymentStatus = () =&gt; adminFetch(<span class="str">'/admin/payments/status'</span>): Promise&lt;PaymentProviderStatus[]&gt;</code></pre>
+  <p>Per-provider health: enabled, sandbox, configured, live, ok.</p>
+
+  <h3 id="updatePaymentProvider">updatePaymentProvider(id, patch)</h3>
+  <pre><code><span class="kw">async function</span> updatePaymentProvider(
+  id: <span class="kw">string</span>,
+  patch: { enabled?: <span class="kw">boolean</span>; sandbox?: <span class="kw">boolean</span> }
+): Promise&lt;{ ok: <span class="kw">boolean</span>; provider: { name; enabled; sandbox } }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/payments/providers/:id</code> — toggle a provider's
+     <code>enabled</code> / <code>sandbox</code> flags.</p>
+
+  <h3 id="createPaymentOrder">createPaymentOrder(opts)</h3>
+  <pre><code><span class="kw">async function</span> createPaymentOrder(opts: {
+  provider: <span class="kw">string</span>; amount: <span class="kw">number</span>; currency?: <span class="kw">string</span>; reference?: <span class="kw">string</span>; description?: <span class="kw">string</span>;
+}): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /payments/order</code> — create a test order (defaults
+     <code>reference</code> to <code>test_&lt;timestamp&gt;</code>).</p>
+
+  <h2>Databases</h2>
+
+  <h3>DatabaseInfo</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Database name.</td></tr>
+      <tr><td><code>sizeOnDisk</code></td><td><code>number</code></td><td>Size in bytes.</td></tr>
+      <tr><td><code>collections</code></td><td><code>{ name; count }[]</code></td><td>Collections with document counts.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getDatabases">getDatabases()</h3>
+  <pre><code><span class="kw">const</span> getDatabases = () =&gt; adminFetch(<span class="str">'/admin/databases'</span>): Promise&lt;DatabaseInfo[]&gt;</code></pre>
+  <p>List databases with size and collection counts.</p>
+
+  <h3 id="createDatabase">createDatabase(name)</h3>
+  <pre><code><span class="kw">async function</span> createDatabase(name: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/databases</code> with <code>{ name }</code>.</p>
+
+  <h3 id="deleteDatabase">deleteDatabase(db)</h3>
+  <pre><code><span class="kw">async function</span> deleteDatabase(db: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>DELETE /admin/databases/:db</code>.</p>
+
+  <h3 id="createCollection">createCollection(db, payload)</h3>
+  <pre><code><span class="kw">async function</span> createCollection(db: <span class="kw">string</span>, payload: { name: <span class="kw">string</span>; jsonSchema?: <span class="kw">unknown</span> }): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/databases/:db/collections</code> — create a collection,
+     optionally with a <code>$jsonSchema</code> validator.</p>
+
+  <h3 id="modifyCollection">modifyCollection(db, name, payload)</h3>
+  <pre><code><span class="kw">async function</span> modifyCollection(db: <span class="kw">string</span>, name: <span class="kw">string</span>, payload: { newName?: <span class="kw">string</span>; validator?: <span class="kw">unknown</span> }): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/databases/:db/collections/:name</code> — rename and/or update
+     the collection's <code>$jsonSchema</code> validator.</p>
+
+  <h3 id="dropCollection">dropCollection(db, name)</h3>
+  <pre><code><span class="kw">async function</span> dropCollection(db: <span class="kw">string</span>, name: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>DELETE /admin/databases/:db/collections/:name</code>.</p>
+
+  <h3 id="getCollectionDocs">getCollectionDocs(db, name)</h3>
+  <pre><code><span class="kw">async function</span> getCollectionDocs(db: <span class="kw">string</span>, name: <span class="kw">string</span>): Promise&lt;{ count: <span class="kw">number</span>; docs: <span class="kw">unknown</span>[] }&gt;</code></pre>
+  <p><code>GET /admin/databases/:db/collections/:name/docs</code> — sample documents and total count.</p>
+
+  <h2>AI</h2>
+
+  <h3>AiStatus</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>checkedAt</code></td><td><code>string</code></td><td>ISO timestamp.</td></tr>
+      <tr><td><code>aiServer</code></td><td><code>{ ok; error?; detail? }</code></td><td>Python AI server reachability + provider list.</td></tr>
+      <tr><td><code>openai</code></td><td><code>{ ok; error?; detail? }</code></td><td>OpenAI reachability + model list.</td></tr>
+      <tr><td><code>ollama</code></td><td><code>{ ok; error?; detail? }</code></td><td>Ollama reachability + model list.</td></tr>
+      <tr><td><code>autoResolvesTo</code></td><td><code>'openai' | 'ollama'</code></td><td>Which provider <code>'auto'</code> resolves to.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>GeneratedSchema</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>collection</code></td><td><code>string</code></td><td>Suggested collection name.</td></tr>
+      <tr><td><code>model</code></td><td><code>string</code></td><td>Suggested ODM model name.</td></tr>
+      <tr><td><code>fields</code></td><td><code>{ name; type; required?; unique?; enum?; description? }[]</code></td><td>Field definitions.</td></tr>
+      <tr><td><code>jsonSchema</code></td><td><code>{ $jsonSchema: { bsonType; required?; properties } }</code></td><td>MongoDB <code>$jsonSchema</code> validator.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="generateSchema">generateSchema(prompt, opts?)</h3>
+  <pre><code><span class="kw">async function</span> generateSchema(prompt: <span class="kw">string</span>, opts: { model?: <span class="kw">string</span>; provider?: <span class="kw">string</span> } = {}): Promise&lt;GeneratedSchema&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/schemas/generate</code> — generate a collection schema from a
+     natural-language prompt.</p>
+
+  <h3>AiModelInfo / AiModelsResponse</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>AiModelInfo.id</code></td><td><code>string</code></td><td>Model id.</td></tr>
+      <tr><td><code>AiModelInfo.owned_by?</code></td><td><code>string</code></td><td>Owner (OpenAI-style).</td></tr>
+      <tr><td><code>AiModelsResponse.provider?</code></td><td><code>string</code></td><td>Which provider was queried.</td></tr>
+      <tr><td><code>AiModelsResponse.data</code></td><td><code>AiModelInfo[]</code></td><td>Available models.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getAiModels">getAiModels(provider?)</h3>
+  <pre><code><span class="kw">async function</span> getAiModels(provider?: <span class="kw">string</span>): Promise&lt;AiModelsResponse&gt;</code></pre>
+  <p><code>GET /ai/models?provider=…</code> — list models for a provider (OpenAI-compatible).</p>
+
+  <h3>AiChatMessage</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>role</code></td><td><code>'system' | 'user' | 'assistant'</code></td><td>Message role.</td></tr>
+      <tr><td><code>content</code></td><td><code>string</code></td><td>Message content.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="aiChat">aiChat(model, messages, provider?)</h3>
+  <pre><code><span class="kw">async function</span> aiChat(
+  model: <span class="kw">string</span>,
+  messages: AiChatMessage[],
+  provider?: <span class="kw">string</span>
+): Promise&lt;{ content: <span class="kw">string</span>; model: <span class="kw">string</span>; raw: <span class="kw">any</span> }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /ai/chat/completions</code> with <code>stream: false</code> —
+     non-streaming chat. Returns the assistant text, the model used, and the raw response.</p>
+
+  <h3 id="aiChatStream">aiChatStream(model, messages, provider, onChunk)</h3>
+  <pre><code><span class="kw">async function</span> aiChatStream(
+  model: <span class="kw">string</span>,
+  messages: AiChatMessage[],
+  provider: <span class="kw">string</span> | <span class="kw">undefined</span>,
+  onChunk: (text: <span class="kw">string</span>) =&gt; <span class="kw">void</span>
+): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /ai/chat/completions</code> with <code>stream: true</code> — read the
+     SSE stream and invoke <code>onChunk(delta)</code> for each token. Stops at <code>data: [DONE]</code>.
+     Throws on backend error events (e.g. invalid API key, provider down).</p>
+
+  <h3>AiProviderView</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Provider id.</td></tr>
+      <tr><td><code>label</code></td><td><code>string</code></td><td>Display label.</td></tr>
+      <tr><td><code>baseUrl</code></td><td><code>string</code></td><td>API base URL.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Selectable.</td></tr>
+      <tr><td><code>apiKey</code></td><td><code>string</code></td><td>API key (masked/redacted by the backend).</td></tr>
+      <tr><td><code>hasApiKey</code></td><td><code>boolean</code></td><td>Whether a key is set.</td></tr>
+      <tr><td><code>defaultModel?</code></td><td><code>string</code></td><td>Default model for this provider.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getAiProviders">getAiProviders()</h3>
+  <pre><code><span class="kw">async function</span> getAiProviders(): Promise&lt;{ providers: AiProviderView[] }&gt;</code></pre>
+  <p><code>GET /admin/ai/providers</code> — list configured AI providers.</p>
+
+  <h3 id="updateAiProvider">updateAiProvider(id, patch)</h3>
+  <pre><code><span class="kw">async function</span> updateAiProvider(
+  id: <span class="kw">string</span>,
+  patch: { apiKey?: <span class="kw">string</span>; enabled?: <span class="kw">boolean</span>; defaultModel?: <span class="kw">string</span>; label?: <span class="kw">string</span>; baseUrl?: <span class="kw">string</span> }
+): Promise&lt;{ ok: <span class="kw">boolean</span>; provider: AiProviderView }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>PUT /admin/ai/providers/:id</code> — update a provider.</p>
+
+  <h3 id="addAiProvider">addAiProvider(provider)</h3>
+  <pre><code><span class="kw">async function</span> addAiProvider(provider: {
+  id: <span class="kw">string</span>; label: <span class="kw">string</span>; baseUrl: <span class="kw">string</span>; apiKey?: <span class="kw">string</span>; defaultModel?: <span class="kw">string</span>; enabled?: <span class="kw">boolean</span>;
+}): Promise&lt;{ ok: <span class="kw">boolean</span>; provider: AiProviderView }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/ai/providers</code> — add a new provider.</p>
+
+  <h3 id="deleteAiProvider">deleteAiProvider(id)</h3>
+  <pre><code><span class="kw">async function</span> deleteAiProvider(id: <span class="kw">string</span>): Promise&lt;{ ok: <span class="kw">boolean</span> }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>DELETE /admin/ai/providers/:id</code>.</p>
+
+  <h2>Cluster</h2>
+
+  <h3>ClusterNodeView</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Node id.</td></tr>
+      <tr><td><code>role</code></td><td><code>'backend' | 'files' | 'database' | 'ai'</code></td><td>Service profile.</td></tr>
+      <tr><td><code>tier</code></td><td><code>string</code></td><td>Deployment tier.</td></tr>
+      <tr><td><code>version</code></td><td><code>string</code></td><td>Node version.</td></tr>
+      <tr><td><code>baseUrl</code></td><td><code>string</code></td><td>Node base URL.</td></tr>
+      <tr><td><code>serviceUrl?</code></td><td><code>string</code></td><td>Service-facing URL.</td></tr>
+      <tr><td><code>status</code></td><td><code>'pending' | 'ready' | 'unreachable'</code></td><td>Registration status.</td></tr>
+      <tr><td><code>enabled</code></td><td><code>boolean</code></td><td>Node enabled.</td></tr>
+      <tr><td><code>registeredAt</code> / <code>lastSeenAt</code></td><td><code>string</code></td><td>Timestamps.</td></tr>
+      <tr><td><code>rps</code></td><td><code>number</code></td><td>Current RPS.</td></tr>
+      <tr><td><code>health?</code></td><td><code>{ ok; time; services? }</code></td><td>Last health probe.</td></tr>
+      <tr><td><code>metrics?</code></td><td><code>{ nodeId; rps; cpu; memoryMb; sampledAt }</code></td><td>Last metrics sample.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ClusterOverview</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>enabled</code> / <code>running</code></td><td><code>boolean</code></td><td>Cluster enabled / currently running.</td></tr>
+      <tr><td><code>lbHost</code> / <code>lbPort</code></td><td><code>string</code> / <code>number</code></td><td>Load balancer bind address.</td></tr>
+      <tr><td><code>nodeAgentHost</code></td><td><code>string</code></td><td>Node agent host.</td></tr>
+      <tr><td><code>controlPort</code></td><td><code>number</code></td><td>Control port.</td></tr>
+      <tr><td><code>autoscale</code></td><td><code>{ enabled; mode; minNodes; maxNodes; cooldownMs; cpuHigh; rpsPerNodeHigh; rpsPerNodeLow }</code></td><td>Autoscaler config snapshot.</td></tr>
+      <tr><td><code>nodes</code></td><td><code>ClusterNodeView[]</code></td><td>Registered nodes.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ClusterSetup</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>master</code></td><td><code>{ enabled; lbHost; lbPort; nodeAgentHost; nodeAgentPort; registryFile; serverUrl }</code></td><td>Master/central node config.</td></tr>
+      <tr><td><code>self</code></td><td><code>{ host; port; agentUrl; serve; link; token }</code></td><td>This server's own node agent — URL + commands to hand to a remote master.</td></tr>
+      <tr><td><code>slaves</code></td><td><code>{ role; label; host; port; serve; link }[]</code></td><td>Linked slave nodes.</td></tr>
+      <tr><td><code>runtime?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Runtime registry snapshot.</td></tr>
+      <tr><td><code>note?</code></td><td><code>string</code></td><td>Backend hint.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getClusterOverview">getClusterOverview()</h3>
+  <pre><code><span class="kw">async function</span> getClusterOverview(): Promise&lt;ClusterOverview&gt;</code></pre>
+  <p><code>GET /admin/cluster/overview</code> — cluster status + nodes.</p>
+
+  <h3 id="getClusterSetup">getClusterSetup()</h3>
+  <pre><code><span class="kw">async function</span> getClusterSetup(): Promise&lt;ClusterSetup&gt;</code></pre>
+  <p><code>GET /admin/cluster/setup</code> — master/self/slaves wiring.</p>
+
+  <h3 id="saveClusterSetup">saveClusterSetup(master)</h3>
+  <pre><code><span class="kw">async function</span> saveClusterSetup(master: Partial&lt;ClusterSetup[<span class="str">'master'</span>]&gt;): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/setup</code> with <code>{ master }</code> — save
+     master config.</p>
+
+  <h3 id="clusterLink">clusterLink(nodeUrl, token?)</h3>
+  <pre><code><span class="kw">async function</span> clusterLink(nodeUrl: <span class="kw">string</span>, token?: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/link</code> with <code>{ nodeUrl, token }</code> —
+     register a slave node to the master.</p>
+
+  <h3 id="generateClusterToken">generateClusterToken()</h3>
+  <pre><code><span class="kw">async function</span> generateClusterToken(): Promise&lt;{ token: <span class="kw">string</span> }&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/generate-token</code> — mint a pairing token.</p>
+
+  <h3 id="clusterUnlink">clusterUnlink(id)</h3>
+  <pre><code><span class="kw">async function</span> clusterUnlink(id: <span class="kw">string</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/unlink</code> with <code>{ id }</code> — remove a node.</p>
+
+  <h3 id="clusterExec">clusterExec(id, action)</h3>
+  <pre><code><span class="kw">async function</span> clusterExec(id: <span class="kw">string</span>, action: <span class="str">'start'</span> | <span class="str">'stop'</span> | <span class="str">'restart'</span> | <span class="str">'kill'</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/exec</code> with <code>{ id, action }</code> — run a
+     process action on a node.</p>
+
+  <h3 id="clusterScale">clusterScale(target)</h3>
+  <pre><code><span class="kw">async function</span> clusterScale(target: <span class="kw">number</span>): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/scale</code> with <code>{ target }</code> — scale to a
+     target node count.</p>
+
+  <h3 id="clusterPoll">clusterPoll()</h3>
+  <pre><code><span class="kw">async function</span> clusterPoll(): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/poll</code> — poll nodes for health/metrics.</p>
+
+  <h3 id="clusterStart">clusterStart()</h3>
+  <pre><code><span class="kw">async function</span> clusterStart(): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/start</code> — start the cluster (registry + LB +
+     autoscaler).</p>
+
+  <h3 id="clusterStop">clusterStop()</h3>
+  <pre><code><span class="kw">async function</span> clusterStop(): Promise&lt;<span class="kw">any</span>&gt;</code></pre>
+  <p>Refresh CSRF, then <code>POST /admin/cluster/stop</code> — stop the cluster.</p>
+
+  <h2>Supervisor client</h2>
+  <p>These functions talk to the <strong>supervisor control API</strong> (a separate process),
+     <em>not</em> the backend. The base URL is resolved once by <code>resolveSupervisor()</code>.</p>
+
+  <h3 id="resolveSupervisor">resolveSupervisor()</h3>
+  <pre><code><span class="kw">async function</span> resolveSupervisor(): Promise&lt;<span class="kw">string</span>&gt;</code></pre>
+  <p>Resolve and cache the supervisor URL. Precedence: a cached value &gt;
+     <code>VITE_SUPERVISOR_URL</code> &gt; <code>/admin/supervisor</code> (<code>.url</code> or
+     <code>.port</code>) &gt; fallback <code>http://localhost:7474</code>.</p>
+
+  <h3>ServiceState</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Service name.</td></tr>
+      <tr><td><code>status</code></td><td><code>string</code></td><td>Current status (e.g. <code>'running'</code>).</td></tr>
+      <tr><td><code>pid?</code></td><td><code>number</code></td><td>OS pid when running.</td></tr>
+      <tr><td><code>startedAt?</code></td><td><code>number</code></td><td>Start timestamp (ms).</td></tr>
+      <tr><td><code>lastExitCode?</code></td><td><code>number | null</code></td><td>Last exit code.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getServices">getServices()</h3>
+  <pre><code><span class="kw">async function</span> getServices(): Promise&lt;ServiceState[]&gt;</code></pre>
+  <p><code>GET &lt;supervisor&gt;/status</code> — list managed services and their state.</p>
+
+  <h3 id="controlService">controlService(action, name)</h3>
+  <pre><code><span class="kw">async function</span> controlService(action: <span class="str">'start'</span> | <span class="str">'stop'</span> | <span class="str">'restart'</span>, name: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p><code>POST &lt;supervisor&gt;/:action?name=…</code> — start/stop/restart a service.</p>
+
+  <h3 id="getServiceLogs">getServiceLogs(name)</h3>
+  <pre><code><span class="kw">async function</span> getServiceLogs(name: <span class="kw">string</span>): Promise&lt;<span class="kw">string</span>[]&gt;</code></pre>
+  <p><code>GET &lt;supervisor&gt;/logs?name=…</code> — raw log lines for one service.</p>
+
+  <h3>LogEntry</h3>
+  <p>Structured cross-service log entry from the supervisor's aggregated buffer.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>service</code></td><td><code>string</code></td><td>Source service name.</td></tr>
+      <tr><td><code>ts</code></td><td><code>number</code></td><td>Timestamp (ms).</td></tr>
+      <tr><td><code>source</code></td><td><code>'stdout' | 'stderr' | 'system'</code></td><td>Output stream.</td></tr>
+      <tr><td><code>level</code></td><td><code>'info' | 'warn' | 'error'</code></td><td>Severity.</td></tr>
+      <tr><td><code>line</code></td><td><code>string</code></td><td>Log line.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="getAllLogs">getAllLogs(opts?)</h3>
+  <pre><code><span class="kw">async function</span> getAllLogs(opts: { service?: <span class="kw">string</span>; level?: <span class="str">'error'</span> | <span class="str">'warn'</span> | <span class="str">'info'</span>; q?: <span class="kw">string</span> } = {}): Promise&lt;LogEntry[]&gt;</code></pre>
+  <p><code>GET &lt;supervisor&gt;/logs/all?service=&amp;level=&amp;q=…</code> — aggregated, filterable logs
+     across all services.</p>
+
+  <h3 id="clearLogs">clearLogs()</h3>
+  <pre><code><span class="kw">async function</span> clearLogs(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p><code>POST &lt;supervisor&gt;/logs/clear</code> — clear the aggregated log buffer.</p>
+
+  <h3 id="getSupervisorInfo">getSupervisorInfo()</h3>
+  <pre><code><span class="kw">async function</span> getSupervisorInfo(): Promise&lt;{ port?: <span class="kw">number</span> | <span class="kw">null</span>; url?: <span class="kw">string</span> | <span class="kw">null</span> }&gt;</code></pre>
+  <p><code>GET /admin/supervisor</code> — the backend's view of the supervisor's port/URL. (This one
+     goes to the backend, not the supervisor.)</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Admin Client API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Admin - login flow","apiBase":"http://localhost:4000","js":"// Simulated admin login flow (CSRF refresh -> POST /auth/login -> store token).\n// The real client re-fetches /csrf-token before every mutating call because the\n// server rotates the CSRF cookie on every safe request.\nasync function login(email, password) {\n  const csrf = await fetch(\"/csrf-token\", { credentials: \"include\" }).then(r => r.json());\n  const res = await fetch(\"/auth/login\", {\n    method: \"POST\",\n    credentials: \"include\",\n    headers: { \"content-type\": \"application/json\", \"x-csrf-token\": csrf.token },\n    body: JSON.stringify({ email, password }),\n  });\n  if (!res.ok) throw new Error(`Login failed: ${res.status}`);\n  const data = await res.json();\n  // setAccessToken(data.accessToken) — used as Authorization: Bearer on /admin/* calls\n  return data;\n}\nconsole.log(\"login() would POST /auth/login and store the access token\");\nconsole.log(\"then every admin call sends Authorization: Bearer <token> + a fresh x-csrf-token\");","api":{"method":"POST","path":"/auth/login"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

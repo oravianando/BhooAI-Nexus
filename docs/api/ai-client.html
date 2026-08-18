@@ -1,0 +1,336 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Client API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-ai-client</span> AI Client API
+    <span class="sub">Node client for the Python AI server — chat, streaming, embeddings, retries.</span></h1>
+
+  <p>The browser never calls Python directly — the Node backend proxies/re-emits SSE. This client is what the
+     backend uses to talk to the FastAPI AI server. It is OpenAI-compatible: the request/response shapes mirror
+     the OpenAI Chat Completions and Embeddings APIs. The wire contract is defined in
+     <code>contracts/ai-openapi.yaml</code>.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>client</td><td><code>AiClient</code></td></tr>
+      <tr><td>sse</td><td><code>parseSseStream</code></td></tr>
+      <tr><td>errors</td><td><code>AiError</code>, <code>isRetryable</code></td></tr>
+      <tr><td>types (chat)</td><td><code>Provider</code>, <code>Role</code>, <code>Message</code>, <code>ChatCompletionRequest</code>, <code>Choice</code>, <code>Usage</code>, <code>ChatCompletionResponse</code>, <code>Delta</code>, <code>ChunkChoice</code>, <code>ChatCompletionChunk</code></td></tr>
+      <tr><td>types (embeddings/models)</td><td><code>EmbeddingRequest</code>, <code>EmbeddingData</code>, <code>EmbeddingResponse</code>, <code>ModelInfo</code>, <code>ModelsResponse</code></td></tr>
+      <tr><td>types (client options)</td><td><code>AiClientOptions</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+  <pre><code><span class="kw">import</span> { AiClient } <span class="kw">from</span> <span class="str">'@bhooai/nexus-ai-client'</span>;
+
+<span class="kw">const</span> ai = <span class="kw">new</span> AiClient({ serverUrl: config.ai.serverUrl, timeoutMs: <span class="num">60_000</span> });
+
+<span class="com">// non-streaming — model is REQUIRED</span>
+<span class="kw">const</span> reply = <span class="kw">await</span> ai.chat({
+  model: <span class="str">'gpt-4o-mini'</span>,
+  messages: [{ role: <span class="str">'user'</span>, content: <span class="str">'hi'</span> }],
+  provider: <span class="str">'ollama'</span>,
+});
+
+<span class="com">// streaming — async generator over SSE chunks; delta lives on choices[i].delta</span>
+<span class="kw">for await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> ai.chatStream({
+  model: <span class="str">'gpt-4o-mini'</span>,
+  messages: [{ role: <span class="str">'user'</span>, content: <span class="str">'tell me a joke'</span> }],
+})) {
+  process.stdout.write(chunk.choices[<span class="num">0</span>]?.delta?.content ?? <span class="str">''</span>);
+}
+
+<span class="com">// embeddings — model is REQUIRED</span>
+<span class="kw">const</span> vec = <span class="kw">await</span> ai.embeddings({ model: <span class="str">'text-embedding-3-small'</span>, input: <span class="str">'hello world'</span> });
+
+<span class="kw">const</span> models = <span class="kw">await</span> ai.listModels();          <span class="com">// all providers</span>
+<span class="kw">const</span> ollamaModels = <span class="kw">await</span> ai.listModels(<span class="str">'ollama'</span>); <span class="com">// one provider</span></code></pre>
+
+  <div class="callout note">
+    <span class="label">Behavior</span>
+    Every method (<code>chat</code>, <code>chatStream</code>, <code>embeddings</code>, <code>listModels</code>)
+    routes through the private <code>request&lt;T&gt;</code> helper, which applies an <code>AbortController</code>
+    timeout and exponential-backoff retries with deterministic jitter. Retryable: network failures (no status),
+    <code>5xx</code>, and <code>429</code>. Non-retryable: other <code>4xx</code>. The client forwards the
+    <code>provider</code> field to the server (which strips it before calling upstream).
+  </div>
+
+  <h2 id="AiClient">AiClient</h2>
+  <pre><code><span class="kw">class</span> AiClient {
+  constructor(opts: AiClientOptions);
+  chat(req: ChatCompletionRequest): Promise&lt;ChatCompletionResponse&gt;;
+  chatStream(req: ChatCompletionRequest): AsyncGenerator&lt;ChatCompletionChunk, <span class="kw">void</span>, <span class="kw">unknown</span>&gt;;
+  embeddings(req: EmbeddingRequest): Promise&lt;EmbeddingResponse&gt;;
+  listModels(provider?: <span class="kw">string</span>): Promise&lt;ModelsResponse&gt;;
+}</code></pre>
+  <p>Node client for the BhooAI Nexus AI server (Python FastAPI). OpenAI-compatible. Supports non-streaming and
+     streaming chat completions, embeddings, and model listing, with timeout (<code>AbortController</code>) and
+     exponential-backoff retries on transient failures (network errors, <code>5xx</code>, <code>429</code>).</p>
+  <p>The constructor strips trailing slashes from <code>serverUrl</code>. Methods <code>POST</code> JSON to
+     <code>/chat/completions</code>, <code>/embeddings</code>, and <code>GET</code> <code>/models</code> on the
+     AI server. <code>chat</code> forces <code>stream: false</code>; <code>chatStream</code> forces
+     <code>stream: true</code> and accepts <code>text/event-stream</code>.</p>
+
+  <h3 id="AiClient-chat">chat(req)</h3>
+  <pre><code><span class="kw">async</span> chat(req: ChatCompletionRequest): Promise&lt;ChatCompletionResponse&gt;</code></pre>
+  <p>Non-streaming chat completion. Sends <code>{ ...req, stream: false }</code> to
+     <code>POST /chat/completions</code> and returns the parsed <code>ChatCompletionResponse</code>.</p>
+
+  <h3 id="AiClient-chatStream">chatStream(req)</h3>
+  <pre><code><span class="kw">async function*</span> chatStream(req: ChatCompletionRequest): AsyncGenerator&lt;ChatCompletionChunk, <span class="kw">void</span>, <span class="kw">unknown</span>&gt;</code></pre>
+  <p>Streaming chat completion — an async generator that yields <code>ChatCompletionChunk</code> values until
+     the stream ends. Sends <code>{ ...req, stream: true }</code> with <code>accept: text/event-stream</code>,
+     then pipes the response body through <code>parseSseStream</code>. Throws <code>AiError</code> if the
+     response has no body. The incremental text lives at <code>chunk.choices[0]?.delta?.content</code> — there
+     is no top-level <code>delta</code> field on <code>ChatCompletionChunk</code>.</p>
+
+  <h3 id="AiClient-embeddings">embeddings(req)</h3>
+  <pre><code><span class="kw">async</span> embeddings(req: EmbeddingRequest): Promise&lt;EmbeddingResponse&gt;</code></pre>
+  <p>Create embeddings for one or more inputs. <code>POST /embeddings</code>.</p>
+
+  <h3 id="AiClient-listModels">listModels(provider?)</h3>
+  <pre><code><span class="kw">async</span> listModels(provider?: <span class="kw">string</span>): Promise&lt;ModelsResponse&gt;</code></pre>
+  <p>List available models, optionally filtered to a single provider (appends
+     <code>?provider=&lt;encoded&gt;</code>). <code>GET /models</code>.</p>
+
+  <h3 id="AiClientOptions">AiClientOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>serverUrl</code></td><td><code>string</code></td><td>—</td><td><strong>Required.</strong> AI server base URL, e.g. <code>http://localhost:8000</code>. Trailing slashes are stripped.</td></tr>
+      <tr><td><code>timeoutMs?</code></td><td><code>number</code></td><td><code>60000</code></td><td>Per-request timeout in ms; enforced via <code>AbortController</code> (abort → <code>AiError('AI request timed out')</code>).</td></tr>
+      <tr><td><code>maxRetries?</code></td><td><code>number</code></td><td><code>2</code></td><td>Max retry attempts on transient errors (network failures, <code>5xx</code>, <code>429</code>).</td></tr>
+      <tr><td><code>retryDelayMs?</code></td><td><code>number</code></td><td><code>500</code></td><td>Base delay for exponential backoff in ms. Delay = <code>retryDelayMs * 2^attempt + attempt</code> (deterministic jitter, no <code>Math.random</code>).</td></tr>
+      <tr><td><code>authToken?</code></td><td><code>string</code></td><td>—</td><td>Optional Bearer token sent as <code>authorization: Bearer &lt;token&gt;</code> to the AI server.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="label">Retry &amp; backoff</span>
+    <code>request&lt;T&gt;</code> loops <code>attempt = 0..maxRetries</code>. On a non-OK HTTP response it builds an
+    <code>AiError</code> from the JSON error body (<code>body.error.message</code> / <code>body.error.code</code>).
+    On an abort/network throw it wraps the message. If <code>isRetryable(err)</code> and attempts remain, it waits
+    <code>retryDelayMs * 2^attempt + attempt</code> ms (deterministic jitter folded from the attempt index) and
+    retries; otherwise it throws. After the loop, the last error is rethrown (or a generic
+    <code>AiError('AI request failed')</code>).
+  </div>
+
+  <h2 id="parseSseStream">parseSseStream(stream)</h2>
+  <pre><code><span class="kw">async function*</span> parseSseStream(stream: ReadableStream&lt;Uint8Array&gt;): AsyncGenerator&lt;<span class="kw">any</span>, <span class="kw">void</span>, <span class="kw">unknown</span>&gt;</code></pre>
+  <p>Minimal SSE parser for the streaming chat endpoint. Reads a web
+     <code>ReadableStream&lt;Uint8Array&gt;</code>, buffers bytes, splits events on blank lines
+     (<code>\n\n</code>), collects <code>data:</code> lines per event (concatenated with <code>\n</code>), and
+     yields the <code>JSON.parse</code>d payload of each event. Stops immediately when a payload is
+     <code>[DONE]</code>. Malformed JSON is skipped. After the stream ends, any trailing event without a
+     blank-line terminator is flushed. The reader's lock is released in a <code>finally</code> block.</p>
+  <pre><code><span class="kw">import</span> { parseSseStream } <span class="kw">from</span> <span class="str">'@bhooai/nexus-ai-client'</span>;
+
+<span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">'http://localhost:8000/chat/completions'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'content-type'</span>: <span class="str">'application/json'</span>, accept: <span class="str">'text/event-stream'</span> },
+  body: JSON.stringify({ model: <span class="str">'gpt-4o-mini'</span>, messages: [...], stream: <span class="kw">true</span> }),
+});
+<span class="kw">for await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> parseSseStream(res.body!)) {
+  console.log(chunk.choices[<span class="num">0</span>]?.delta?.content ?? <span class="str">''</span>);
+}</code></pre>
+
+  <h2 id="AiError">Errors — AiError &amp; isRetryable</h2>
+  <pre><code><span class="kw">class</span> AiError <span class="kw">extends</span> Error {
+  <span class="kw">readonly</span> status?: <span class="kw">number</span>;
+  <span class="kw">readonly</span> code?: <span class="kw">string</span>;
+  constructor(message: <span class="kw">string</span>, opts: { status?: <span class="kw">number</span>; code?: <span class="kw">string</span> } = {});
+}
+
+<span class="kw">function</span> isRetryable(err: <span class="kw">unknown</span>): <span class="kw">boolean</span>;</code></pre>
+  <p><code>AiError</code> is the error class thrown by <code>AiClient</code>. <code>name</code> is set to
+     <code>'AiError'</code>; <code>status</code> is the upstream HTTP status (absent for network-level
+     failures), <code>code</code> is the upstream error code if present.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>message</code></td><td><code>string</code></td><td>Error message (from upstream <code>body.error.message</code>, or <code>'AI server &lt;status&gt;'</code>, or <code>'AI request timed out'</code> / the network error message).</td></tr>
+      <tr><td><code>status?</code></td><td><code>number</code></td><td>Upstream HTTP status. <code>undefined</code> for network-level failures (abort, DNS, connection refused).</td></tr>
+      <tr><td><code>code?</code></td><td><code>string</code></td><td>Upstream error code from <code>body.error.code</code>, if the error body was JSON.</td></tr>
+    </tbody>
+  </table>
+  <p><code>isRetryable(err)</code> classifies whether an error is transient and worth retrying:</p>
+  <ul>
+    <li>An <code>AiError</code> with <code>status === undefined</code> → <code>true</code> (network-level failure).</li>
+    <li>An <code>AiError</code> with <code>status &gt;= 500</code> or <code>status === 429</code> → <code>true</code>.</li>
+    <li>Any other <code>AiError</code> (other <code>4xx</code>) → <code>false</code>.</li>
+    <li>A non-<code>AiError</code> value → <code>true</code> (treated as an unknown/transient failure).</li>
+  </ul>
+
+  <h2 id="types">Types</h2>
+  <p>All types mirror <code>contracts/ai-openapi.yaml</code> — the Node↔Python AI boundary.</p>
+
+  <h3>Provider</h3>
+  <pre><code><span class="kw">type</span> Provider = <span class="str">'openai'</span> | <span class="str">'ollama'</span> | <span class="str">'auto'</span>;</code></pre>
+  <p>Which upstream the AI server should route to. <code>'auto'</code> lets the server pick based on which API
+     keys are configured.</p>
+
+  <h3>Role</h3>
+  <pre><code><span class="kw">type</span> Role = <span class="str">'system'</span> | <span class="str">'user'</span> | <span class="str">'assistant'</span> | <span class="str">'tool'</span>;</code></pre>
+
+  <h3>Message</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>role</code></td><td><code>Role</code></td><td>Sender role.</td></tr>
+      <tr><td><code>content</code></td><td><code>string</code></td><td>Message text.</td></tr>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>Optional name (e.g. tool name).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ChatCompletionRequest</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>model</code></td><td><code>string</code></td><td><strong>Required.</strong> Model id, e.g. <code>'gpt-4o-mini'</code>.</td></tr>
+      <tr><td><code>messages</code></td><td><code>Message[]</code></td><td>Conversation turns.</td></tr>
+      <tr><td><code>stream?</code></td><td><code>boolean</code></td><td>Stream flag — <code>chat</code> forces <code>false</code>, <code>chatStream</code> forces <code>true</code>.</td></tr>
+      <tr><td><code>temperature?</code></td><td><code>number</code></td><td>Sampling temperature.</td></tr>
+      <tr><td><code>max_tokens?</code></td><td><code>number</code></td><td>Max tokens to generate.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>Provider</code></td><td>Upstream provider hint; forwarded to the server and stripped before calling upstream.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Choice</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>index</code></td><td><code>number</code></td><td>Choice position.</td></tr>
+      <tr><td><code>message</code></td><td><code>Message</code></td><td>The assistant message.</td></tr>
+      <tr><td><code>finish_reason</code></td><td><code>string | null</code></td><td>Why generation stopped (<code>'stop'</code>, <code>'length'</code>, …) or <code>null</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Usage</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>prompt_tokens?</code></td><td><code>number</code></td><td>Tokens in the prompt.</td></tr>
+      <tr><td><code>completion_tokens?</code></td><td><code>number</code></td><td>Tokens generated.</td></tr>
+      <tr><td><code>total_tokens?</code></td><td><code>number</code></td><td>Total tokens.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ChatCompletionResponse</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id?</code></td><td><code>string</code></td><td>Completion id.</td></tr>
+      <tr><td><code>model</code></td><td><code>string</code></td><td>Model that produced the response.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>string</code></td><td>Upstream provider that served the request.</td></tr>
+      <tr><td><code>choices</code></td><td><code>Choice[]</code></td><td>One or more completion choices.</td></tr>
+      <tr><td><code>usage?</code></td><td><code>Usage</code></td><td>Token usage.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Delta</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>role?</code></td><td><code>Role</code></td><td>Role for this chunk (usually only on the first chunk).</td></tr>
+      <tr><td><code>content?</code></td><td><code>string</code></td><td>Incremental text for this chunk.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ChunkChoice</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>index</code></td><td><code>number</code></td><td>Choice position.</td></tr>
+      <tr><td><code>delta</code></td><td><code>Delta</code></td><td>Incremental delta for this chunk.</td></tr>
+      <tr><td><code>finish_reason</code></td><td><code>string | null</code></td><td>Set on the final chunk; <code>null</code> while streaming.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ChatCompletionChunk</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id?</code></td><td><code>string</code></td><td>Stream id.</td></tr>
+      <tr><td><code>model</code></td><td><code>string</code></td><td>Model producing the stream.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>string</code></td><td>Upstream provider.</td></tr>
+      <tr><td><code>choices</code></td><td><code>ChunkChoice[]</code></td><td>Per-choice deltas. Read content via <code>choices[0]?.delta?.content</code> — there is no top-level <code>delta</code>.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <span class="label">No top-level delta</span>
+    <code>ChatCompletionChunk</code> has <code>choices: ChunkChoice[]</code>; each <code>ChunkChoice</code> has a
+    <code>delta: Delta</code>. There is <strong>no</strong> <code>chunk.delta</code>. Access content as
+    <code>chunk.choices[0]?.delta?.content ?? ''</code>.
+  </div>
+
+  <h3>EmbeddingRequest</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>model</code></td><td><code>string</code></td><td><strong>Required.</strong> Embedding model id, e.g. <code>'text-embedding-3-small'</code>.</td></tr>
+      <tr><td><code>input</code></td><td><code>string | string[]</code></td><td>One input or a batch of inputs.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>Provider</code></td><td>Upstream provider hint.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmbeddingData</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>index</code></td><td><code>number</code></td><td>Position of this input in the request batch.</td></tr>
+      <tr><td><code>embedding</code></td><td><code>number[]</code></td><td>The embedding vector.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>EmbeddingResponse</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>model</code></td><td><code>string</code></td><td>Model that produced the embeddings.</td></tr>
+      <tr><td><code>provider?</code></td><td><code>string</code></td><td>Upstream provider.</td></tr>
+      <tr><td><code>data</code></td><td><code>EmbeddingData[]</code></td><td>One <code>EmbeddingData</code> per input.</td></tr>
+      <tr><td><code>usage?</code></td><td><code>Usage</code></td><td>Token usage.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ModelInfo</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Model id.</td></tr>
+      <tr><td><code>owned_by?</code></td><td><code>string</code></td><td>Owning provider/organization.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ModelsResponse</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider?</code></td><td><code>string</code></td><td>Provider that served the list (when filtered).</td></tr>
+      <tr><td><code>data</code></td><td><code>ModelInfo[]</code></td><td>Available models.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Backend proxy</h2>
+  <p>The backend's <code>registerAiRoutes</code> mounts <code>POST /ai/chat/completions</code> (stream →
+     <code>writeHead text/event-stream</code> + re-emit <code>data: {chunk}\n\n</code> + <code>data: [DONE]</code>),
+     <code>POST /ai/embeddings</code>, and <code>GET /ai/models</code>. CSRF applies to the POSTs.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · AI Client API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"AI Client - SSE parse + routing","apiBase":"http://localhost:4000","js":"function parseSse(raw) {\n  return raw.split(\"\\n\\n\").filter(Boolean)\n    .map((ev) => ev.split(\"\\n\").filter((l) => l.startsWith(\"data: \")).map((l) => l.slice(6))).flat();\n}\nconst sample = \"data: first\\n\\ndata: second\\n\\ndata: [DONE]\\n\\n\";\nconst chunks = parseSse(sample).filter((c) => c !== \"[DONE]\");\nconsole.log(\"chunks:\", chunks.join(\" | \"));\n\nconst resolveProvider = (req, hasKey) => { const p = (req || \"auto\").toLowerCase(); return p === \"auto\" ? (hasKey ? \"openai\" : \"ollama\") : p; };\nconsole.log(\"auto + key ->\", resolveProvider(\"auto\", true));","api":{"method":"GET","path":"/ai/models"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>02 · Security — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 02</div>
+  <h1>Security <span class="sub"><code>@bhooai/nexus-auth</code> is one cohesive security unit — CSRF, CORS, security headers, rate limiting, JWT sessions, RBAC, and OAuth — plus <code>@bhooai/nexus-telemetry</code> for logging.</span></h1>
+
+  <h2>File map — nexus-auth</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/cors.ts</code></td><td>Inbuilt CORS middleware (origin echo, credentials, preflight).</td></tr>
+      <tr><td><code>src/csrf.ts</code></td><td>Double-submit CSRF + origin check; also verifies WebSocket upgrades.</td></tr>
+      <tr><td><code>src/headers.ts</code></td><td>Security headers middleware (the "helmet equivalent").</td></tr>
+      <tr><td><code>src/rateLimit.ts</code></td><td>In-memory sliding-window rate limiter (Redis backend in <code>nexus-cache</code>).</td></tr>
+      <tr><td><code>src/jwt.ts</code></td><td>Sign/verify access + refresh JWTs via <code>jose</code>.</td></tr>
+      <tr><td><code>src/session.ts</code></td><td><code>SessionStore</code> abstraction + in-memory implementation with families.</td></tr>
+      <tr><td><code>src/auth.ts</code></td><td><code>AuthService</code> — login, refresh rotation, reuse detection, logout.</td></tr>
+      <tr><td><code>src/password.ts</code></td><td>bcrypt hash/verify wrappers.</td></tr>
+      <tr><td><code>src/rbac.ts</code></td><td>Role-based access control helpers.</td></tr>
+      <tr><td><code>src/oauth.ts</code></td><td>Google (PKCE) + Facebook OAuth2 helpers.</td></tr>
+      <tr><td><code>src/middleware.ts</code></td><td><code>authToken</code>, <code>requireAuth</code>, <code>requireRole</code>, <code>setAuthCookies</code>.</td></tr>
+      <tr><td><code>src/index.ts</code></td><td>Public barrel.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. CSRF — double-submit + origin check</h3>
+  <p>Safe methods (GET/HEAD/OPTIONS/TRACE) get a fresh token cookie (<code>nexus_csrf</code>) and expose it via
+     <code>ctx.state.csrfToken</code>. Unsafe methods must present an <code>x-csrf-token</code> header that
+     matches the cookie, and the <code>Origin</code> must be trusted:</p>
+  <pre><code><span class="kw">if</span> (safeMethods.has(ctx.method)) {
+  <span class="kw">const</span> token = issueToken(ctx, cookieName, cookieOpts);
+  ctx.state.csrfToken = token;
+  <span class="kw">await</span> next(); <span class="kw">return</span>;
+}
+checkOrigin(ctx, trusted);  <span class="com">// Origin/Referer must be trusted</span>
+<span class="kw">const</span> cookieToken = readCookie(ctx, cookieName);
+<span class="kw">const</span> sentToken = ctx.headers[tokenName];
+<span class="kw">if</span> (!cookieToken || !sentToken || !timingSafeEqual(cookieToken, sentToken)) {
+  <span class="kw">throw new</span> AuthenticationError(<span class="str">'Invalid CSRF token'</span>);
+}</code></pre>
+  <div class="callout note">
+    <span class="label">Loopback trust</span>
+    In Docker, published ports are remapped (e.g. :3001 → :3011). Loopback origins are trusted
+    regardless of port; external origins match strictly. This was a real bug fixed during the build.
+  </div>
+
+  <h3>2. WebSocket CSRF</h3>
+  <p>WebSockets have no CORS preflight, so the upgrade request verifies the token via the
+     <code>Sec-WebSocket-Protocol</code> header against the cookie (<code>checkWsUpgrade</code> in csrf.ts).</p>
+
+  <h3>3. Sessions + refresh-token rotation</h3>
+  <p><code>AuthService.refresh</code> validates the refresh token, then checks the session's <code>currentJti</code>.
+     If a presented token's <code>jti</code> no longer matches, it was reused after rotation → the whole
+     session family is revoked:</p>
+  <pre><code><span class="kw">if</span> (session.currentJti &amp;&amp; payload.jti &amp;&amp; session.currentJti !== payload.jti) {
+  <span class="kw">await this</span>.sessions.destroyFamily(session.familyId);
+  <span class="kw">throw new</span> AuthenticationError(<span class="str">'Refresh token reuse detected; session revoked'</span>);
+}</code></pre>
+  <p>Each <code>mintPair</code> issues a fresh <code>jti</code> and stores it on the session, so the next refresh
+     invalidates the previous refresh token (rotation).</p>
+
+  <h3>4. JWTs</h3>
+  <p><code>jwt.ts</code> signs tokens with a <code>kind</code> discriminator (<code>access</code> vs
+     <code>refresh</code>) so an access token can never be used to refresh. <code>AuthService.verifyAccessToken</code>
+     rejects tokens whose <code>kind</code> isn't <code>access</code>.</p>
+
+  <h3>5. RBAC + middleware</h3>
+  <p><code>middleware.ts</code> provides <code>authToken(service, { required, cookieName })</code>,
+     <code>requireAuth()</code>, and <code>requireRole('admin')</code>. Route registration wires them as the 3rd
+     array argument: <code>router.get('/admin/...', handler, [authToken(...), requireRole('admin')])</code>.</p>
+
+  <h3>6. Telemetry (nexus-telemetry)</h3>
+  <p>The <code>Logger</code> supports levels, pretty/file formats, redaction of keys like
+     <code>password</code>/<code>secret</code>, and request/trace ids. <code>MetricsRegistry</code> tracks
+     counters/histograms (e.g. <code>http_requests_total</code>).</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: model the double-submit CSRF check and RBAC. Live API: register → login → me (with CSRF).</p>
+
+  <section data-playground='{
+    "title": "Security — CSRF + RBAC + token rotation",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: double-submit CSRF requires header === cookie\nfunction csrfOk(cookieToken, sentToken) {\n  return !!cookieToken && !!sentToken && cookieToken === sentToken;\n}\nconsole.log(\"valid:\", csrfOk(\"abc\", \"abc\"));\nconsole.log(\"mismatch:\", csrfOk(\"abc\", \"xyz\"));\nconsole.log(\"missing header:\", csrfOk(\"abc\", \"\"));\n\n// Model: refresh-token rotation with reuse detection\nfunction refresh(session, presentedJti) {\n  if (session.currentJti && presentedJti !== session.currentJti) {\n    return { ok: false, reason: \"REUSE DETECTED — family revoked\" };\n  }\n  const nextJti = \"jti-\" + Math.random().toString(36).slice(2);\n  session.currentJti = nextJti;   // rotate\n  return { ok: true, nextJti };\n}\nconst session = { currentJti: \"jti-1\" };\nconsole.log(\"fresh refresh:\", refresh(session, \"jti-1\"));\nconsole.log(\"old token replayed:\", refresh(session, \"jti-1\"));\n\n// RBAC\nconst requireRole = (role) => (user) => user.roles.includes(role);\nconst isAdmin = requireRole(\"admin\");\nconsole.log(\"admin allowed:\", isAdmin({ roles: [\"admin\"] }));\nconsole.log(\"user blocked:\", isAdmin({ roles: [\"user\"] }));",
+    "api": { "method": "POST", "path": "/auth/login", "body": { "email": "demo@nexus.local", "password": "password" } }
+  }'></section>
+
+  <p class="foot"><a href="01-foundation.html">&larr; 01 · Foundation</a> · <a href="index.html">Build Guide</a> · Next: <a href="03-data.html">03 · Data ODM →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 02 Security</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

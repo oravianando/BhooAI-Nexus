@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>05 · Realtime — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 05</div>
+  <h1>Realtime <span class="sub"><code>@bhooai/nexus-realtime</code> — WebSocket rooms, pub/sub fanout (in-memory or Redis), WebRTC signaling relay, and a mediasoup SFU adapter.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/types.ts</code></td><td>Wire message shapes (ClientMessage / ServerMessage / Connection).</td></tr>
+      <tr><td><code>src/server/RealtimeServer.ts</code></td><td>WS server: upgrade auth + CSRF, rooms, relay, pub/sub fanout.</td></tr>
+      <tr><td><code>src/adapter/PubSubAdapter.ts</code></td><td>Abstraction + in-memory <code>MemoryPubSubAdapter</code>.</td></tr>
+      <tr><td><code>src/adapter/RedisPubSubAdapter.ts</code></td><td>Redis-based fanout for multi-instance scale.</td></tr>
+      <tr><td><code>src/mediasoup/MediasoupAdapter.ts</code></td><td>SFU adapter for WebRTC media routing (skips gracefully if the native worker is absent).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Attach + upgrade</h3>
+  <p>The server attaches to an HTTP server's <code>upgrade</code> event, only handling its own path. The
+     upgrade is the security boundary — WebSockets have no CORS preflight, so CSRF is checked here:</p>
+  <pre><code><span class="kw">if</span> (url.pathname !== (this.opts.path ?? <span class="str">'/ws'</span>)) <span class="kw">return</span>;
+<span class="kw">if</span> (this.opts.csrfOptions) checkWsUpgrade(req.headers, this.opts.csrfOptions);
+<span class="kw">const</span> token = url.searchParams.get(<span class="str">'token'</span>) ?? <span class="com">/* subprotocol */</span> <span class="str">''</span>;
+<span class="kw">if</span> (this.opts.authService &amp;&amp; token) {
+  <span class="kw">const</span> payload = <span class="kw">await this</span>.opts.authService.verifyAccessToken(token);
+  userId = payload.sub; roles = payload.roles ?? [];
+}</code></pre>
+
+  <h3>2. Rooms + fanout</h3>
+  <p>Members per room are tracked <em>per instance</em>. Direct peer messages publish to
+     <code>conn:&lt;id&gt;</code>; room events publish to <code>room:&lt;room&gt;</code>. With the Redis adapter,
+     any instance delivers to its local members — that's how you scale across machines.</p>
+
+  <h3>3. WebRTC signaling + SFU</h3>
+  <p>Offer/answer/ICE-candidate messages are relayed through the room channel. The mediasoup adapter routes
+     actual media; if the native worker isn't installed the adapter skips gracefully (documented seam).</p>
+
+  <h3>4. In the backend</h3>
+  <p><code>apps/backend/src/main.ts</code> wires it:</p>
+  <pre><code><span class="kw">const</span> realtime = <span class="kw">new</span> RealtimeServer({
+  httpServer: server.httpServer,
+  path: config.ws.path,
+  authService,
+  csrfOptions: config.ws.requireCsrf ? { trustedOrigins: trustedOrigins(config) } : undefined,
+});</code></pre>
+
+  <h2>Playground</h2>
+  <p>Sandbox: a mini room + fanout model. Live API: there's no WS REST endpoint, so the API tab hits the
+     backend health to confirm it's up — room broadcasts run over the WebSocket instead.</p>
+
+  <section data-playground='{
+    "title": "Realtime — rooms + fanout",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: room membership + broadcast to local members\nfunction createRoom() {\n  const members = new Set();\n  const log = [];\n  return {\n    join(id) { members.add(id); log.push(id + \" joined\"); },\n    leave(id) { members.delete(id); log.push(id + \" left\"); },\n    broadcast(author, msg) { for (const m of members) log.push(m + \" <- \" + author + \": \" + msg); },\n    log,\n  };\n}\nconst room = createRoom();\nroom.join(\"conn:1\"); room.join(\"conn:2\");\nroom.broadcast(\"conn:1\", \"hello room\");\nroom.leave(\"conn:2\");\nroom.broadcast(\"conn:1\", \"anyone here?\");\nconsole.log(room.log.join(\"\\n\"));\n\n// Model: pub/sub fanout — publish once, deliver to all subscribers\nconst subscribers = new Set();\nconst publish = (channel, data) => { for (const s of subscribers) s(channel, data); };\nconst subscribe = (fn) => subscribers.add(fn);\nsubscribe((c, d) => console.log(\"[node-A]\", c, d));\nsubscribe((c, d) => console.log(\"[node-B]\", c, d));\npublish(\"room:orbit\", { text: \"new message\" });",
+    "api": { "method": "GET", "path": "/health" }
+  }'></section>
+
+  <p class="foot"><a href="04-graphql.html">&larr; 04 · GraphQL</a> · <a href="index.html">Build Guide</a> · Next: <a href="06-payments-email-crypto.html">06 · Payments · Email · Crypto →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 05 Realtime</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+{
+  "info": {
+    "name": "BhooAI Nexus — Cluster Link",
+    "description": "3-step flow to link a slave node to the master cluster.\n\n1. GET /csrf-token — obtain CSRF token + cookie\n2. POST /auth/login — get JWT access token\n3. POST /admin/cluster/link — register the slave node\n\n⚠ After Step 2 (login), the CSRF cookie rotates. Re-run Step 1 before Step 3.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Get CSRF Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.environment.set(\"csrfToken\", body.token);",
+              "console.log(\"CSRF token saved: \" + body.token);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Origin", "value": "http://localhost:3001", "type": "text" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/csrf-token",
+          "host": ["{{baseUrl}}"],
+          "path": ["csrf-token"]
+        },
+        "description": "Returns a CSRF token and sets a nexus_csrf cookie. The cookie is automatically stored in Postman's Cookie Jar."
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "header": [
+            { "key": "set-cookie", "value": "nexus_csrf=HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG; Path=/; SameSite=lax; HttpOnly" }
+          ],
+          "body": "{\n  \"token\": \"HcdAC3ODLYNqXNv4XA9UjScsgPbEAovG\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "2. Login (Get JWT)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.environment.set(\"accessToken\", body.accessToken);",
+              "console.log(\"JWT saved, expires in 15 min\");"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json", "type": "text" },
+          { "key": "x-csrf-token", "value": "{{csrfToken}}", "type": "text" },
+          { "key": "Origin", "value": "http://localhost:3001", "type": "text" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": ["{{baseUrl}}"],
+          "path": ["auth", "login"]
+        },
+        "description": "Authenticates the admin user and returns a JWT access token (valid 15 min). After this, the CSRF cookie rotates — re-run Step 1 before Step 3."
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"user\": { \"email\": \"admin@nexus.local\", \"roles\": [\"admin\"] },\n  \"accessToken\": \"eyJhbGciOiJIUzI1NiJ9...\",\n  \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9...\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "3. Link Slave Node",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var body = pm.response.json();",
+              "if (body.node) {",
+              "  console.log(\"Node linked: \" + body.node.identity.id);",
+              "  console.log(\"Status: \" + body.node.status);",
+              "}",
+              "if (body.error) {",
+              "  console.error(\"Link failed: \" + body.error);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json", "type": "text" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+          { "key": "x-csrf-token", "value": "{{csrfToken}}", "type": "text" },
+          { "key": "Origin", "value": "http://localhost:3001", "type": "text" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"nodeUrl\": \"{{slaveUrl}}\",\n  \"token\": \"{{clusterToken}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/cluster/link",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "cluster", "link"]
+        },
+        "description": "Links a slave node to the master. The master handshakes /info and /health on the node agent, then registers it with a per-node authToken. The node appears in the admin Cluster tab."
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"node\": {\n    \"identity\": {\n      \"id\": \"a453d9a9e220-backend\",\n      \"role\": \"backend\",\n      \"tier\": \"dev\",\n      \"version\": \"0.1.0\",\n      \"baseUrl\": \"http://localhost:7576\",\n      \"services\": { \"backend\": \"http://localhost:4001\" }\n    },\n    \"status\": \"pending\",\n    \"authToken\": \"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6\"\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "Verify: Get Cluster Overview",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+          { "key": "Origin", "value": "http://localhost:3001", "type": "text" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/admin/cluster/overview",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "cluster", "overview"]
+        },
+        "description": "Verify the node was linked by checking the cluster overview. This is a GET request so no CSRF token is needed."
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"nodes\": [{ \"id\": \"a453d9a9e220-backend\", \"status\": \"pending\", ... }],\n  \"running\": true\n}"
+        }
+      ]
+    },
+    {
+      "name": "Verify: Slave Agent /info",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{clusterToken}}", "type": "text" }
+        ],
+        "url": {
+          "raw": "{{slaveUrl}}/info",
+          "host": ["{{slaveUrl}}"],
+          "path": ["info"]
+        },
+        "description": "Verify the slave node agent is reachable. This call is NOT proxied through the master — it goes directly to the node agent on port 7576."
+      },
+      "response": [
+        {
+          "name": "Success",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"id\": \"a453d9a9e220-backend\",\n  \"role\": \"backend\",\n  \"tier\": \"dev\",\n  \"baseUrl\": \"http://localhost:7576\",\n  \"services\": { \"backend\": \"http://localhost:4001\" }\n}"
+        }
+      ]
+    }
+  ]
+}

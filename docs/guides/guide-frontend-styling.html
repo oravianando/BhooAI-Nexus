@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Frontend Styling Guide — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Frontend Styling <span class="sub">Tailwind, PostCSS, and design tokens in scaffolded Nexus frontends.</span></h1>
+
+  <p>Every project scaffolded with <code>nexus init</code> ships with a complete CSS
+     pipeline: Tailwind utility classes, PostCSS processing, and a framework-wide design
+     token system. This guide walks through how it fits together and how to customize it.</p>
+
+  <h2>The CSS pipeline</h2>
+  <p>Three files control the frontend styling in a scaffolded project:</p>
+  <table>
+    <thead><tr><th>File</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>postcss.config.js</code></td><td>Loads the <code>@bhooai/nexus-postcss</code> preset — the plugin chain</td></tr>
+      <tr><td><code>tailwind.config.js</code></td><td>Tailwind content scanning + theme extensions</td></tr>
+      <tr><td><code>src/index.css</code></td><td>CSS entry — <code>@import</code> theme tokens + <code>@tailwind</code> directives + custom styles</td></tr>
+    </tbody>
+  </table>
+
+  <h2>1. PostCSS config</h2>
+  <p>The preset handles the entire PostCSS plugin chain. A scaffolded
+     <code>postcss.config.js</code> is one line:</p>
+  <pre><code><span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+
+<span class="kw">export default</span> createPreset();</code></pre>
+  <p>This loads 6 plugins in order: <code>postcss-import</code> →
+     <code>postcss-nested</code> → <code>tailwindcss</code> →
+     <code>postcss-preset-env</code> → <code>autoprefixer</code> →
+     <code>cssnano</code> (production only).
+     See the <a href="../api/postcss.html">PostCSS API reference</a> for all options.</p>
+
+  <h2>2. Tailwind config</h2>
+  <p>Each app keeps its own <code>tailwind.config.js</code>. The scaffolded default:</p>
+  <pre><code><span class="kw">export default</span> {
+  content: [<span class="str">'./index.html'</span>, <span class="str">'./src/**/*.{ts,tsx}'</span>],
+  theme: { extend: {} },
+  plugins: [],
+};</code></pre>
+  <p>Extend the theme with your own colors, fonts, spacing, etc.:</p>
+  <pre><code><span class="kw">export default</span> {
+  content: [<span class="str">'./index.html'</span>, <span class="str">'./src/**/*.{ts,tsx}'</span>],
+  theme: {
+    extend: {
+      colors: {
+        brand: <span class="str">'#67e8f9'</span>,
+      },
+    },
+  },
+  plugins: [],
+};</code></pre>
+
+  <h2>3. index.css — the CSS entry point</h2>
+  <p>The scaffolded <code>src/index.css</code> has four parts:</p>
+  <pre><code><span class="com">/* 1. Import framework design tokens */</span>
+@<span class="kw">import</span> <span class="str">'@bhooai/nexus-postcss/theme.css'</span>;
+
+<span class="com">/* 2. Tailwind layers */</span>
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+<span class="com">/* 3. Override tokens (optional) */</span>
+:root {
+  <span class="com">/* --nexus-accent: #ff6b6b; */</span>
+}
+
+<span class="com">/* 4. Custom CSS using tokens */</span>
+.nexus-card {
+  background: <span class="kw">var</span>(--nexus-surface);
+  border: <span class="num">1</span>px solid <span class="kw">var</span>(--nexus-border);
+  border-radius: <span class="kw">var</span>(--nexus-radius);
+  color: <span class="kw">var</span>(--nexus-ink);
+  padding: <span class="num">1.5</span>rem;
+  backdrop-filter: blur(<span class="num">20</span>px);
+}
+
+.nexus-mesh-bg {
+  background: <span class="kw">var</span>(--nexus-mesh), <span class="kw">var</span>(--nexus-bg);
+  background-attachment: fixed;
+  min-height: <span class="num">100</span>vh;
+}
+
+.nexus-link {
+  color: <span class="kw">var</span>(--nexus-accent);
+  text-decoration: none;
+}</code></pre>
+
+  <div class="callout note">
+    <span class="label">Order matters</span>
+    <code>@import</code> must come <strong>first</strong> (before <code>@tailwind</code>) so
+    that <code>postcss-import</code> can inline the tokens. <code>@tailwind base</code>
+    resets browser defaults; your custom CSS goes after it so it can override defaults.
+  </div>
+
+  <h2>Two ways to style: Tailwind utilities vs CSS classes</h2>
+  <p>Nexus supports both approaches, and you can mix them freely:</p>
+
+  <h3>Tailwind utility classes (in JSX)</h3>
+  <pre><code><span class="kw">function</span> Card() {
+  <span class="kw">return</span> (
+    &lt;div className=<span class="str">"flex gap-4 p-6 bg-white rounded-lg shadow"</span>&gt;
+      &lt;h2 className=<span class="str">"text-xl font-bold text-slate-800"</span>&gt;Title&lt;/h2&gt;
+    &lt;/div&gt;
+  );
+}</code></pre>
+
+  <h3>Plain CSS classes (in index.css)</h3>
+  <pre><code><span class="com">/* index.css */</span>
+.my-card {
+  display: flex;
+  gap: <span class="num">1</span>rem;
+  padding: <span class="num">1.5</span>rem;
+  background: <span class="kw">var</span>(--nexus-surface);
+  border-radius: <span class="kw">var</span>(--nexus-radius);
+}</code></pre>
+  <pre><code><span class="com">/* App.tsx */</span>
+&lt;div className=<span class="str">"my-card"</span>&gt;...&lt;/div&gt;</code></pre>
+
+  <h3>Hybrid (recommended for Nexus apps)</h3>
+  <p>Use Tailwind utilities for layout/spacing/typography, and Nexus tokens for
+     colors/surfaces that need to stay consistent with the dark theme:</p>
+  <pre><code>&lt;div className=<span class="str">"flex gap-4 p-6 rounded-lg"</span>
+     style={{ background: <span class="str">'var(--nexus-surface)'</span>, color: <span class="str">'var(--nexus-ink)'</span> }}&gt;
+  ...
+&lt;/div&gt;</code></pre>
+
+  <h2>Design tokens</h2>
+  <p>The <code>theme.css</code> import defines 22 CSS custom properties on <code>:root</code>.
+     See the <a href="../api/postcss.html#theme.css--design-tokens">full token reference</a>
+     for all variables and their defaults.</p>
+
+  <h3>Common tokens</h3>
+  <table>
+    <thead><tr><th>Token</th><th>Use</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>--nexus-bg</code></td><td>App background</td><td><code>background: var(--nexus-bg)</code></td></tr>
+      <tr><td><code>--nexus-ink</code></td><td>Primary text</td><td><code>color: var(--nexus-ink)</code></td></tr>
+      <tr><td><code>--nexus-muted</code></td><td>Secondary text</td><td><code>color: var(--nexus-muted)</code></td></tr>
+      <tr><td><code>--nexus-surface</code></td><td>Glass card background</td><td><code>background: var(--nexus-surface)</code></td></tr>
+      <tr><td><code>--nexus-border</code></td><td>Card borders</td><td><code>border: 1px solid var(--nexus-border)</code></td></tr>
+      <tr><td><code>--nexus-accent</code></td><td>Links, highlights</td><td><code>color: var(--nexus-accent)</code></td></tr>
+      <tr><td><code>--nexus-radius</code></td><td>Border radius</td><td><code>border-radius: var(--nexus-radius)</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>App structure: main.tsx + App.tsx</h2>
+  <p>Scaffolded frontends separate the entry point from the app component:</p>
+  <pre><code><span class="com">// src/main.tsx — entry point</span>
+<span class="kw">import</span> React <span class="kw">from</span> <span class="str">'react'</span>;
+<span class="kw">import</span> { createRoot } <span class="kw">from</span> <span class="str">'react-dom/client'</span>;
+<span class="kw">import</span> <span class="str">'./index.css'</span>;
+<span class="kw">import</span> { App } <span class="kw">from</span> <span class="str">'./App'</span>;
+
+createRoot(document.getElementById(<span class="str">'root'</span>)!).render(
+  &lt;React.StrictMode&gt;
+    &lt;App /&gt;
+  &lt;/React.StrictMode&gt;,
+);</code></pre>
+  <pre><code><span class="com">// src/App.tsx — app component</span>
+<span class="kw">import</span> { useEffect, useState } <span class="kw">from</span> <span class="str">'react'</span>;
+
+<span class="kw">export function</span> App() {
+  <span class="kw">return</span> (
+    &lt;main className=<span class="str">"nexus-mesh-bg"</span> style={{ padding: <span class="str">'2rem'</span>, minHeight: <span class="str">'100vh'</span> }}&gt;
+      &lt;div className=<span class="str">"nexus-card"</span> style={{ maxWidth: <span class="str">'32rem'</span>, margin: <span class="str">'0 auto'</span> }}&gt;
+        &lt;h1 style={{ color: <span class="str">'var(--nexus-ink)'</span> }}&gt;My Nexus App&lt;/h1&gt;
+        &lt;p style={{ color: <span class="str">'var(--nexus-muted)'</span> }}&gt;Hello world&lt;/p&gt;
+      &lt;/div&gt;
+    &lt;/main&gt;
+  );
+}</code></pre>
+
+  <h2>Customizing the PostCSS pipeline</h2>
+  <p>Pass options to <code>createPreset()</code> to tune the pipeline:</p>
+  <pre><code><span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+
+<span class="kw">export default</span> createPreset({
+  <span class="com">// Add framework admin source to Tailwind content scan</span>
+  extraContent: [<span class="str">'../../packages/nexus-admin/src/**/*.{ts,tsx}'</span>],
+
+  <span class="com">// Extend Tailwind theme</span>
+  theme: {
+    colors: { brand: <span class="str">'#67e8f9'</span> },
+  },
+
+  <span class="com">// Disable preset-env (use only Tailwind + autoprefixer)</span>
+  presetEnv: <span class="kw">false</span>,
+
+  <span class="com">// Always minify (even in dev)</span>
+  minify: <span class="kw">true</span>,
+
+  <span class="com">// Append a custom PostCSS plugin</span>
+  plugins: [<span class="str">'my-postcss-plugin'</span>],
+});</code></pre>
+
+  <h2>Adding <code>@tailwindcss/forms</code> or other Tailwind plugins</h2>
+  <pre><code><span class="com">// 1. Install the plugin</span>
+npm install -D @tailwindcss/forms
+
+<span class="com">// 2. Add to postcss.config.js</span>
+<span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+<span class="kw">import</span> forms <span class="kw">from</span> <span class="str">'@tailwindcss/forms'</span>;
+
+<span class="kw">export default</span> createPreset({
+  tailwindPlugins: [forms],
+});
+
+<span class="com">// 3. OR add to tailwind.config.js (both approaches work)</span>
+<span class="kw">export default</span> {
+  content: [<span class="str">'./index.html'</span>, <span class="str">'./src/**/*.{ts,tsx}'</span>],
+  theme: { extend: {} },
+  plugins: [forms],
+};</code></pre>
+
+  <h2>See also</h2>
+  <ul>
+    <li><a href="../api/postcss.html">PostCSS Preset API reference</a> — full <code>createPreset()</code> options + token reference</li>
+    <li><a href="../troubleshooting.html">Troubleshooting</a> — common PostCSS/Tailwind errors and fixes</li>
+    <li><a href="guide-empty-project.html">From Empty Project guide</a> — full scaffold walkthrough</li>
+  </ul>
+</main>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

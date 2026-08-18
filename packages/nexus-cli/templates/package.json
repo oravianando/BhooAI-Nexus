@@ -1,0 +1,47 @@
+{
+  "name": "my-nexus-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "../bhooai-nexus/packages/*",
+    "apps/backend",
+    "apps/admin",
+    "apps/frontend"
+  ],
+  "scripts": {
+    "init": "nexus init .",
+    "dev": "nexus dev",
+    "build": "nexus build",
+    "test": "nexus test",
+    "doctor": "nexus doctor",
+    "pysetup": "nexus pysetup",
+    "uninstall": "nexus uninstall",
+    "start": "tsx apps/backend/src/main.ts"
+  },
+  "dependencies": {
+    "bhooai-nexus": "file:../bhooai-nexus",
+    "@bhooai/admin": "*",
+    "@bhooai/nexus-cli": "*",
+    "@bhooai/nexus-core": "*",
+    "@bhooai/nexus-auth": "*",
+    "@bhooai/nexus-data": "*",
+    "@bhooai/nexus-telemetry": "*",
+    "@bhooai/nexus-realtime": "*",
+    "@bhooai/nexus-graphql": "*",
+    "@bhooai/nexus-cache": "*",
+    "@bhooai/nexus-email": "*",
+    "@bhooai/nexus-payments": "*",
+    "@bhooai/nexus-crypto": "*",
+    "@bhooai/nexus-cluster": "*",
+    "@bhooai/nexus-ads": "*",
+    "@bhooai/nexus-plugins": "*",
+    "@bhooai/nexus-ai-client": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^2.1.0"
+  }
+}

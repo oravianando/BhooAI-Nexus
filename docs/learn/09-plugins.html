@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>09 · Plugins — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 09</div>
+  <h1>Plugins <span class="sub"><code>@bhooai/nexus-plugins</code> — a manifest-driven runtime. Trusted plugins run in-process; sandboxed plugins run in <code>worker_threads</code> with a capability policy and a heartbeat watchdog.</span></h1>
+
+  <h2>File map</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/manifest.ts</code></td><td><code>PluginManifest</code> + capability list + <code>validateManifest</code>.</td></tr>
+      <tr><td><code>src/HookBus.ts</code></td><td>Cross-plugin event bus (events capability).</td></tr>
+      <tr><td><code>src/host.ts</code></td><td>Plugin host — loads manifests, builds bindings, lifecycle ordering.</td></tr>
+      <tr><td><code>src/runtime/TrustedPlugin.ts</code></td><td>In-process plugin runner (full Node API).</td></tr>
+      <tr><td><code>src/sandbox/SandboxedPlugin.ts</code></td><td><code>worker_threads</code> runner with RPC + heartbeat.</td></tr>
+      <tr><td><code>src/sandbox/capabilityPolicy.ts</code></td><td>fs path-allowlist, net host-allowlist, method caps.</td></tr>
+      <tr><td><code>src/registry.ts</code></td><td>Registry of loaded plugins + their pages/slots.</td></tr>
+      <tr><td><code>src/admin/adminExtensions.ts</code></td><td>Admin pages/slots contributed by plugins.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Manifest + capabilities</h3>
+  <p>A plugin declares <code>name</code>, <code>mode</code> (trusted | sandboxed), and the capabilities it needs
+     (<code>http</code>, <code>graphql</code>, <code>data</code>, <code>fs</code>, <code>net</code>, …). In
+     sandboxed mode, every registrar is gated by these:</p>
+  <pre><code><span class="kw">const</span> manifest = {
+  name: <span class="str">'analytics'</span>,
+  version: <span class="str">'1.0.0'</span>,
+  entry: <span class="str">'index.js'</span>,
+  mode: <span class="str">'trusted'</span>,
+  capabilities: [<span class="str">'http'</span>, <span class="str">'admin'</span>],
+  hooks: [<span class="str">'init'</span>, <span class="str">'start'</span>],
+};</code></pre>
+
+  <h3>2. Trusted vs sandboxed</h3>
+  <ul>
+    <li><strong>Trusted</strong> — runs in-process with the full Node API. Used for subgraphs (resolvers
+        aren't serializable across a worker boundary — a documented seam).</li>
+    <li><strong>Sandboxed</strong> — runs in a <code>worker_threads</code> with heap/event-loop isolation,
+        capability-restricted RPC, and a heartbeat watchdog that kills a stalled worker.</li>
+  </ul>
+
+  <h3>3. Host + lifecycle</h3>
+  <p><code>host.ts</code> loads manifests, builds <code>HostBindings</code> from the running services (router,
+     realtime, logger), validates config against <code>configSchema</code>, and runs plugins in
+     dependency order. <code>apps/backend/src/plugins/loadPlugins.ts</code> wires it into the backend.</p>
+
+  <div class="callout warn">
+    <span class="label">Honest seams</span>
+    Sandboxed plugins can't add GraphQL subgraphs or middleware (functions aren't serializable). Use
+    trusted mode for those. The sandbox is capability-gated, not cryptographic.
+  </div>
+
+  <h2>Playground</h2>
+  <p>Sandbox: manifest validation + a capability check. Live API: list the backend's plugin extensions.</p>
+
+  <section data-playground='{
+    "title": "Plugins — manifest + capabilities",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: manifest validation\nfunction validateManifest(m) {\n  const ALL = [\"http\", \"graphql\", \"data\", \"auth\", \"realtime\", \"scheduler\", \"events\", \"admin\", \"fs\", \"net\"];\n  if (!/^[a-z0-9-]+$/.test(m.name)) throw new Error(\"invalid name: \" + m.name);\n  if (m.mode !== \"trusted\" && m.mode !== \"sandboxed\") throw new Error(\"invalid mode\");\n  for (const c of m.capabilities) if (!ALL.includes(c)) throw new Error(\"unknown capability: \" + c);\n  return true;\n}\nconsole.log(\"ok:\", validateManifest({ name: \"analytics\", mode: \"trusted\", capabilities: [\"http\", \"admin\"] }));\ntry { validateManifest({ name: \"Bad Name\", mode: \"trusted\", capabilities: [] }); } catch (e) { console.log(\"error:\", e.message); }\n\n// Model: capability gate — sandboxed plugin can only touch what it declared\nconst CAPABILITIES = new Set([\"http\"]);\nconst grant = (cap) => CAPABILITIES.has(cap);\nconsole.log(\"register route?   \", grant(\"http\"));\nconsole.log(\"touch filesystem? \", grant(\"fs\"));\nconsole.log(\"reach network?    \", grant(\"net\"));\n\n// Model: topological start order by dependencies\nfunction order(plugins) {\n  const done = new Set(), out = [];\n  function visit(p) { if (done.has(p.name)) return; for (const d of p.deps || []) visit(plugins.find((x) => x.name === d)); done.add(p.name); out.push(p.name); }\n  for (const p of plugins) visit(p);\n  return out;\n}\nconsole.log(\"start order:\", order([{ name: \"b\", deps: [\"a\"] }, { name: \"c\" }, { name: \"a\" }]).join(\" -> \"));",
+    "api": { "method": "GET", "path": "/plugins/extensions" }
+  }'></section>
+
+  <p class="foot"><a href="08-ai.html">&larr; 08 · AI Server</a> · <a href="index.html">Build Guide</a> · Next: <a href="10-cluster.html">10 · Cluster →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 09 Plugins</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

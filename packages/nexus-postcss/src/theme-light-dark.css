@@ -1,0 +1,68 @@
+/**
+ * @bhooai/nexus-postcss — theme-light-dark.css
+ *
+ * Dual-theme variant of theme.css using the CSS `light-dark()` function.
+ * Opt in with:
+ *   @import '@bhooai/nexus-postcss/theme-light-dark.css';
+ *
+ * Requires `color-scheme: light dark` on :root (set below) so the browser
+ * knows to honor both palettes. `postcss-preset-env` (stage 2, already in the
+ * preset) polyfills `light-dark()` for browsers without native support.
+ *
+ * Override any token in your own :root block to retheme either side.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- base surface ---- */
+  --nexus-bg: light-dark(#ffffff, #050817);
+  --nexus-bg-alt: light-dark(#f4f6fb, #0b0d1a);
+  --nexus-ink: light-dark(#0b0d1a, #eef6ff);
+  --nexus-muted: light-dark(#475569, #8496ad);
+  --nexus-surface: light-dark(rgba(241, 245, 249, 0.82), rgba(10, 24, 45, 0.78));
+  --nexus-surface-strong: light-dark(rgba(226, 232, 240, 0.78), rgba(8, 25, 48, 0.68));
+  --nexus-border: light-dark(rgba(15, 23, 42, 0.16), rgba(125, 174, 235, 0.2));
+  --nexus-border-bright: light-dark(rgba(15, 23, 42, 0.22), rgba(112, 168, 228, 0.17));
+
+  /* ---- accent palette ---- */
+  --nexus-accent: light-dark(#0891b2, #67e8f9);
+  --nexus-accent-soft: light-dark(rgba(8, 145, 178, 0.08), rgba(103, 232, 249, 0.08));
+  --nexus-blue: light-dark(rgba(37, 99, 235, 0.45), rgba(38, 130, 225, 0.55));
+  --nexus-violet: light-dark(rgba(124, 58, 237, 0.35), rgba(90, 67, 183, 0.45));
+  --nexus-pink: #f43f5e;
+  --nexus-emerald: light-dark(#059669, #34d399);
+
+  /* ---- geometry ---- */
+  --nexus-radius: 0.7rem;
+  --nexus-radius-lg: 1rem;
+  --nexus-shell-width: 1280px;
+
+  /* ---- ambient mesh ---- */
+  --nexus-mesh:
+    radial-gradient(54rem 42rem at 84% -12%, light-dark(rgba(124, 58, 237, 0.10), rgba(91, 33, 182, 0.32)), transparent 67%),
+    radial-gradient(48rem 38rem at -8% 58%, light-dark(rgba(8, 145, 178, 0.08), rgba(8, 145, 178, 0.2)), transparent 68%),
+    radial-gradient(42rem 36rem at 56% 44%, light-dark(rgba(30, 64, 175, 0.06), rgba(30, 64, 175, 0.16)), transparent 72%);
+  --nexus-mesh-opacity: 0.27;
+
+  /* ---- selection + scrollbars ---- */
+  --nexus-selection: light-dark(rgba(37, 99, 235, 0.25), rgba(129, 140, 248, 0.35));
+  --nexus-scrollbar: light-dark(rgba(15, 23, 42, 0.18), rgba(255, 255, 255, 0.18));
+  --nexus-scrollbar-thumb: light-dark(rgba(15, 23, 42, 0.14), rgba(255, 255, 255, 0.14));
+
+  /* ---- aliases for existing admin consumers ---- */
+  --admin-bg: var(--nexus-bg);
+  --admin-ink: var(--nexus-ink);
+  --admin-muted: var(--nexus-muted);
+  --admin-surface: var(--nexus-surface);
+  --admin-surface-strong: var(--nexus-surface-strong);
+  --admin-border: var(--nexus-border);
+  --admin-border-bright: var(--nexus-border-bright);
+  --admin-blue: var(--nexus-blue);
+  --admin-violet: var(--nexus-violet);
+  --admin-pink: var(--nexus-pink);
+  --admin-radius: var(--nexus-radius);
+  --admin-shell-width: var(--nexus-shell-width);
+  --admin-mesh: var(--nexus-mesh);
+  --admin-mesh-opacity: var(--nexus-mesh-opacity);
+}

@@ -1,0 +1,15 @@
+node_modules/
+**/node_modules/
+dist/
+logs/
+*.log
+.env
+nexus.runtime.json
+.nexus-sync.json
+.git/
+.DS_Store
+README.md
+PROGRESS.md
+.dockerignore
+Dockerfile
+*.tsbuildinfo

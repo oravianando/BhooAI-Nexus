@@ -1,0 +1,324 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Realtime API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-realtime</span> Realtime API
+    <span class="sub">WebSocket rooms, Redis fanout, WebRTC signaling, mediasoup SFU.</span></h1>
+
+  <p>The realtime package. A <code>ws</code>-based WebSocket server with rooms, direct peer
+     signaling, an optional mediasoup SFU, and a pluggable pub/sub adapter for cross-instance
+     fanout. Mounted via <code>noServer</code> upgrade handling so it shares the HTTP server's port.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>types</td><td><code>ClientMessage</code>, <code>ServerMessage</code>, <code>MediaAction</code>, <code>Connection</code></td></tr>
+      <tr><td>adapter</td><td><code>PubSubAdapter</code> (interface), <code>MemoryPubSubAdapter</code> (class, default), <code>RedisLike</code> (interface), <code>RedisPubSubAdapter</code> (class)</td></tr>
+      <tr><td>server</td><td><code>RealtimeServerOptions</code>, <code>RealtimeServer</code></td></tr>
+      <tr><td>mediasoup</td><td><code>MediasoupAdapterOptions</code>, <code>MediasoupAdapter</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Types — wire protocol</h2>
+  <p>The JSON text frames exchanged over the socket are typed by <code>ClientMessage</code>
+     (client → server) and <code>ServerMessage</code> (server → client). mediasoup signaling is
+     relayed as a <code>media</code> frame whose <code>action</code> is a <code>MediaAction</code>.</p>
+
+  <h3 id="ClientMessage">ClientMessage</h3>
+  <pre><code><span class="kw">type</span> ClientMessage =
+  | { type: <span class="str">'join'</span>; room: <span class="kw">string</span> }
+  | { type: <span class="str">'leave'</span>; room: <span class="kw">string</span> }
+  | { type: <span class="str">'offer'</span>; to: <span class="kw">string</span>; sdp: <span class="kw">string</span>; room?: <span class="kw">string</span> }
+  | { type: <span class="str">'answer'</span>; to: <span class="kw">string</span>; sdp: <span class="kw">string</span>; room?: <span class="kw">string</span> }
+  | { type: <span class="str">'candidate'</span>; to: <span class="kw">string</span>; candidate: <span class="kw">unknown</span>; room?: <span class="kw">string</span> }
+  | { type: <span class="str">'broadcast'</span>; room: <span class="kw">string</span>; event: <span class="kw">string</span>; data?: <span class="kw">unknown</span> }
+  | { type: <span class="str">'ping'</span> }
+  | { type: <span class="str">'media'</span>; action: MediaAction; payload: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; };</code></pre>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>ping</code></td><td>—</td><td>Server replies <code>pong</code> (keepalive).</td></tr>
+      <tr><td><code>join</code></td><td><code>{ room }</code></td><td>Join a room; server replies <code>joined</code> with the other local members.</td></tr>
+      <tr><td><code>leave</code></td><td><code>{ room }</code></td><td>Leave a room; server replies <code>left</code>.</td></tr>
+      <tr><td><code>offer</code> / <code>answer</code> / <code>candidate</code></td><td><code>{ to, sdp } | { to, candidate }</code></td><td>WebRTC signaling relayed to the target peer — direct if same-instance, else published to the <code>conn:&lt;to&gt;</code> pub/sub channel.</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>{ room, event, data? }</code></td><td>Fan out an event to every other peer in the room (cross-instance via <code>room:&lt;room&gt;</code>).</td></tr>
+      <tr><td><code>media</code></td><td><code>{ action, payload }</code></td><td>mediasoup SFU request (request/response; server replies with a <code>media</code> frame of the same <code>action</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ServerMessage">ServerMessage</h3>
+  <pre><code><span class="kw">type</span> ServerMessage =
+  | { type: <span class="str">'joined'</span>; room: <span class="kw">string</span>; peers: <span class="kw">string</span>[] }
+  | { type: <span class="str">'left'</span>; room: <span class="kw">string</span> }
+  | { type: <span class="str">'peer-joined'</span>; room: <span class="kw">string</span>; peer: <span class="kw">string</span> }
+  | { type: <span class="str">'peer-left'</span>; room: <span class="kw">string</span>; peer: <span class="kw">string</span> }
+  | { type: <span class="str">'offer'</span>; from: <span class="kw">string</span>; sdp: <span class="kw">string</span> }
+  | { type: <span class="str">'answer'</span>; from: <span class="kw">string</span>; sdp: <span class="kw">string</span> }
+  | { type: <span class="str">'candidate'</span>; from: <span class="kw">string</span>; candidate: <span class="kw">unknown</span> }
+  | { type: <span class="str">'broadcast'</span>; room: <span class="kw">string</span>; from: <span class="kw">string</span>; event: <span class="kw">string</span>; data?: <span class="kw">unknown</span> }
+  | { type: <span class="str">'pong'</span> }
+  | { type: <span class="str">'media'</span>; action: MediaAction; payload: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt; }
+  | { type: <span class="str">'error'</span>; message: <span class="kw">string</span>; code?: <span class="kw">string</span> };</code></pre>
+  <table>
+    <thead><tr><th><code>type</code></th><th>Payload</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>pong</code></td><td>—</td><td>Reply to <code>ping</code>.</td></tr>
+      <tr><td><code>error</code></td><td><code>{ message, code? }</code></td><td>Any malformed / unauthorized / unknown message (e.g. <code>code: 'NO_SFU'</code> when mediasoup is not enabled).</td></tr>
+      <tr><td><code>joined</code></td><td><code>{ room, peers }</code></td><td>You joined <code>room</code>; <code>peers</code> = the other local members.</td></tr>
+      <tr><td><code>left</code></td><td><code>{ room }</code></td><td>You left the room.</td></tr>
+      <tr><td><code>peer-joined</code> / <code>peer-left</code></td><td><code>{ room, peer }</code></td><td>Another peer joined/left a room you're in (never echoed to the originator).</td></tr>
+      <tr><td><code>offer</code> / <code>answer</code> / <code>candidate</code></td><td><code>{ from, sdp } | { from, candidate }</code></td><td>Incoming WebRTC signaling from another peer.</td></tr>
+      <tr><td><code>broadcast</code></td><td><code>{ room, from, event, data? }</code></td><td>A peer (not you) broadcast an event to the room. <code>from: 'server'</code> when sent via <code>realtime.broadcast()</code>.</td></tr>
+      <tr><td><code>media</code></td><td><code>{ action, payload }</code></td><td>mediasoup SFU response for the requested <code>action</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="MediaAction">MediaAction</h3>
+  <pre><code><span class="kw">type</span> MediaAction =
+  | <span class="str">'getRouterRtpCapabilities'</span>
+  | <span class="str">'createWebRtcTransport'</span>
+  | <span class="str">'connectTransport'</span>
+  | <span class="str">'produce'</span>
+  | <span class="str">'consume'</span>
+  | <span class="str">'closeProducer'</span>
+  | <span class="str">'closeConsumer'</span>;</code></pre>
+  <p>The set of mediasoup signaling actions relayed over the <code>media</code> frame. See
+     <a href="#mediasoup-actions">mediasoup media actions</a> for the per-action request/response
+     payloads handled by <code>MediasoupAdapter</code>.</p>
+
+  <h3 id="Connection">Connection</h3>
+  <pre><code><span class="kw">interface</span> Connection {
+  id: <span class="kw">string</span>;
+  userId?: <span class="kw">string</span>;
+  roles: <span class="kw">string</span>[];
+  rooms: Set&lt;<span class="kw">string</span>&gt;;
+  send(message: ServerMessage): <span class="kw">void</span>;
+  close(code?: <span class="kw">number</span>, reason?: <span class="kw">string</span>): <span class="kw">void</span>;
+  <span class="kw">readonly</span> isOpen: <span class="kw">boolean</span>;
+}</code></pre>
+  <p>A connected client's server-side record. Constructed by <code>RealtimeServer</code> on upgrade
+     and passed to the <code>MediasoupAdapter</code> (which keys per-connection state on the
+     <code>Connection</code> object via a <code>WeakMap</code>).</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td><code>string</code></td><td>Stable id for this connection — the user id when authenticated, else a random <code>base64url</code> token.</td></tr>
+      <tr><td><code>userId?</code></td><td><code>string</code></td><td>Authenticated user id (<code>undefined</code> for anonymous connections).</td></tr>
+      <tr><td><code>roles</code></td><td><code>string[]</code></td><td>Roles from the verified access token.</td></tr>
+      <tr><td><code>rooms</code></td><td><code>Set&lt;string&gt;</code></td><td>Rooms this connection has joined (on this instance).</td></tr>
+      <tr><td><code>send(message)</code></td><td><code>(ServerMessage) =&gt; void</code></td><td>Send a JSON <code>ServerMessage</code> to the client (no-op if the socket is no longer <code>OPEN</code>).</td></tr>
+      <tr><td><code>close(code?, reason?)</code></td><td><code>(number?, string?) =&gt; void</code></td><td>Close the underlying WebSocket.</td></tr>
+      <tr><td><code>isOpen</code></td><td><code>boolean</code> (readonly)</td><td>Whether the underlying socket is still in the <code>OPEN</code> ready state.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Pub/sub adapters</h2>
+  <p>The pub/sub adapter is the cross-instance fanout backbone. <code>RealtimeServer</code> publishes
+     room events to a <code>room:&lt;room&gt;</code> channel and direct peer messages to a
+     <code>conn:&lt;id&gt;</code> channel; every instance's subscriber delivers to its local members.
+     This gives exactly-once delivery per instance without the originator also sending locally.</p>
+
+  <h3 id="PubSubAdapter">PubSubAdapter (interface)</h3>
+  <pre><code><span class="kw">interface</span> PubSubAdapter {
+  publish(channel: <span class="kw">string</span>, message: Buffer | <span class="kw">string</span>): <span class="kw">void</span>;
+  subscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): Promise&lt;<span class="kw">void</span>&gt; | <span class="kw">void</span>;
+  unsubscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): Promise&lt;<span class="kw">void</span>&gt; | <span class="kw">void</span>;
+}</code></pre>
+  <p>The structural interface every adapter implements. <code>publish</code> is fire-and-forget;
+     <code>subscribe</code> / <code>unsubscribe</code> may be sync or async. Implement this to plug in
+     a different broker (NATS, Redis Streams, etc.).</p>
+
+  <h3 id="MemoryPubSubAdapter">MemoryPubSubAdapter (class — the default)</h3>
+  <pre><code><span class="kw">class</span> MemoryPubSubAdapter <span class="kw">implements</span> PubSubAdapter {
+  constructor();
+  publish(channel: <span class="kw">string</span>, message: Buffer | <span class="kw">string</span>): <span class="kw">void</span>;
+  subscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): <span class="kw">void</span>;
+  unsubscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): <span class="kw">void</span>;
+}</code></pre>
+  <p>Single-process <code>EventEmitter</code>-backed adapter. <strong>This is the default</strong> —
+     <code>RealtimeServer</code> uses <code>new MemoryPubSubAdapter()</code> when
+     <code>RealtimeServerOptions.adapter</code> is omitted. Fine for tests and single-node
+     deployments; use <code>RedisPubSubAdapter</code> for horizontal scaling. The emitter is
+     constructed with <code>setMaxListeners(0)</code> to allow many room subscribers.</p>
+
+  <h3 id="RedisLike">RedisLike (interface)</h3>
+  <pre><code><span class="kw">interface</span> RedisLike {
+  publish(channel: <span class="kw">string</span>, message: <span class="kw">string</span>): Promise&lt;<span class="kw">number</span>&gt;;
+  subscribe(...channels: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;;
+  unsubscribe(...channels: <span class="kw">string</span>[]): Promise&lt;<span class="kw">number</span>&gt;;
+  on(event: <span class="str">'message'</span>, listener: (channel: <span class="kw">string</span>, message: <span class="kw">string</span>) =&gt; <span class="kw">unknown</span>): <span class="kw">unknown</span>;
+  off(event: <span class="str">'message'</span>, listener: (channel: <span class="kw">string</span>, message: <span class="kw">string</span>) =&gt; <span class="kw">unknown</span>): <span class="kw">unknown</span>;
+}</code></pre>
+  <p>The minimal Redis client interface <code>RedisPubSubAdapter</code> depends on — structurally
+     compatible with <code>node-redis</code> (<code>createClient()</code>). Kept structural so the
+     realtime package does not hard-depend on a Redis client at import time;
+     <code>@bhooai/nexus-cache</code> supplies a configured client.</p>
+
+  <h3 id="RedisPubSubAdapter">RedisPubSubAdapter (class)</h3>
+  <pre><code><span class="kw">class</span> RedisPubSubAdapter <span class="kw">implements</span> PubSubAdapter {
+  constructor(client: RedisLike);
+  publish(channel: <span class="kw">string</span>, message: Buffer | <span class="kw">string</span>): <span class="kw">void</span>;
+  subscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  unsubscribe(channel: <span class="kw">string</span>, handler: (message: Buffer | <span class="kw">string</span>) =&gt; <span class="kw">void</span>): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Redis-backed pub/sub for multi-instance room broadcast. Uses one configured Redis client in
+     subscribe mode; messages are JSON strings. On construction it registers a single
+     <code>'message'</code> listener that routes incoming Redis messages to the per-channel handler
+     sets it tracks internally. <code>subscribe</code> calls <code>client.subscribe(channel)</code> only
+     on the first handler for a channel; <code>unsubscribe</code> calls
+     <code>client.unsubscribe(channel)</code> when the last handler for a channel is removed.</p>
+  <pre><code><span class="kw">import</span> { createClient } <span class="kw">from</span> <span class="str">'redis'</span>;
+<span class="kw">import</span> { RedisPubSubAdapter } <span class="kw">from</span> <span class="str">'@bhooai/nexus-realtime'</span>;
+
+<span class="kw">const</span> client = createClient({ url: config.redis.url });
+<span class="kw">await</span> client.connect();
+<span class="kw">const</span> adapter = <span class="kw">new</span> RedisPubSubAdapter(client);</code></pre>
+
+  <h2>RealtimeServer</h2>
+
+  <h3 id="RealtimeServerOptions">RealtimeServerOptions</h3>
+  <pre><code><span class="kw">interface</span> RealtimeServerOptions {
+  httpServer: HttpServer;
+  path?: <span class="kw">string</span>;
+  authService?: AuthService;
+  csrfOptions?: CsrfOptions;
+  adapter?: PubSubAdapter;
+  mediasoup?: MediasoupAdapter;
+  requireAuth?: <span class="kw">boolean</span>;
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>httpServer</code></td><td><code>HttpServer</code></td><td>—</td><td>Required. The HTTP server whose <code>'upgrade'</code> event the WS server attaches to.</td></tr>
+      <tr><td><code>path?</code></td><td><code>string</code></td><td><code>'/ws'</code></td><td>WS path; upgrades to other paths are ignored (let other upgrade listeners handle them).</td></tr>
+      <tr><td><code>authService?</code></td><td><code>AuthService</code></td><td>—</td><td>Verifies the access token on upgrade (optional → anonymous). Token is read from <code>?token=</code> query, or the first <code>Sec-WebSocket-Protocol</code> entry.</td></tr>
+      <tr><td><code>csrfOptions?</code></td><td><code>CsrfOptions</code></td><td>—</td><td>CSRF origin + double-submit check on the WS upgrade (WS has no CORS preflight). Omit to disable.</td></tr>
+      <tr><td><code>adapter?</code></td><td><code>PubSubAdapter</code></td><td><code>new MemoryPubSubAdapter()</code></td><td>Pub/sub adapter for cross-instance fanout. Defaults to the in-memory adapter.</td></tr>
+      <tr><td><code>mediasoup?</code></td><td><code>MediasoupAdapter</code></td><td>—</td><td>mediasoup SFU adapter for media routing. Omit to disable <code>media</code> actions (they reply <code>{ error, code: 'NO_SFU' }</code>).</td></tr>
+      <tr><td><code>requireAuth?</code></td><td><code>boolean</code></td><td><code>true</code> when <code>authService</code> provided</td><td>Require authentication on upgrade. When <code>false</code>, a missing token yields an anonymous connection.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RealtimeServer">RealtimeServer</h3>
+  <pre><code><span class="kw">class</span> RealtimeServer {
+  constructor(opts: RealtimeServerOptions);
+  broadcast(room: <span class="kw">string</span>, event: <span class="kw">string</span>, data?: <span class="kw">unknown</span>): <span class="kw">void</span>;
+  <span class="kw">get</span> connectionCount(): <span class="kw">number</span>;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>WebSocket realtime server. The constructor attaches a <code>noServer</code>
+     <code>WebSocketServer</code> and registers an <code>'upgrade'</code> listener on
+     <code>opts.httpServer</code>. The upgrade handler runs the CSRF/origin check, authenticates the
+     access token, then completes the WS handshake and registers a <code>Connection</code>.</p>
+  <p>Client messages are dispatched by <code>type</code>: <code>join</code>/<code>leave</code> manage
+     room membership; <code>offer</code>/<code>answer</code>/<code>candidate</code> relay WebRTC
+     signaling (direct when same-instance, else published to <code>conn:&lt;to&gt;</code>);
+     <code>broadcast</code> publishes to <code>room:&lt;room&gt;</code>; <code>media</code> delegates
+     to the <code>MediasoupAdapter</code>. On close, the connection leaves all its rooms and
+     <code>mediasoup.cleanup(conn)</code> is called.</p>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>constructor(opts)</code></td><td>Attach to <code>opts.httpServer</code>. Uses <code>opts.adapter ?? new MemoryPubSubAdapter()</code>.</td></tr>
+      <tr><td><code>broadcast(room, event, data?)</code></td><td>Publish a server-originated app event to every connection in <code>room</code> (<code>from: 'server'</code>).</td></tr>
+      <tr><td><code>get connectionCount</code></td><td>Number of live connections (test/monitoring helper).</td></tr>
+      <tr><td><code>close()</code></td><td>Close every connection with <code>1001 'server shutting down'</code> and close the WS server. Returns a resolved promise.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">import</span> { RealtimeServer, RedisPubSubAdapter, MediasoupAdapter } <span class="kw">from</span> <span class="str">'@bhooai/nexus-realtime'</span>;
+
+<span class="kw">const</span> realtime = <span class="kw">new</span> RealtimeServer({
+  httpServer: server.httpServer,
+  path: <span class="str">'/ws'</span>,                                       <span class="com">// default '/ws'</span>
+  authService,                                      <span class="com">// verify ?token= on upgrade</span>
+  csrfOptions: config.ws.requireCsrf ? { trustedOrigins } : <span class="kw">undefined</span>,
+  adapter: <span class="kw">new</span> RedisPubSubAdapter(redisClient),          <span class="com">// default: MemoryPubSubAdapter</span>
+  mediasoup: <span class="kw">new</span> MediasoupAdapter({ announceIp: config.webrtc.announceIp }), <span class="com">// optional</span>
+  requireAuth: <span class="kw">true</span>,                                  <span class="com">// default true when authService provided</span>
+});
+realtime.broadcast(<span class="str">'lobby'</span>, <span class="str">'announce'</span>, { text: <span class="str">'hi'</span> });
+console.log(realtime.connectionCount);
+<span class="kw">await</span> realtime.close();</code></pre>
+
+  <div class="callout note">
+    <span class="label">Design note</span>
+    <code>deliverRoom</code> skips the originator, so peers never receive their own
+    <code>peer-joined</code>/<code>peer-left</code>/<code>broadcast</code> echo. Signaling
+    (offer/answer/candidate) is direct when same-instance, else published to a
+    <code>conn:&lt;to&gt;</code> channel for cross-instance delivery.
+  </div>
+
+  <h2>MediasoupAdapter</h2>
+  <p>Wraps the mediasoup SFU. Lazily imports the native <code>mediasoup</code> package (an optional
+     dependency) so the realtime package loads even when mediasoup is not installed; media actions
+     then return <code>{ code: 'NO_SFU' }</code> from the server. One worker is created per adapter;
+     one router per room (default Opus audio + VP8 video codec set). Each connection gets a send and
+     a recv <code>WebRtcTransport</code>; producers/consumers are tracked per connection.</p>
+
+  <h3 id="MediasoupAdapterOptions">MediasoupAdapterOptions</h3>
+  <pre><code><span class="kw">interface</span> MediasoupAdapterOptions {
+  announceIp?: <span class="kw">string</span>;
+  rtcMinPort?: <span class="kw">number</span>;
+  rtcMaxPort?: <span class="kw">number</span>;
+  workerCount?: <span class="kw">number</span>;
+}</code></pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>announceIp?</code></td><td><code>string</code></td><td><code>'127.0.0.1'</code></td><td>RTC listen IP announced to clients (must be reachable from the browser).</td></tr>
+      <tr><td><code>rtcMinPort?</code></td><td><code>number</code></td><td><code>40000</code></td><td>mediasoup worker RTC port range lower bound.</td></tr>
+      <tr><td><code>rtcMaxPort?</code></td><td><code>number</code></td><td><code>40100</code></td><td>mediasoup worker RTC port range upper bound.</td></tr>
+      <tr><td><code>workerCount?</code></td><td><code>number</code></td><td><code>1</code></td><td>Number of mediasoup workers.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="MediasoupAdapter">MediasoupAdapter</h3>
+  <pre><code><span class="kw">class</span> MediasoupAdapter {
+  constructor(opts?: MediasoupAdapterOptions);
+  handle(conn: Connection, action: MediaAction, payload: Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;): Promise&lt;Record&lt;<span class="kw">string</span>, <span class="kw">unknown</span>&gt;&gt;;
+  cleanup(conn: Connection): <span class="kw">void</span>;
+  <span class="kw">static async</span> isAvailable(): Promise&lt;<span class="kw">boolean</span>&gt;;
+}</code></pre>
+  <table>
+    <thead><tr><th>Member</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>constructor(opts?)</code></td><td>Store options; the native worker is created lazily on first <code>handle()</code>.</td></tr>
+      <tr><td><code>handle(conn, action, payload)</code></td><td>Dispatch a <code>MediaAction</code> for a connection. Resolves to the response payload (see <a href="#mediasoup-actions">table</a>). Errors are returned as <code>{ error }</code> payloads, not thrown.</td></tr>
+      <tr><td><code>cleanup(conn)</code></td><td>Close the connection's producers, consumers, and send/recv transports; drop its state. Called by <code>RealtimeServer</code> on disconnect.</td></tr>
+      <tr><td><code>static async isAvailable()</code></td><td>Whether the <code>mediasoup</code> native package is importable on this process (for capability checks).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="mediasoup-actions">mediasoup media actions</h3>
+  <table>
+    <thead><tr><th>Action</th><th>Request <code>payload</code></th><th>Response <code>payload</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>getRouterRtpCapabilities</code></td><td>—</td><td><code>{ rtpCapabilities }</code></td></tr>
+      <tr><td><code>createWebRtcTransport</code></td><td><code>{ direction }</code></td><td><code>{ id, iceParameters, iceCandidates, dtlsParameters, direction }</code></td></tr>
+      <tr><td><code>connectTransport</code></td><td><code>{ direction, dtlsParameters }</code></td><td><code>{ connected: true }</code> (or <code>{ error: 'transport not found' }</code>)</td></tr>
+      <tr><td><code>produce</code></td><td><code>{ kind, rtpParameters }</code></td><td><code>{ id, kind }</code></td></tr>
+      <tr><td><code>consume</code></td><td><code>{ producerId, rtpCapabilities }</code></td><td><code>{ id, producerId, kind, rtpParameters }</code></td></tr>
+      <tr><td><code>closeProducer</code></td><td><code>{ producerId }</code></td><td><code>{ closed: true }</code></td></tr>
+      <tr><td><code>closeConsumer</code></td><td><code>{ consumerId }</code></td><td><code>{ closed: true }</code></td></tr>
+    </tbody>
+  </table>
+  <p>The frontend <code>stream.ts</code> wraps <code>mediasoup-client</code> over the realtime
+     <code>media</code> action channel (request/response with an 8s timeout).</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Realtime API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Realtime - rooms + fanout","apiBase":"http://localhost:4000","js":"function createRoom() {\n  const members = new Set();\n  const log = [];\n  return {\n    join: (id) =\u003e { members.add(id); log.push(id + \" joined\"); },\n    leave: (id) =\u003e { members.delete(id); log.push(id + \" left\"); },\n    broadcast: (a, m) =\u003e { for (const x of members) log.push(x + \" \u003c- \" + a + \": \" + m); },\n    log,\n  };\n}\nconst room = createRoom();\nroom.join(\"conn:1\"); room.join(\"conn:2\");\nroom.broadcast(\"conn:1\", \"hello room\");\nconsole.log(room.log.join(\"\\n\"));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

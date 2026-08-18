@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cluster Setup — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">GUIDE</div>
+  <h1>Cluster Setup <span class="sub">Link multiple hosts into a BhooAI Nexus cluster mesh — a node agent on every machine, a central registry on the master, a round-robin load balancer, and an RPS/CPU autoscaler. Per-node tokens, admin pairing, and <code>cluster.runtime.json</code> persistence.</span></h1>
+
+  <h2>The mesh at a glance</h2>
+  <div class="mesh">
+    <div class="mesh-node mesh-master">
+      <div class="mesh-head mesh-head-master">MASTER</div>
+      <div class="mesh-body">
+        <div class="mesh-row"><span class="mesh-tag">registry</span> central node book · <code>cluster.runtime.json</code></div>
+        <div class="mesh-row"><span class="mesh-tag">lb</span> round-robin reverse proxy · <code>:8080</code></div>
+        <div class="mesh-row"><span class="mesh-tag">scale</span> RPS/CPU + AI autoscaler</div>
+        <div class="mesh-row"><span class="mesh-tag">pair</span> <code>POST /admin/cluster/link { nodeUrl, token }</code></div>
+      </div>
+    </div>
+    <div class="mesh-links">
+      <div class="mesh-link"><span class="mesh-arrow">▼</span><span class="mesh-port">agent <code>:7575</code></span><span class="mesh-arrow">▼</span></div>
+    </div>
+    <div class="mesh-row-group">
+      <div class="mesh-node mesh-slave">
+        <div class="mesh-head mesh-head-slave">SLAVE · node-2</div>
+        <div class="mesh-body">
+          <div class="mesh-row"><span class="mesh-tag">role</span> backend</div>
+          <div class="mesh-row"><span class="mesh-tag">agent</span> <code>nexus node serve :7575</code></div>
+          <div class="mesh-row"><span class="mesh-tag">auth</span> own per-node token</div>
+        </div>
+      </div>
+      <div class="mesh-node mesh-slave">
+        <div class="mesh-head mesh-head-slave">SLAVE · node-3</div>
+        <div class="mesh-body">
+          <div class="mesh-row"><span class="mesh-tag">role</span> backend</div>
+          <div class="mesh-row"><span class="mesh-tag">agent</span> <code>nexus node serve :7576</code></div>
+          <div class="mesh-row"><span class="mesh-tag">auth</span> own per-node token</div>
+        </div>
+      </div>
+    </div>
+    <div class="mesh-tip">Every linked slave is round-robined by the master LB; all agent calls are Bearer-token gated. Each slave can run on its own machine — or several on one device, each with a unique <code>--port</code>.</div>
+  </div>
+
+  <h2>1. Master config — nexus.config.ts</h2>
+  <p>On the master, enable the cluster and declare the load balancer + node agent host/ports, and a pairing
+     token. The master is the central registry that linked slaves register into:</p>
+  <pre><code>cluster: {
+  enabled: <span class="num">true</span>,
+  failOpenSingleNode: <span class="num">true</span>,
+  token: <span class="str">'master-pairing-secret'</span>,      <span class="com">// used to link slaves</span>
+  lbHost: <span class="str">'0.0.0.0'</span>, lbPort: <span class="num">8080</span>,     <span class="com">// round-robin reverse proxy</span>
+  nodeAgentHost: <span class="str">'0.0.0.0'</span>,             <span class="com">// bind all interfaces (remote access)</span>
+  nodeAgentPort: <span class="num">7575</span>,
+  registryFile: <span class="str">'cluster.runtime.json'</span>,   <span class="com">// gitignored — master stores linked nodes here</span>
+  autoscale: {
+    enabled: <span class="num">true</span>, mode: <span class="str">'auto'</span>,
+    minNodes: <span class="num">1</span>, maxNodes: <span class="num">4</span>,
+    cooldownMs: <span class="num">60_000</span>,
+    cpuHigh: <span class="num">80</span>, rpsPerNodeHigh: <span class="num">15</span>, rpsPerNodeLow: <span class="num">5</span>,
+  },
+}</code></pre>
+
+  <div class="callout note">
+    <span class="label">nodeAgentHost: '0.0.0.0'</span>
+    Bind <code>0.0.0.0</code> so the agent is reachable from remote machines. <code>localhost</code> or
+    <code>127.0.0.1</code> blocks off-host linking — a common gotcha when slaves are on another box.
+  </div>
+
+  <h2>2. Slave setup — nexus node serve</h2>
+  <p>On each slave, start the node agent with a role and port. The agent announces its services to the master
+     and heartbeats on a schedule:</p>
+  <pre><code><span class="com"># on the slave machine, from its project root</span>
+nexus node serve --role=backend --port=<span class="num">7575</span></code></pre>
+  <p>The slave's own <code>nexus.config.ts</code> must set the <em>same</em> <code>cluster.token</code> the master
+     will send (or a per-node token — see below). Verify the agent is alive before linking:</p>
+  <pre><code>curl http://&lt;slave-host&gt;:<span class="num">7575</span>/info \
+  -H <span class="str">"Authorization: Bearer &lt;slave-token&gt;"</span>
+<span class="com"># {"id":"...-backend","role":"backend","baseUrl":"http://localhost:7575",...}</span></code></pre>
+
+  <h2>2b. Multiple nodes on a single device</h2>
+  <p>You don't need separate machines to experiment with the mesh. A single computer can run the master and
+     several slave agents at once. The only rule: <strong>each agent needs its own port and its own project
+     directory</strong>. Use a distinct <code>--port</code> per agent, and point each <code>nexus node serve</code>
+     at a different project root so their service ports (<code>4000</code>, <code>4001</code>, …) and node ids
+     don't collide.</p>
+
+  <h3>Option A — separate project folders (recommended)</h3>
+  <p>Scaffold one project per node with <code>nexus init</code>, give each a unique backend port, then start each
+     agent from its own folder:</p>
+  <pre><code><span class="com"># terminal 1 — master (project "app-master")</span>
+nexus init app-master --as=root --skip-mongo-check
+cd app-master && nexus cluster serve
+
+<span class="com"># terminal 2 — slave node-2 (project "app-node2")</span>
+nexus init app-node2 --as=node --name app-node2 --skip-mongo-check
+cd app-node2 && nexus node serve --role=backend --port=<span class="num">7575</span>
+
+<span class="com"># terminal 3 — slave node-3 (project "app-node3", different port)</span>
+nexus init app-node3 --as=node --name app-node3 --skip-mongo-check
+cd app-node3 && nexus node serve --role=backend --port=<span class="num">7576</span></code></pre>
+  <p>Because they're separate projects, the wizard auto-detects the master's pairing token from the sibling
+     <code>app-master</code> folder and reuses it. Link them from the master:</p>
+  <pre><code><span class="com"># from app-master</span>
+nexus cluster link http://localhost:7575
+nexus cluster link http://localhost:7576</code></pre>
+
+  <h3>Option B — one project, multiple agents with a port override</h3>
+  <p>You can also run several agents from the <em>same</em> project by overriding the port on the command line.
+     This works but the agents share the same node id (same project root), so use it only for a quick sanity
+     check — the registry keys nodes by id, and duplicates overwrite each other.</p>
+  <pre><code><span class="com"># same project root, different agent ports (id collision risk — test only)</span>
+nexus node serve --role=backend --port=<span class="num">7575</span>
+nexus node serve --role=backend --port=<span class="num">7576</span>   <span class="com"># second window</span></code></pre>
+
+  <div class="callout note">
+    <span class="label">ports must be unique per process</span>
+    <code>cluster.nodeAgentPort</code> is the <em>default</em> agent port. Use <code>--port</code> to override it
+    per agent so two agents on one machine never fight for the same port. The LB on the master stays at
+    <code>cluster.lbPort</code> (<code>8080</code>) and needs no change.
+  </div>
+
+  <h2>3. Per-node tokens</h2>
+  <p>Each slave has its <em>own</em> token. When you link it, the master stores that token as
+     <code>authToken</code> in the node's registry record and uses it for every subsequent agent call
+     (<code>/info</code>, <code>/health</code>, <code>/exec</code>, <code>/metrics</code>):</p>
+  <pre><code><span class="com">// in cluster.runtime.json (master side, gitignored)</span>
+{
+  <span class="str">"nodes"</span>: [{
+    <span class="str">"identity"</span>: { <span class="str">"id"</span>: <span class="str">"a453d9a9e220-backend"</span>, <span class="str">"role"</span>: <span class="str">"backend"</span>, ... },
+    <span class="str">"status"</span>: <span class="str">"ready"</span>,
+    <span class="str">"enabled"</span>: <span class="num">true</span>,
+    <span class="str">"authToken"</span>: <span class="str">"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span>   <span class="com">// slave's token, stored on master</span>
+  }]
+}</code></pre>
+
+  <h3>Slave mode — Generate token button</h3>
+  <p>The admin console's <strong>Slave mode</strong> has a <em>Generate token</em> button that creates a fresh
+     random token and writes it into both <code>nexus.runtime.json</code> and <code>.env</code> on the slave.
+     Restart the node agent so it picks up the new token, then paste it into the master's link dialog.</p>
+  <p>Slave mode also shows the full pairing token, node id, role, agent port, and agent URL, plus
+     <strong>Start node</strong> / <strong>Stop node</strong> buttons that launch
+     <code>nexus node serve --role=backend --port=&lt;nodeAgentPort&gt;</code> for you. The same controls
+     (start/stop the LB + autoscaler) live beside the mode toggle in Master mode.</p>
+
+  <h3>Pairing success — congratulations overlay</h3>
+  <p>When a node links successfully, the master admin shows a full-screen <em>CONGRATULATIONS</em> overlay with
+     flying ribbons. It stays until dismissed and lists the linked node's details fetched from the slave:
+     <strong>project</strong> (from the slave's <code>package.json</code> name), <strong>node id</strong>,
+     <strong>role</strong>, <strong>version</strong>, <strong>agent</strong> URL, and each service URL.</p>
+
+  <h2>4. Admin panel — Master Mode → Link node</h2>
+  <p>The pairing flow is driven from the master's admin console:</p>
+  <ol>
+    <li>Open <strong>Admin → Cluster → Master Mode</strong>.</li>
+    <li>Paste the slave's agent URL (e.g. <code>http://192.168.1.8:7575</code>).</li>
+    <li>Click <strong>Link node</strong> — a pairing dialog opens asking for the slave's token.</li>
+    <li>Paste the token the slave generated (or its <code>cluster.token</code>).</li>
+    <li>The master calls <code>POST /admin/cluster/link</code>, which hits the slave's <code>/info</code> and
+        <code>/health</code> with the token; on success the node is added to <code>cluster.runtime.json</code>.</li>
+  </ol>
+
+  <h3>Link API</h3>
+  <pre><code>POST /admin/cluster/link
+Authorization: Bearer &lt;master-admin-jwt&gt;
+x-csrf-token: &lt;fresh csrf token&gt;
+Content-Type: application/json
+
+{ <span class="str">"nodeUrl"</span>: <span class="str">"http://192.168.1.8:7575"</span>, <span class="str">"token"</span>: <span class="str">"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span> }
+
+<span class="com"># 200 OK</span>
+{ <span class="str">"node"</span>: { <span class="str">"identity"</span>: { ... }, <span class="str">"status"</span>: <span class="str">"pending"</span>, <span class="str">"authToken"</span>: <span class="str">"a1b2..."</span> } }</code></pre>
+
+  <div class="callout warn">
+    <span class="label">CSRF rotates</span>
+    <code>/admin/cluster/link</code> is a POST under CSRF + admin auth. The CSRF token rotates on every safe
+    request — re-fetch <code>GET /csrf-token</code> immediately before the link POST. See the
+    <a href="../learn/14-postman-testing.html">Postman testing guide</a> for a worked 3-step flow.
+  </div>
+
+  <h2>5. Load balancer — round-robin on lbPort</h2>
+  <p>The LB is a plain <code>node:http</code> reverse proxy on <code>cluster.lbPort</code> (default 8080). It
+     round-robins across every <em>ready</em> backend node, streams raw bodies through untouched (so SSE and
+     uploads still work), and stamps <code>x-bhooai-node</code> on every response. Start and stop it from the
+     admin panel or the CLI:</p>
+  <pre><code>nexus cluster start     <span class="com"># start the LB</span>
+nexus cluster stop      <span class="com"># stop the LB (slaves keep running)</span>
+nexus cluster status    <span class="com"># linked nodes + per-node RPS</span></code></pre>
+
+  <h2>6. Autoscaler — RPS / CPU thresholds</h2>
+  <p>Every 10s the <code>Autoscaler</code> samples the LB's RPS histogram and each node's <code>/metrics</code>.
+     It scales within <code>minNodes</code>/<code>maxNodes</code> with a cooldown so it doesn't thrash:</p>
+  <table>
+    <thead><tr><th>Condition</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>per-node RPS &gt; <code>rpsPerNodeHigh</code> (15)</td><td>scale up (+1 node, up to <code>maxNodes</code>)</td></tr>
+      <tr><td>CPU &gt; <code>cpuHigh</code> (80%)</td><td>scale up</td></tr>
+      <tr><td>per-node RPS &lt; <code>rpsPerNodeLow</code> (5)</td><td>scale down (−1 node, down to <code>minNodes</code>)</td></tr>
+      <tr><td>within <code>cooldownMs</code> of last action</td><td>hold (skip)</td></tr>
+      <tr><td>AI advisor says <code>scale-up|scale-down|hold</code> off-rail</td><td>fall back to the deterministic rules</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. cluster.runtime.json — gitignored</h2>
+  <p>The master persists linked nodes to <code>cluster.runtime.json</code> at the repo root. It is
+     <strong>gitignored</strong> — it is runtime state, not source. Surviving a master restart means the file is
+     intact; deleting it clears the registry:</p>
+  <pre><code><span class="com"># .gitignore</span>
+cluster.runtime.json
+nexus.runtime.json</code></pre>
+
+  <h2>8. Node agent API — Bearer token auth</h2>
+  <p>Every agent route requires <code>Authorization: Bearer &lt;token&gt;</code> matching the slave's
+     <code>cluster.token</code> (or its generated per-node token):</p>
+  <table>
+    <thead><tr><th>Route</th><th>Method</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td><code>/info</code></td><td>GET</td><td><code>NodeIdentity</code> — id, role, tier, baseUrl, services, capabilities</td></tr>
+      <tr><td><code>/health</code></td><td>GET</td><td><code>NodeHealth</code> — probes the role service's <code>/health</code></td></tr>
+      <tr><td><code>/metrics</code></td><td>GET</td><td><code>NodeMetricsSample</code> — rps, cpu, memoryMb, sampledAt</td></tr>
+      <tr><td><code>/exec</code></td><td>POST</td><td><code>NodeExecResult</code> — allowlist: start / stop / restart / logs / update</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>curl http://&lt;slave&gt;:<span class="num">7575</span>/metrics \
+  -H <span class="str">"Authorization: Bearer a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span>
+<span class="com"># {"rps":12.4,"cpu":41,"memoryMb":318,"sampledAt":"2026-08-10T03:15:00Z"}</span></code></pre>
+
+  <h2>9. Troubleshooting</h2>
+
+  <h3><code>[cluster] scale-up requested but no standby backend node</code></h3>
+  <div class="callout warn">
+    <span class="label">informational — not an error</span>
+    The autoscaler (deterministic rule or AI advisor) decided the cluster should grow, but there is no
+    <em>standby</em> backend node to enable. The autoscaler can only flip a pre-linked, disabled
+    (<code>enabled: false</code>) node to <code>enabled: true</code> — it cannot provision brand-new machines.
+    When you link a node it defaults to <code>enabled: true</code>, so a single linked node leaves nothing to
+    scale into. The message is rate-limited to once a minute and is harmless in single-node setups.
+    <pre><code><span class="com"># how to actually enable autoscaling</span>
+<span class="com"># 1. Link 2+ backend slaves (nexus node serve --role=backend --port=7575)</span>
+nexus cluster link http://&lt;slave-2&gt;:7575
+<span class="com"># 2. Mark the extra node(s) as standby via the admin Cluster table (enabled=false),
+#    or set autoscale.mode: 'manual' in nexus.config.ts to silence the advisor.</span></code></pre>
+  </div>
+
+  <h3><code>cluster.enabled is false — set cluster: { enabled: true, ... }</code></h3>
+  <div class="callout warn">
+    <span class="label">stale runtime override</span>
+    Your <code>nexus.config.ts</code> may correctly say <code>enabled: true</code>, but
+    <code>nexus.runtime.json</code> (written by the admin <em>Stop</em> button) overrides it because runtime
+    config beats the user config in the loader precedence. Running <code>nexus cluster serve</code> now
+    re-enables the cluster in runtime automatically, but for older installs clear it manually:
+    <pre><code><span class="com"># nexus.runtime.json</span>
+{ <span class="str">"cluster"</span>: { <span class="str">"enabled"</span>: <span class="num">true</span> } }   <span class="com">// was { "cluster": { "enabled": false } }</span></code></pre>
+  </div>
+
+  <h3><code>POST /admin/cluster/generate-token: 404</code> or
+  <code>POST /admin/cluster/node/start: 404</code></h3>
+  <div class="callout warn">
+    <span class="label">stale backend routes</span>
+    The node-agent lifecycle routes (<code>/admin/cluster/node/status</code>,
+    <code>/admin/cluster/node/start</code>, <code>/admin/cluster/node/stop</code>) and
+    <code>/admin/cluster/generate-token</code> were added after some projects were scaffolded. If your backend
+    was copied from an older template, the routes are missing and the admin returns 404. Restart the backend
+    after pulling the framework update, or re-scaffold the affected app from
+    <code>packages/nexus-cli/templates/apps/backend/src/modules/admin/clusterRoutes.ts</code>.
+  </div>
+
+  <h3><code>400 {"error":"fetch failed"}</code></h3>
+  <div class="callout danger">
+    <span class="label">agent not running</span>
+    The master cannot reach the slave's agent. Verify the agent process is up and the port is listening:
+    <pre><code><span class="com"># Windows</span>
+Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq <span class="num">7575</span>
+<span class="com"># start it if missing</span>
+nexus node serve --role=backend --port=<span class="num">7575</span></code></pre>
+    Also check the URL — use <code>http://192.168.1.8:7575</code>, not <code>localhost</code>, when the slave is
+    on another machine.
+  </div>
+
+  <h3><code>400 {"error":"agent 401 /info"}</code></h3>
+  <div class="callout danger">
+    <span class="label">wrong token</span>
+    The <code>token</code> in the link body doesn't match the slave's <code>cluster.token</code>. Check both the
+    slave's <code>nexus.config.ts</code> and its <code>nexus.runtime.json</code> (the runtime file overrides).
+    If you used <em>Generate token</em> in the admin UI, restart the node agent so it picks up the new token
+    before linking.
+  </div>
+
+  <h3><code>401 Unauthorized</code> (empty body)</h3>
+  <div class="callout danger">
+    <span class="label">CSRF mismatch</span>
+    The <code>x-csrf-token</code> header doesn't match the <code>nexus_csrf</code> cookie. The cookie rotates on
+    every safe request, so re-run <code>GET /csrf-token</code> <em>immediately</em> before the link POST. In
+    Postman, re-run Step 1 right before Step 3 — see the
+    <a href="../learn/14-postman-testing.html">Postman testing guide</a> for the exact sequence.
+  </div>
+
+  <h3><code>403 Forbidden</code></h3>
+  <div class="callout danger">
+    <span class="label">not an admin</span>
+    The logged-in user lacks the <code>admin</code> role. Verify in MongoDB:
+    <code>db.users.findOne({email:"..."}, {roles:1})</code>. Only <code>roles: ["admin"]</code> can call
+    <code>/admin/cluster/*</code>.
+  </div>
+
+  <div class="callout note">
+    <span class="label">Fail-open</span>
+    When <code>cluster.enabled</code> is off (default) or the mesh is down, the app keeps working on a single
+    node — a deliberate availability choice. The cluster is an optimization, not a dependency.
+  </div>
+
+  <p class="foot"><a href="guide-graphql.html">← GraphQL API</a> · <a href="../index.html">Docs</a> · Next: <a href="guide-ai-chat.html">AI Chat Streaming →</a></p>
+  <div class="foot">BhooAI Nexus · Guide · Cluster Setup</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,811 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Data (ODM) API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-data</span> Data / ODM API
+    <span class="sub">A from-scratch ODM on the official <code>mongodb</code> driver (no mongoose).</span></h1>
+
+  <p>A self-contained ODM layer: schemas with defaults, validation, refs/population, hooks, indexes,
+     a fluent <code>Query</code> builder, and a thin connection abstraction. Everything builds on
+     <code>mongodb</code> directly — there is no mongoose dependency.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>top-level helpers</td><td><code>connect</code>, <code>getConnection</code>, <code>model</code>, <code>transaction</code>, <code>ObjectId</code>, <code>Decimal128</code></td></tr>
+      <tr><td>connection</td><td><code>Connection</code>, <code>ConnectOptions</code></td></tr>
+      <tr><td>multi-connection</td><td><code>ConnectionManager</code>, <code>connectionManager</code></td></tr>
+      <tr><td>schema</td><td><code>Schema</code> (= <code>NexusSchema</code>)</td></tr>
+      <tr><td>schema types</td><td><code>SchemaTypeToken</code>, <code>typeOf</code>, <code>coerce</code></td></tr>
+      <tr><td>schema definitions</td><td><code>FieldDefinition</code>, <code>FieldValidator</code>, <code>CompiledField</code>, <code>IndexSpec</code>, <code>FieldError</code>, <code>SchemaDefinition</code>, <code>SchemaOptions</code></td></tr>
+      <tr><td>model / document / query</td><td><code>Model</code>, <code>DocumentInstance</code>, <code>Query</code></td></tr>
+      <tr><td>errors</td><td><code>ValidationError</code>, <code>DocumentNotFoundError</code>, <code>VersionError</code></td></tr>
+      <tr><td>projects</td><td><code>ProjectInfo</code>, <code>PROJECT_INFO_DB</code>, <code>sanitizeDbName</code>, <code>resolveProjectInfo</code>, <code>connectProjectInfo</code>, <code>getProjectInfoCollection</code>, <code>upsertProjectInfo</code>, <code>listProjectInfo</code>, <code>getProjectInfo</code>, <code>closeProjectInfo</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Top-level helpers</h2>
+
+  <h3 id="connect">connect(uri, options?)</h3>
+  <pre><code><span class="kw">function</span> connect(uri: <span class="kw">string</span>, options: ConnectOptions = {}): Connection</code></pre>
+  <p>Open a <code>MongoClient</code> and store it as the module-level <strong>default connection</strong>.
+     Returns the <code>Connection</code>. This is the connection used by <code>getConnection()</code> and
+     <code>model()</code>. It is <strong>not</strong> registered on the <code>ConnectionManager</code> —
+     <code>getConnection()</code> returns the same object set here, not
+     <code>connectionManager.get('default')</code>.</p>
+  <pre><code><span class="kw">import</span> { connect } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+<span class="kw">const</span> conn = connect(<span class="str">'mongodb://localhost:27017/nexus'</span>, { autoIndex: <span class="kw">true</span> });</code></pre>
+  <div class="callout note">
+    <span class="label">Single vs. multi-connection</span>
+    <code>connect()</code> sets one default connection. For multiple databases, use the
+    <a href="#ConnectionManager"><code>connectionManager</code></a> separately — it is independent of the
+    default and is what the projects module uses.
+  </div>
+
+  <h3 id="getConnection">getConnection()</h3>
+  <pre><code><span class="kw">function</span> getConnection(): Connection</code></pre>
+  <p>Return the default <code>Connection</code> set by <code>connect()</code>. Throws
+     <code>'Not connected — call connect(uri) first.'</code> if <code>connect()</code> was never called.</p>
+
+  <h3 id="model">model&lt;T&gt;(name, schema, options?)</h3>
+  <pre><code><span class="kw">function</span> model&lt;T <span class="kw">extends</span> DocumentInstance&gt;(
+  name: <span class="kw">string</span>, schema: NexusSchema, options?: { collection?: <span class="kw">string</span> },
+): Model&lt;T&gt;</code></pre>
+  <p>Register (or fetch the cached) model on the <strong>default connection</strong>. Equivalent to
+     <code>getConnection().model(name, schema, options)</code>. Re-calling with the same <code>name</code>
+     returns the existing model (schema/options are ignored).</p>
+  <pre><code><span class="kw">const</span> Post = model&lt;PostDoc&gt;(<span class="str">'Post'</span>, postSchema, { collection: <span class="str">'posts'</span> });</code></pre>
+
+  <h3 id="transaction">transaction(fn)</h3>
+  <pre><code><span class="kw">async function</span> transaction&lt;T&gt;(fn: (session: ClientSession) =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;</code></pre>
+  <p>Start a session on the default connection and run <code>fn</code> inside
+     <code>session.withTransaction(...)</code>. The session is always ended in <code>finally</code>.</p>
+  <pre><code><span class="kw">await</span> transaction(<span class="kw">async</span> (session) =&gt; {
+  <span class="kw">await</span> Post.updateOne({ _id }, { $inc: { views: <span class="num">1</span> } }, { session });
+  <span class="kw">await</span> Audit.create([{ at: <span class="kw">new</span> Date() }], { session });   <span class="com">// pass session to driver calls</span>
+});</code></pre>
+
+  <h3 id="ObjectId">ObjectId / Decimal128</h3>
+  <pre><code><span class="kw">import</span> { ObjectId, Decimal128 } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>; <span class="com">// re-exported from <code>mongodb</code></span></code></pre>
+  <p>Re-exports of the <code>mongodb</code> driver BSON types. Use <code>ObjectId</code> for <code>_id</code>
+     construction/casting and <code>Decimal128</code> for the <code>Decimal128</code> schema type.</p>
+
+  <h2 id="Connection">Connection class</h2>
+  <pre><code><span class="kw">class</span> Connection {
+  client: MongoClient;
+  dbPromise: Promise&lt;Db&gt;;
+  models = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, Model&lt;<span class="kw">any</span>&gt;&gt;();
+  autoIndex: <span class="kw">boolean</span>;
+  constructor(uri: <span class="kw">string</span>, options: ConnectOptions = {});
+  <span class="kw">get</span> db(): Promise&lt;Db&gt;;
+  model&lt;T <span class="kw">extends</span> DocumentInstance&gt;(name: <span class="kw">string</span>, schema: NexusSchema, options?: { collection?: <span class="kw">string</span> }): Model&lt;T&gt;;
+  startSession(): Promise&lt;ClientSession&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>Wraps a <code>MongoClient</code> and lazily exposes a <code>Db</code>. The constructor connects
+     immediately — <code>this.db</code> is a promise that resolves once the client handshake completes.
+     Models are registered per connection and indexed by name.</p>
+  <pre><code><span class="kw">const</span> conn = <span class="kw">new</span> Connection(uri, { name: <span class="str">'myapp'</span>, autoIndex: <span class="kw">true</span> });
+<span class="kw">const</span> db = <span class="kw">await</span> conn.db;
+<span class="kw">const</span> User = conn.model&lt;UserDoc&gt;(<span class="str">'User'</span>, userSchema); <span class="com">// collection name defaults to 'users'</span>
+<span class="kw">const</span> session = <span class="kw">await</span> conn.startSession();
+<span class="kw">await</span> conn.close();</code></pre>
+
+  <h3>Constructor</h3>
+  <pre><code><span class="kw">new</span> Connection(uri: <span class="kw">string</span>, options: ConnectOptions = {})</code></pre>
+  <p>Creates the <code>MongoClient</code> and kicks off <code>client.connect()</code>. ODM-only options
+     (<code>name</code>, <code>autoIndex</code>) are stripped before the rest is passed to the driver.</p>
+
+  <h3 id="ConnectOptions">ConnectOptions</h3>
+  <p>Extends <code>MongoClientOptions</code> with two ODM-only fields:</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name?</code></td><td><code>string</code></td><td>— (from URI)</td><td>Database name override (otherwise taken from the URI).</td></tr>
+      <tr><td><code>autoIndex?</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Auto-create schema-declared indexes when a model is registered.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>db (getter)</h3>
+  <pre><code><span class="kw">get</span> db(): Promise&lt;Db&gt;</code></pre>
+  <p>The <code>Promise&lt;Db&gt;</code> for the connected database. Awaits the driver handshake and resolves
+     with <code>client.db(name)</code>.</p>
+
+  <h3>model(name, schema, options?)</h3>
+  <pre><code>model&lt;T <span class="kw">extends</span> DocumentInstance&gt;(name: <span class="kw">string</span>, schema: NexusSchema, options?: { collection?: <span class="kw">string</span> }): Model&lt;T&gt;</code></pre>
+  <p>Register a model on this connection. If <code>name</code> is already registered, the existing model
+     is returned (schema and options are ignored). The collection name is resolved in order:
+     <code>options.collection</code> → <code>schema.options.collection</code> →
+     <code>name.toLowerCase() + 's'</code>. When <code>autoIndex</code> is true, schema indexes are
+     created in the background (fire-and-forget).</p>
+
+  <h3>startSession()</h3>
+  <pre><code><span class="kw">async</span> startSession(): Promise&lt;ClientSession&gt;</code></pre>
+  <p>Await the DB handshake, then return <code>client.startSession()</code>. Used by
+     <code>transaction()</code>.</p>
+
+  <h3>close()</h3>
+  <pre><code><span class="kw">async</span> close(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Close the underlying <code>MongoClient</code>.</p>
+
+  <h2 id="ConnectionManager">ConnectionManager class &amp; connectionManager</h2>
+  <pre><code><span class="kw">class</span> ConnectionManager {
+  <span class="kw">private</span> connections = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, Connection&gt;();
+  connect(name: <span class="kw">string</span>, uri: <span class="kw">string</span>, options: ConnectOptions = {}): Connection;
+  get(name = <span class="str">'default'</span>): Connection;
+  has(name: <span class="kw">string</span>): <span class="kw">boolean</span>;
+  <span class="kw">async</span> closeAll(): Promise&lt;<span class="kw">void</span>&gt;;
+}
+<span class="kw">export const</span> connectionManager = <span class="kw">new</span> ConnectionManager();</code></pre>
+  <p>A process-wide registry for <strong>multiple named connections</strong> (e.g. a primary app DB plus an
+     analytics DB). The exported <code>connectionManager</code> singleton is the instance used by the
+     <a href="#projects">projects module</a>.</p>
+  <div class="callout warn">
+    <span class="label">Independent of the default connection</span>
+     <code>connect()</code> / <code>getConnection()</code> / <code>model()</code> use a module-level
+     <code>defaultConnection</code> variable — they do <strong>not</strong> register or read from
+     <code>connectionManager</code>. The two APIs are separate; reach for the manager only when you need
+     more than one database in the same process.
+  </div>
+  <pre><code><span class="kw">import</span> { connectionManager } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+<span class="kw">const</span> analytics = connectionManager.connect(<span class="str">'analytics'</span>, <span class="str">'mongodb://localhost:27017/analytics'</span>);
+<span class="kw">const</span> same = connectionManager.get(<span class="str">'analytics'</span>);   <span class="com">// cached — same object</span>
+connectionManager.has(<span class="str">'analytics'</span>);                 <span class="com">// true</span>
+<span class="kw">await</span> connectionManager.closeAll();                   <span class="com">// close every managed connection</span></code></pre>
+
+  <h3>connect(name, uri, options?)</h3>
+  <pre><code>connect(name: <span class="kw">string</span>, uri: <span class="kw">string</span>, options: ConnectOptions = {}): Connection</code></pre>
+  <p>Create (or reuse) a named <code>Connection</code>. If <code>name</code> is already present, the
+     existing connection is returned unchanged.</p>
+
+  <h3>get(name = 'default')</h3>
+  <pre><code>get(name = <span class="str">'default'</span>): Connection</code></pre>
+  <p>Fetch a registered connection. Throws <code>"Connection '&lt;name&gt;' is not registered."</code> if
+     absent. Note the default argument is <code>'default'</code> but no connection is registered under
+     that name unless you call <code>connectionManager.connect('default', ...)</code> yourself.</p>
+
+  <h3>has(name)</h3>
+  <pre><code>has(name: <span class="kw">string</span>): <span class="kw">boolean</span></code></pre>
+
+  <h3>closeAll()</h3>
+  <pre><code><span class="kw">async</span> closeAll(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Close every managed connection in parallel and clear the map.</p>
+
+  <h2 id="Schema">Schema (NexusSchema)</h2>
+  <pre><code><span class="kw">class</span> NexusSchema&lt;T = <span class="kw">unknown</span>&gt; {
+  compiledPaths = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, CompiledField&gt;();
+  indexes: IndexSpec[] = [];
+  options: SchemaOptions;
+  virtuals = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, { get?: () =&gt; unknown; set?: (v: unknown) =&gt; void }&gt;();
+  preHooks  = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, Array&lt;(ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;&gt;&gt;();
+  postHooks = <span class="kw">new</span> Map&lt;<span class="kw">string</span>, Array&lt;(ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;&gt;&gt;();
+  methods:  Record&lt;<span class="kw">string</span>, (...a: unknown[]) =&gt; unknown&gt; = {};
+  statics:  Record&lt;<span class="kw">string</span>, (...a: unknown[]) =&gt; unknown&gt; = {};
+  constructor(definition: SchemaDefinition = {}, options: SchemaOptions = {});
+  define(path: <span class="kw">string</span>, def: FieldDefinition): <span class="kw">void</span>;
+  virtual(path: <span class="kw">string</span>, opts?: { get?: () =&gt; unknown; set?: (v: unknown) =&gt; void }): <span class="kw">void</span>;
+  pre(event: <span class="kw">string</span>, fn: (ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;): <span class="kw">void</span>;
+  post(event: <span class="kw">string</span>, fn: (ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;): <span class="kw">void</span>;
+  method(name: <span class="kw">string</span>, fn: (...a: unknown[]) =&gt; unknown): <span class="kw">void</span>;
+  staticMethod(name: <span class="kw">string</span>, fn: (...a: unknown[]) =&gt; unknown): <span class="kw">void</span>;
+  applyDefaults(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): Record&lt;<span class="kw">string</span>, unknown&gt;;
+  validate(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): <span class="kw">void</span>;
+}</code></pre>
+  <p>The ODM's schema. Compiles a <code>SchemaDefinition</code> into <code>compiledPaths</code>
+     (validated/coerced on save and query), collects <code>indexes</code>, and stores hooks, virtuals,
+     and instance/static methods. Exported as <code>Schema</code> (an alias of <code>NexusSchema</code>).</p>
+  <pre><code><span class="kw">import</span> { Schema } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+<span class="kw">const</span> postSchema = <span class="kw">new</span> Schema({
+  title:  { type: String, required: <span class="kw">true</span> },
+  views:  { type: Number, default: <span class="num">0</span>, min: <span class="num">0</span>, immutable: <span class="kw">true</span> },
+  author: { type: <span class="str">'ObjectId'</span>, ref: <span class="str">'User'</span>, required: <span class="kw">true</span> },
+}, { timestamps: <span class="kw">true</span>, collection: <span class="str">'posts'</span> });
+
+postSchema.pre(<span class="str">'save'</span>, <span class="kw">function</span> () { <span class="kw">if</span> (<span class="kw">this</span>.isModified(<span class="str">'title'</span>)) <span class="kw">this</span>.slug = slugify(<span class="kw">this</span>.title); });
+postSchema.virtual(<span class="str">'preview'</span>, { get() { <span class="kw">return</span> <span class="kw">this</span>.body?.slice(<span class="num">0</span>, <span class="num">100</span>); } });</code></pre>
+
+  <h3>Constructor</h3>
+  <pre><code><span class="kw">new</span> NexusSchema(definition: SchemaDefinition = {}, options: SchemaOptions = {})</code></pre>
+  <p>Compiles each field definition via <code>define(path, normalizeField(raw))</code>. Defaults
+     <code>options</code> to <code>{ timestamps: false, versionKey: '__v', strict: true }</code>. When
+     <code>options.timestamps</code> is set, auto-defines <code>createdAt</code>/<code>updatedAt</code>
+     <code>Date</code> fields (default field names) unless they already exist. A bare value (e.g.
+     <code>String</code>) is shorthand for <code>{ type: String }</code>.</p>
+
+  <h3>define(path, def)</h3>
+  <pre><code>define(path: <span class="kw">string</span>, def: FieldDefinition): <span class="kw">void</span></code></pre>
+  <p>Compile a single field into <code>compiledPaths</code>, and push derived index specs into
+     <code>indexes</code>. <code>unique</code> produces a unique index (with <code>sparse</code> honored);
+     <code>index</code> produces a plain index (or accepts an options object); <code>expires</code> produces
+     a TTL index (<code>expireAfterSeconds</code>).</p>
+
+  <h3>virtual(path, opts?)</h3>
+  <pre><code>virtual(path: <span class="kw">string</span>, opts: { get?: () =&gt; unknown; set?: (v: unknown) =&gt; void } = {}): <span class="kw">void</span></code></pre>
+  <p>Register a virtual property. The getter is bound to the document instance when invoked by
+     <code>toObject()</code>, so it can read sibling fields via <code>this</code>. Virtuals are not
+     persisted; getters that throw are swallowed during serialization.</p>
+
+  <h3>pre / post(event, fn)</h3>
+  <pre><code>pre(event: <span class="kw">string</span>, fn: (ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;): <span class="kw">void</span>
+post(event: <span class="kw">string</span>, fn: (ctx: unknown) =&gt; unknown | Promise&lt;unknown&gt;): <span class="kw">void</span></code></pre>
+  <p>Append a pre/post hook for an event. The function receives a context bound as <code>this</code> and
+     the first argument. Recognized events:</p>
+  <table>
+    <thead><tr><th>Event</th><th>When</th><th>Context shape</th></tr></thead>
+    <tbody>
+      <tr><td><code>'save'</code></td><td>DocumentInstance.save()</td><td><code>this</code> = the document</td></tr>
+      <tr><td><code>'validate'</code></td><td>DocumentInstance.validate()</td><td><code>this</code> = the document</td></tr>
+      <tr><td><code>'remove'</code></td><td>DocumentInstance.remove()</td><td><code>this</code> = the document</td></tr>
+      <tr><td><code>'find'</code> / <code>'findOne'</code></td><td>Query.exec() (pre only mutates filter)</td><td><code>{ filter, model, op }</code></td></tr>
+      <tr><td><code>'updateOne'</code></td><td>Model.updateOne()</td><td><code>{ filter, update, model }</code></td></tr>
+      <tr><td><code>'deleteMany'</code></td><td>Model.deleteMany()</td><td><code>{ filter, model }</code></td></tr>
+    </tbody>
+  </table>
+  <pre><code>Post.pre(<span class="str">'save'</span>, <span class="kw">function</span> () { <span class="kw">if</span> (<span class="kw">this</span>.isModified(<span class="str">'title'</span>)) <span class="kw">this</span>.slug = slugify(<span class="kw">this</span>.title); });
+Post.post(<span class="str">'save'</span>, (doc) =&gt; log.info(<span class="str">'saved'</span>, { id: doc._id }));</code></pre>
+
+  <h3>method / staticMethod(name, fn)</h3>
+  <pre><code>method(name: <span class="kw">string</span>, fn: (...a: unknown[]) =&gt; unknown): <span class="kw">void</span>
+staticMethod(name: <span class="kw">string</span>, fn: (...a: unknown[]) =&gt; unknown): <span class="kw">void</span></code></pre>
+  <p>Attach an instance method (<code>method</code>) or a static method (<code>staticMethod</code>).
+     Statics are bound to the <code>Model</code> instance in its constructor and called as
+     <code>Model.myStatic(...)</code>.</p>
+
+  <h3>applyDefaults(doc)</h3>
+  <pre><code>applyDefaults(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): Record&lt;<span class="kw">string</span>, unknown&gt;</code></pre>
+  <p>For every compiled field with a <code>default</code>, set <code>doc[path]</code> when it is
+     <code>undefined</code>. Function defaults are invoked. Mutates and returns <code>doc</code>.</p>
+
+  <h3>validate(doc)</h3>
+  <pre><code>validate(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): <span class="kw">void</span></code></pre>
+  <p>Coerce, transform, and validate every field. Throws a <code>ValidationError</code> (the core
+     <code>NexusError</code> subclass, re-exported here) with the list of field errors as
+     <code>details</code> when any check fails. Honors <code>strict</code>: <code>true</code> strips
+     unknown keys, <code>'throw'</code> adds them as errors, <code>false</code> leaves them alone.
+     Coercion is per-type via <a href="#coerce"><code>coerce</code></a>.</p>
+
+  <h2 id="SchemaType">Schema types</h2>
+
+  <h3 id="SchemaTypeToken">SchemaTypeToken</h3>
+  <pre><code><span class="kw">type</span> SchemaTypeToken =
+  | <span class="str">'String'</span> | <span class="str">'Number'</span> | <span class="str">'Boolean'</span> | <span class="str">'Date'</span>
+  | <span class="str">'Buffer'</span> | <span class="str">'ObjectId'</span> | <span class="str">'Decimal128'</span> | <span class="str">'Mixed'</span>
+  | <span class="str">'Array'</span> | <span class="str">'Map'</span>;</code></pre>
+  <p>The primitive type tokens the ODM understands. Used as the compiled <code>token</code> on a
+     <code>CompiledField</code>, and accepted directly as a <code>FieldDefinition.type</code> string.</p>
+
+  <h3 id="typeOf">typeOf(ctor)</h3>
+  <pre><code><span class="kw">function</span> typeOf(ctor: unknown): SchemaTypeToken</code></pre>
+  <p>Map a JS constructor to its <code>SchemaTypeToken</code>. <code>Object</code> → <code>'Mixed'</code>,
+     <code>Array</code> → <code>'Array'</code>, <code>Map</code> → <code>'Map'</code>,
+     <code>Binary</code> → <code>'Buffer'</code>, unknown constructors → <code>'Mixed'</code>. Used by
+     schema compilation when a constructor is passed as <code>type</code>.</p>
+
+  <h3 id="coerce">coerce(token, value)</h3>
+  <pre><code><span class="kw">function</span> coerce(token: SchemaTypeToken, value: unknown): unknown</code></pre>
+  <p>Coerce a value to the target type, throwing <code>TypeError</code> on impossible coercion.
+     <code>null</code>/<code>undefined</code> pass through. Notable rules:</p>
+  <ul>
+    <li><code>String</code> — stringifies numbers/booleans/<code>Date</code>; <code>ObjectId</code> → hex string.</li>
+    <li><code>Number</code> — <code>Number(value)</code>; throws if <code>NaN</code>.</li>
+    <li><code>Boolean</code> — accepts <code>true</code>/<code>false</code>, <code>1</code>/<code>0</code>, and the strings <code>'true'</code>/<code>'false'</code>.</li>
+    <li><code>Date</code> — <code>new Date(value)</code>; throws if invalid.</li>
+    <li><code>Buffer</code> — accepts a <code>Buffer</code> or a UTF-8 string.</li>
+    <li><code>ObjectId</code> — accepts an <code>ObjectId</code> or a 24-char hex string.</li>
+    <li><code>Decimal128</code> — accepts a <code>Decimal128</code>, a string, or a number.</li>
+    <li><code>Mixed</code> / <code>Array</code> / <code>Map</code> — returned as-is.</li>
+  </ul>
+
+  <h2>Schema definition interfaces</h2>
+
+  <h3 id="FieldDefinition">FieldDefinition</h3>
+  <p>A field's compiled options. A bare constructor (e.g. <code>String</code>) is shorthand for
+     <code>{ type: String }</code>. All fields:</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>type</code></td><td><code>unknown</code></td><td>A JS constructor, an array <code>[Constructor]</code>, a nested <code>Schema</code>, or a <code>SchemaTypeToken</code> string. Required.</td></tr>
+      <tr><td><code>required</code></td><td><code>boolean | (() =&gt; boolean)</code></td><td>Field must be present. Function form is evaluated at validate time.</td></tr>
+      <tr><td><code>default</code></td><td><code>unknown | (() =&gt; unknown)</code></td><td>Applied by <code>applyDefaults</code> when the field is <code>undefined</code>. Function form is invoked.</td></tr>
+      <tr><td><code>enum</code></td><td><code>unknown[]</code></td><td>Allowed values; coerced value must be in the list.</td></tr>
+      <tr><td><code>min</code></td><td><code>number</code></td><td>Min bound for <code>Number</code> fields.</td></tr>
+      <tr><td><code>max</code></td><td><code>number</code></td><td>Max bound for <code>Number</code> fields.</td></tr>
+      <tr><td><code>match</code></td><td><code>RegExp</code></td><td>Format test for <code>String</code> fields.</td></tr>
+      <tr><td><code>validate</code></td><td><code>FieldValidator | FieldValidator[]</code></td><td>Custom validators (see <a href="#FieldValidator">FieldValidator</a>). A <strong>bare function is not accepted</strong> — wrap it as <code>{ validator, message }</code>.</td></tr>
+      <tr><td><code>ref</code></td><td><code>string</code></td><td>Model name for population (static reference).</td></tr>
+      <tr><td><code>refPath</code></td><td><code>string</code></td><td>Name of the field whose value is the model name (dynamic reference).</td></tr>
+      <tr><td><code>select</code></td><td><code>boolean</code></td><td>When <code>false</code>, excluded from query results by default (projection). Default <code>true</code>.</td></tr>
+      <tr><td><code>immutable</code></td><td><code>boolean</code></td><td>Cannot be written after the initial insert. <code>save()</code> skips it on update.</td></tr>
+      <tr><td><code>expires</code></td><td><code>number</code></td><td>Creates a TTL index with <code>expireAfterSeconds</code> = this value.</td></tr>
+      <tr><td><code>index</code></td><td><code>boolean | Record&lt;string, unknown&gt;</code></td><td>Creates an index. Object form is passed as the index options.</td></tr>
+      <tr><td><code>unique</code></td><td><code>boolean</code></td><td>Creates a unique index (honors <code>sparse</code>).</td></tr>
+      <tr><td><code>sparse</code></td><td><code>boolean</code></td><td>For <code>unique</code> indexes, skip missing values instead of erroring.</td></tr>
+      <tr><td><code>transform</code></td><td><code>(value: unknown) =&gt; unknown</code></td><td>Transform the coerced value (e.g. lowercase) before further validation/storage.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">new</span> Schema({
+  email:    { type: String, required: <span class="kw">true</span>, unique: <span class="kw">true</span>, sparse: <span class="kw">false</span>, match: /@/, transform: (v) =&gt; v.toLowerCase() },
+  author:   { type: <span class="str">'ObjectId'</span>, ref: <span class="str">'User'</span>, required: <span class="kw">true</span> },
+  kind:     { type: <span class="str">'ObjectId'</span>, refPath: <span class="str">'kindType'</span> }, <span class="com">// dynamic ref</span>
+  tags:     { type: [String], default: [] },
+  views:    { type: Number, default: <span class="num">0</span>, min: <span class="num">0</span>, max: <span class="num">1000000</span>, immutable: <span class="kw">true</span> },
+  status:   { type: String, enum: [<span class="str">'draft'</span>, <span class="str">'live'</span>], default: <span class="str">'draft'</span>, index: <span class="kw">true</span> },
+  bio:      { type: String, select: <span class="kw">false</span> }, <span class="com">// excluded by default</span>
+  token:    { type: String, expires: <span class="num">3600</span> }, <span class="com">// TTL index</span>
+  name:     { type: String, validate: { validator: (v) =&gt; v.length &gt; <span class="num">1</span>, message: <span class="str">'name too short'</span> } },
+}, { timestamps: <span class="kw">true</span>, collection: <span class="str">'posts'</span>, strict: <span class="kw">true</span> });</code></pre>
+
+  <h3 id="FieldValidator">FieldValidator</h3>
+  <pre><code><span class="kw">interface</span> FieldValidator {
+  validator: (value: unknown) =&gt; <span class="kw">boolean</span>;
+  message: <span class="kw">string</span>;
+}</code></pre>
+  <p>A custom validator plus the message used when the validator returns <code>false</code>.
+     <code>FieldDefinition.validate</code> accepts a single validator or an array. The validator
+     receives the <em>coerced</em> value.</p>
+
+  <h3 id="CompiledField">CompiledField</h3>
+  <pre><code><span class="kw">interface</span> CompiledField {
+  token: SchemaTypeToken;
+  isRef: <span class="kw">boolean</span>;
+  ref?: <span class="kw">string</span>;
+  refPath?: <span class="kw">string</span>;
+  required: <span class="kw">boolean</span> | (() =&gt; <span class="kw">boolean</span>);
+  hasDefault: <span class="kw">boolean</span>;
+  default: unknown | (() =&gt; unknown);
+  enum?: unknown[];
+  min?: <span class="kw">number</span>;
+  max?: <span class="kw">number</span>;
+  match?: RegExp;
+  validators: FieldValidator[];
+  select: <span class="kw">boolean</span>;
+  immutable: <span class="kw">boolean</span>;
+  transform?: (value: unknown) =&gt; unknown;
+  isEmbedded: <span class="kw">boolean</span>;
+  embeddedSchema?: Schema;
+}</code></pre>
+  <p>The compiled form of a <code>FieldDefinition</code>, stored in <code>schema.compiledPaths</code>.
+     <code>required</code>, <code>select</code>, and <code>immutable</code> default to <code>false</code>/
+     <code>true</code>/<code>false</code>; <code>validators</code> is always an array.</p>
+
+  <h3 id="IndexSpec">IndexSpec</h3>
+  <pre><code><span class="kw">interface</span> IndexSpec {
+  spec: Record&lt;<span class="kw">string</span>, <span class="num">1</span> | <span class="num">-1</span>&gt;;
+  options: Record&lt;<span class="kw">string</span>, unknown&gt;;
+}</code></pre>
+  <p>A collected index — passed to <code>collection.createIndex(spec, options)</code> by
+     <code>Model.createIndexes()</code>. Derived from <code>unique</code>/<code>index</code>/<code>expires</code>
+     during <code>Schema.define()</code>.</p>
+
+  <h3 id="FieldError">FieldError</h3>
+  <pre><code><span class="kw">interface</span> FieldError {
+  path: <span class="kw">string</span>;
+  message: <span class="kw">string</span>;
+}</code></pre>
+  <p>A field-level validation error. A thrown <code>ValidationError</code> carries an array of these as
+     its <code>details</code>.</p>
+
+  <h3 id="SchemaDefinition">SchemaDefinition</h3>
+  <pre><code><span class="kw">interface</span> SchemaDefinition {
+  [path: <span class="kw">string</span>]: FieldDefinition | unknown;
+}</code></pre>
+  <p>A path → field-definition map, passed to the <code>Schema</code> constructor. Bare values
+     (constructors) are normalized to <code>{ type: value }</code>.</p>
+
+  <h3 id="SchemaOptions">SchemaOptions</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>timestamps</code></td><td><code>boolean | { createdAt?: string; updatedAt?: string }</code></td><td><code>false</code></td><td>Auto-define <code>createdAt</code>/<code>updatedAt</code> Date fields and set them on save. Object form overrides field names.</td></tr>
+      <tr><td><code>collection</code></td><td><code>string</code></td><td>—</td><td>Default collection name (else <code>name.toLowerCase() + 's'</code>).</td></tr>
+      <tr><td><code>discriminatorKey</code></td><td><code>string</code></td><td>—</td><td>Name of the field used to select discriminators (stored on the schema; consumed by higher layers).</td></tr>
+      <tr><td><code>versionKey</code></td><td><code>string | false</code></td><td><code>'__v'</code></td><td>Document version field name. Set <code>false</code> to disable versioning.</td></tr>
+      <tr><td><code>strict</code></td><td><code>boolean | 'throw'</code></td><td><code>true</code></td><td><code>true</code> strips unknown fields on validate; <code>'throw'</code> turns them into errors; <code>false</code> keeps them.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="Model">Model&lt;T&gt; class</h2>
+  <pre><code><span class="kw">class</span> Model&lt;T <span class="kw">extends</span> DocumentInstance&gt; {
+  collection: Promise&lt;Collection&gt;;
+  schema: NexusSchema;
+  connection: Connection;
+  collectionName: <span class="kw">string</span>;
+  name: <span class="kw">string</span>;
+  constructor(name: <span class="kw">string</span>, schema: NexusSchema, connection: Connection, collectionName: <span class="kw">string</span>);
+  hydrate(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): T;
+  find(filter?): Query&lt;T&gt;;
+  findOne(filter?): Query&lt;T&gt;;
+  findById(id): Query&lt;T&gt;;
+  create(docs): Promise&lt;T[]&gt;;
+  insertMany(docs): Promise&lt;T[]&gt;;
+  updateOne(filter, update): Promise&lt;<span class="kw">number</span>&gt;;
+  updateMany(filter, update): Promise&lt;<span class="kw">number</span>&gt;;
+  deleteOne(filter): Promise&lt;<span class="kw">number</span>&gt;;
+  deleteMany(filter): Promise&lt;<span class="kw">number</span>&gt;;
+  findOneAndUpdate(filter, update, opts?): Promise&lt;T | <span class="kw">null</span>&gt;;
+  findOneAndDelete(filter): Promise&lt;T | <span class="kw">null</span>&gt;;
+  bulkWrite(ops): Promise&lt;{ insertedCount; modifiedCount; deletedCount }&gt;;
+  countDocuments(filter?): Promise&lt;<span class="kw">number</span>&gt;;
+  aggregate(pipeline): Promise&lt;unknown[]&gt;;
+  createIndexes(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>A model is the per-collection entry point. It is constructed by <code>Connection.model()</code>
+     (and thus by the top-level <code>model()</code> helper). <strong>All methods below are instance
+     methods</strong> on <code>Model&lt;T&gt;</code> — you call them on the object returned by
+     <code>model()</code>, not as statics on the class. Schema-declared <code>staticMethod</code>s are
+     bound to the instance in the constructor and called as <code>Model.myStatic(...)</code>.</p>
+
+  <h3>collection / schema / connection / collectionName / name</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>collection</code></td><td><code>Promise&lt;Collection&gt;</code></td><td>Resolved lazily from <code>connection.db.then(db =&gt; db.collection(name))</code>.</td></tr>
+      <tr><td><code>schema</code></td><td><code>NexusSchema</code></td><td>The schema used to register the model.</td></tr>
+      <tr><td><code>connection</code></td><td><code>Connection</code></td><td>The owning connection.</td></tr>
+      <tr><td><code>collectionName</code></td><td><code>string</code></td><td>Resolved collection name.</td></tr>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Model name (used as the registry key).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>hydrate(doc)</h3>
+  <pre><code>hydrate(doc: Record&lt;<span class="kw">string</span>, unknown&gt;): T</code></pre>
+  <p>Wrap a raw mongo document as a <code>DocumentInstance</code> marked as persisted
+     (<code>_isNew = false</code>), so subsequent <code>save()</code> performs an <code>updateOne</code>.
+     Use this for docs fetched outside the model (e.g. via <code>aggregate</code>).</p>
+
+  <h3>find(filter?) / findOne(filter?) / findById(id)</h3>
+  <pre><code>find(filter: Record&lt;<span class="kw">string</span>, unknown&gt; = {}): Query&lt;T&gt;
+findOne(filter: Record&lt;<span class="kw">string</span>, unknown&gt; = {}): Query&lt;T&gt;
+findById(id: unknown): Query&lt;T&gt;</code></pre>
+  <p>Return a <a href="#Query"><code>Query</code></a> (thenable) for <code>find</code> or <code>findOne</code>.
+     <code>findById</code> builds <code>{ _id: castId(id) }</code> and runs as <code>findOne</code>.
+     <code>castId</code> casts a 24-char hex string to <code>ObjectId</code>; other forms pass through.</p>
+
+  <h3>create(docs)</h3>
+  <pre><code><span class="kw">async</span> create(docs: Record&lt;<span class="kw">string</span>, unknown&gt; | Record&lt;<span class="kw">string</span>, unknown&gt;[]): Promise&lt;T[]&gt;</code></pre>
+  <p>Build <em>new</em> <code>DocumentInstance</code>s (via <code>newInstance</code>, so
+     <code>_isNew = true</code>) and <code>save()</code> each sequentially. Returns the saved instances.
+     Use this (not <code>hydrate</code>) when you want insert semantics and pre/post <code>save</code>
+     hooks to run.</p>
+
+  <h3>insertMany(docs)</h3>
+  <pre><code><span class="kw">async</span> insertMany(docs: Record&lt;<span class="kw">string</span>, unknown&gt;[]): Promise&lt;T[]&gt;</code></pre>
+  <p>Apply defaults + validate, then issue a single <code>insertMany</code> to the driver. Each inserted
+     doc is hydrated (with its generated <code>_id</code>) and returned. Faster than <code>create</code>
+     but does <strong>not</strong> run per-document <code>save</code> hooks.</p>
+
+  <h3>updateOne(filter, update) / updateMany(filter, update)</h3>
+  <pre><code><span class="kw">async</span> updateOne(filter, update): Promise&lt;<span class="kw">number</span>&gt;
+<span class="kw">async</span> updateMany(filter, update): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Return the <code>modifiedCount</code>. <code>updateOne</code> runs <code>pre/post('updateOne')</code>
+     hooks with <code>{ filter, update, model }</code>.</p>
+
+  <h3>deleteOne(filter) / deleteMany(filter)</h3>
+  <pre><code><span class="kw">async</span> deleteOne(filter): Promise&lt;<span class="kw">number</span>&gt;
+<span class="kw">async</span> deleteMany(filter): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Return the <code>deletedCount</code>. <code>deleteMany</code> runs <code>pre/post('deleteMany')</code>
+     hooks with <code>{ filter, model }</code>.</p>
+
+  <h3>findOneAndUpdate(filter, update, opts?)</h3>
+  <pre><code><span class="kw">async</span> findOneAndUpdate(
+  filter: Record&lt;<span class="kw">string</span>, unknown&gt;,
+  update: Record&lt;<span class="kw">string</span>, unknown&gt;,
+  opts: { returnDocument?: <span class="str">'before'</span> | <span class="str">'after'</span>; upsert?: <span class="kw">boolean</span> } = {},
+): Promise&lt;T | <span class="kw">null</span>&gt;</code></pre>
+  <p>Find-and-update in one round-trip; returns the hydrated doc (or <code>null</code>).
+     <code>returnDocument</code> defaults to <code>'after'</code>; <code>upsert</code> defaults to
+     <code>false</code>.</p>
+
+  <h3>findOneAndDelete(filter)</h3>
+  <pre><code><span class="kw">async</span> findOneAndDelete(filter): Promise&lt;T | <span class="kw">null</span>&gt;</code></pre>
+  <p>Find-and-remove in one round-trip; returns the hydrated deleted doc (or <code>null</code>).</p>
+
+  <h3>bulkWrite(ops)</h3>
+  <pre><code><span class="kw">async</span> bulkWrite(ops: Record&lt;<span class="kw">string</span>, unknown&gt;[]): Promise&lt;{
+  insertedCount: <span class="kw">number</span>; modifiedCount: <span class="kw">number</span>; deletedCount: <span class="kw">number</span>;
+}&gt;</code></pre>
+  <p>Run a driver bulk write of mixed operations and return the count summary.</p>
+
+  <h3>countDocuments(filter?)</h3>
+  <pre><code><span class="kw">async</span> countDocuments(filter: Record&lt;<span class="kw">string</span>, unknown&gt; = {}): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+
+  <h3>aggregate(pipeline)</h3>
+  <pre><code><span class="kw">async</span> aggregate(pipeline: Record&lt;<span class="kw">string</span>, unknown&gt;[]): Promise&lt;unknown[]&gt;</code></pre>
+  <p>Run an aggregation pipeline; returns the raw <code>toArray()</code> result (not hydrated).</p>
+
+  <h3>createIndexes()</h3>
+  <pre><code><span class="kw">async</span> createIndexes(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Create every index in <code>schema.indexes</code>. Called automatically by
+     <code>Connection.model()</code> when <code>autoIndex</code> is true (fire-and-forget). No-op when the
+     schema declares no indexes.</p>
+
+  <h2 id="DocumentInstance">DocumentInstance class</h2>
+  <pre><code><span class="kw">class</span> DocumentInstance {
+  _doc: Record&lt;<span class="kw">string</span>, unknown&gt; = {};
+  _schema: NexusSchema;
+  _model: Model&lt;<span class="kw">this</span>&gt;;
+  _isNew = <span class="kw">true</span>;
+  _modified = <span class="kw">new</span> Set&lt;<span class="kw">string</span>&gt;();
+  constructor(schema, model, data, isNew = <span class="kw">true</span>);
+  isModified(path?): <span class="kw">boolean</span>;
+  toObject(): Record&lt;<span class="kw">string</span>, unknown&gt;;
+  toJSON(): Record&lt;<span class="kw">string</span>, unknown&gt;;
+  <span class="kw">async</span> validate(): Promise&lt;<span class="kw">void</span>&gt;;
+  <span class="kw">async</span> populate(path): Promise&lt;<span class="kw">this</span>&gt;;
+  <span class="kw">async</span> save(): Promise&lt;<span class="kw">this</span>&gt;;
+  <span class="kw">async</span> remove(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>A hydrated document wrapping a plain object. Field access is proxied to <code>_doc</code>, so
+     <code>doc.email</code> reads/writes the stored value and writes mark the path as modified. New
+     documents (<code>_isNew</code>) start with every initial field marked modified so
+     <code>pre('save')</code> hooks see them as changed. Build instances via <code>Model.create()</code>
+     (new) or <code>Model.hydrate()</code> (persisted); <code>new DocumentInstance(...)</code> is also
+     possible but the model methods are the intended API.</p>
+  <pre><code><span class="kw">const</span> p = <span class="kw">new</span> Post({ title: <span class="str">'Hi'</span>, author: uid });
+<span class="kw">await</span> p.save();          <span class="com">// runs pre('save'); inserts (new) or updates (modified only)</span>
+<span class="kw">await</span> p.populate(<span class="str">'author'</span>); <span class="com">// single arg — field selection is only on Query.populate</span>
+<span class="kw">await</span> p.validate();
+<span class="kw">await</span> p.remove();
+p.toObject();          <span class="com">// plain object for serialization (use this, not spread)</span></code></pre>
+
+  <h3>_doc / _schema / _model / _isNew / _modified</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>_doc</code></td><td>The raw stored object; proxied field reads/writes go here.</td></tr>
+      <tr><td><code>_schema</code></td><td>The <code>NexusSchema</code> for validation/defaults/hooks.</td></tr>
+      <tr><td><code>_model</code></td><td>The owning <code>Model</code> (used for collection access). Circular — do not spread.</td></tr>
+      <tr><td><code>_isNew</code></td><td><code>true</code> until the first <code>save()</code> insert succeeds. Controls insert vs. update.</td></tr>
+      <tr><td><code>_modified</code></td><td>Set of paths changed since the last save; drives the <code>$set</code> on update.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>isModified(path?)</h3>
+  <pre><code>isModified(path?: <span class="kw">string</span>): <span class="kw">boolean</span></code></pre>
+  <p>With a path, whether that path is in <code>_modified</code>. Without, whether anything is modified.</p>
+
+  <h3>toObject()</h3>
+  <pre><code>toObject(): Record&lt;<span class="kw">string</span>, unknown&gt;</code></pre>
+  <p>Shallow-copy <code>_doc</code> and apply virtual getters (bound to <code>this</code>).
+     <strong>Serialize via this</strong> — spreading a <code>DocumentInstance</code> proxy leaks internal
+     fields including the circular <code>_model</code>.</p>
+
+  <h3>toJSON()</h3>
+  <pre><code>toJSON(): Record&lt;<span class="kw">string</span>, unknown&gt;</code></pre>
+  <p>Alias of <code>toObject()</code> for <code>JSON.stringify</code>.</p>
+
+  <h3>validate()</h3>
+  <pre><code><span class="kw">async</span> validate(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Run <code>pre('validate')</code> → <code>schema.validate(_doc)</code> → <code>post('validate')</code>.
+     Throws <code>ValidationError</code> on failure.</p>
+
+  <h3>populate(path)</h3>
+  <pre><code><span class="kw">async</span> populate(path: <span class="kw">string</span>): Promise&lt;<span class="kw">this</span>&gt;</code></pre>
+  <p>Resolve a <code>ref</code>/<code>refPath</code> field on this document and assign the hydrated child
+     back onto it. Takes <strong>one argument</strong> (the path). Nested paths (<code>'a.b'</code>) and
+     array refs are supported. Field selection is only available on <a href="#Query.populate"><code>Query.populate</code></a>.</p>
+
+  <h3>save()</h3>
+  <pre><code><span class="kw">async</span> save(): Promise&lt;<span class="kw">this</span>&gt;</code></pre>
+  <p>Run <code>pre('save')</code>, set timestamps, then insert (if <code>_isNew</code>) or update (only
+     modified, non-immutable fields). Defaults are applied before validation on insert. On success,
+     <code>_isNew</code> is cleared and <code>_modified</code> reset. Runs <code>post('save')</code> at
+     the end.</p>
+
+  <h3>remove()</h3>
+  <pre><code><span class="kw">async</span> remove(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Run <code>pre('remove')</code>, delete by <code>_id</code>, then <code>post('remove')</code>.</p>
+
+  <div class="callout danger">
+    <span class="label">Lessons</span>
+    <ul>
+      <li><code>create()</code> builds <em>new</em> instances; <code>hydrate()</code> marks a doc as persisted
+          (save becomes an update). Don't hydrate when you mean create.</li>
+      <li>Always serialize via <code>toObject()</code> — spreading a <code>DocumentInstance</code> proxy leaks
+          internal fields (incl. a circular <code>_model</code>).</li>
+      <li><code>findById</code> casts a 24-char hex string to <code>ObjectId</code>; the driver won't auto-cast.</li>
+      <li><code>DocumentInstance.populate(path)</code> takes one arg. Use <code>Query.populate(path, { select })</code>
+          to select fields on the populated child.</li>
+      <li><code>FieldDefinition.validate</code> must be <code>{ validator, message }</code> (or an array) — a bare
+          function is not accepted.</li>
+    </ul>
+  </div>
+
+  <h2 id="Query">Query&lt;T&gt; class</h2>
+  <pre><code><span class="kw">class</span> Query&lt;T <span class="kw">extends</span> DocumentInstance&gt; {
+  constructor(model: Model&lt;T&gt;, op: <span class="str">'find'</span> | <span class="str">'findOne'</span>, filter: Record&lt;<span class="kw">string</span>, unknown&gt;);
+  where(path, value): <span class="kw">this</span>;
+  gt / gte / lt / lte(path, value): <span class="kw">this</span>;
+  in / nin(path, values): <span class="kw">this</span>;
+  ne(path, value): <span class="kw">this</span>;
+  exists(path, yes = <span class="kw">true</span>): <span class="kw">this</span>;
+  sort(spec): <span class="kw">this</span>;
+  limit(n): <span class="kw">this</span>;
+  skip(n): <span class="kw">this</span>;
+  select(fields): <span class="kw">this</span>;
+  populate(path, opts?): <span class="kw">this</span>;
+  lean(): <span class="kw">this</span>;
+  session(session): <span class="kw">this</span>;
+  <span class="kw">async</span> exec(): Promise&lt;T[] | T | <span class="kw">null</span>&gt;;
+  then(onFulfilled?, onRejected?): Promise&lt;...&gt;;   <span class="com">// thenable</span>
+}</code></pre>
+  <p>A fluent, thenable query builder returned by <code>Model.find</code>/<code>findOne</code>/
+     <code>findById</code>. It accumulates filter/projection/sort/limit/skip/populate and compiles them
+     to a driver call on <code>then()</code> or <code>exec()</code>. Results are hydrated into
+     <code>DocumentInstance</code>s unless <code>lean()</code> is used.</p>
+  <pre><code>Post.find({ live: <span class="kw">true</span> }).sort(<span class="str">'-createdAt'</span>).limit(<span class="num">10</span>).lean();
+Post.findOne({ slug }).populate(<span class="str">'author'</span>, { select: <span class="str">'name email'</span> });
+Post.findById(id);</code></pre>
+
+  <h3>where(path, value)</h3>
+  <pre><code>where(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span></code></pre>
+  <p>Set <code>filter[path] = value</code> directly (overwrites any existing value at that path).</p>
+
+  <h3>gt / gte / lt / lte(path, value)</h3>
+  <pre><code>gt(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span>   <span class="com">// $gt</span>
+gte(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span>  <span class="com">// $gte</span>
+lt(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span>   <span class="com">// $lt</span>
+lte(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span>  <span class="com">// $lte</span></code></pre>
+  <p>Comparison operators. Merge into an existing operator object at <code>filter[path]</code>, or create
+     one.</p>
+
+  <h3>in / nin(path, values)</h3>
+  <pre><code>in(path: <span class="kw">string</span>, values: unknown[]): <span class="kw">this</span>   <span class="com">// $in</span>
+nin(path: <span class="kw">string</span>, values: unknown[]): <span class="kw">this</span>  <span class="com">// $nin</span></code></pre>
+
+  <h3>ne(path, value)</h3>
+  <pre><code>ne(path: <span class="kw">string</span>, value: unknown): <span class="kw">this</span>  <span class="com">// $ne</span></code></pre>
+
+  <h3>exists(path, yes = true)</h3>
+  <pre><code>exists(path: <span class="kw">string</span>, yes = <span class="kw">true</span>): <span class="kw">this</span>  <span class="com">// $exists</span></code></pre>
+
+  <h3>sort(spec)</h3>
+  <pre><code>sort(spec: <span class="kw">string</span> | Record&lt;<span class="kw">string</span>, <span class="num">1</span> | <span class="num">-1</span>&gt;): <span class="kw">this</span></code></pre>
+  <p>String form is space-separated, leading <code>-</code> = descending (<code>'-createdAt title'</code>).
+     Object form is used as-is.</p>
+
+  <h3>limit(n) / skip(n)</h3>
+  <pre><code>limit(n: <span class="kw">number</span>): <span class="kw">this</span>
+skip(n: <span class="kw">number</span>): <span class="kw">this</span></code></pre>
+
+  <h3>select(fields)</h3>
+  <pre><code>select(fields: <span class="kw">string</span>): <span class="kw">this</span></code></pre>
+  <p>Space-separated projection. Leading <code>-</code> = exclude (<code>'name -bio'</code>). When omitted,
+     the query auto-excludes fields declared <code>select: false</code> in the schema.</p>
+
+  <h3 id="Query.populate">populate(path, opts?)</h3>
+  <pre><code>populate(path: <span class="kw">string</span>, opts: { select?: <span class="kw">string</span>; match?: Record&lt;<span class="kw">string</span>, unknown&gt; } = {}): <span class="kw">this</span></code></pre>
+  <p>Resolve a <code>ref</code>/<code>refPath</code> path on the results. <code>select</code> is a
+     space-separated projection applied to the populated child; <code>match</code> adds extra filter
+     conditions to the population query. Supports nested paths (<code>'a.b'</code>) and array refs.
+     <strong>This is the only place field selection is supported for populate</strong> —
+     <code>DocumentInstance.populate(path)</code> takes a single argument.</p>
+
+  <h3>lean()</h3>
+  <pre><code>lean(): <span class="kw">this</span></code></pre>
+  <p>Return raw mongo docs (no hydration, no population). Faster and avoids proxy overhead.</p>
+
+  <h3>session(session)</h3>
+  <pre><code>session(session: unknown): <span class="kw">this</span></code></pre>
+  <p>Attach a <code>ClientSession</code> to the driver call (for transactions). Pass the same session
+     to all reads/writes inside a <code>transaction(fn)</code>.</p>
+
+  <h3>exec()</h3>
+  <pre><code><span class="kw">async</span> exec(): Promise&lt;T[] | T | <span class="kw">null</span>&gt;</code></pre>
+  <p>Run the query. Runs <code>pre('find'|'findOne')</code> with a mutable <code>{ filter, model, op }</code>
+     context (changes to <code>filter</code> are applied), computes the projection (explicit or from
+     <code>select: false</code> fields), executes the driver call, hydrates (unless <code>lean</code>),
+     populates (unless <code>lean</code>), and runs the matching <code>post</code> hook. Returns
+     <code>T[]</code> for find, <code>T | null</code> for findOne.</p>
+
+  <h3>then(onFulfilled?, onRejected?)</h3>
+  <pre><code>then&lt;R1, R2&gt;(onFulfilled?, onRejected?): Promise&lt;R1 | R2&gt;</code></pre>
+  <p>The query is thenable — <code>await query</code> is equivalent to <code>await query.exec()</code>.
+     Not a full <code>Promise</code> (no <code>catch</code>/<code>finally</code>).</p>
+
+  <h2 id="Errors">Errors</h2>
+  <pre><code><span class="kw">import</span> { ValidationError, DocumentNotFoundError, VersionError } <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;</code></pre>
+  <table>
+    <thead><tr><th>Class</th><th>Default message</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ValidationError</code></td><td>—</td><td>Re-export of the core <code>ValidationError</code> (a <code>NexusError</code> subclass, <code>code: 'VALIDATION_ERROR'</code>, status <code>400</code>). Thrown by <code>Schema.validate()</code> and <code>DocumentInstance.validate()</code>; carries field errors as <code>details</code>.</td></tr>
+      <tr><td><code>DocumentNotFoundError</code></td><td><code>'No document found'</code></td><td>Thrown when a lookup expected to find a doc came back empty (used by higher layers).</td></tr>
+      <tr><td><code>VersionError</code></td><td><code>'Document version mismatch'</code></td><td>Thrown on optimistic-concurrency conflict (when <code>versionKey</code> is in use).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="projects">Projects module</h2>
+  <p>A shared registry of registered projects, each owning its own database. The module keeps the
+     per-project DB on the default connection while the project <em>metadata</em> lives in a separate
+     shared database on its own named connection (<code>'project-info'</code>) registered on
+     <code>connectionManager</code>.</p>
+  <pre><code><span class="kw">import</span> {
+  PROJECT_INFO_DB, sanitizeDbName, resolveProjectInfo, connectProjectInfo,
+  getProjectInfoCollection, upsertProjectInfo, listProjectInfo, getProjectInfo, closeProjectInfo,
+} <span class="kw">from</span> <span class="str">'@bhooai/nexus-data'</span>;
+
+<span class="kw">const</span> info = <span class="kw">await</span> resolveProjectInfo(process.cwd());
+connectProjectInfo(<span class="str">'mongodb://localhost:27017'</span>);
+<span class="kw">await</span> upsertProjectInfo({ ...info, status: <span class="str">'running'</span>, version: <span class="str">'1.0.0'</span> });
+<span class="kw">const</span> all = <span class="kw">await</span> listProjectInfo();
+<span class="kw">await</span> closeProjectInfo();</code></pre>
+
+  <h3 id="ProjectInfo">ProjectInfo</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Canonical project name (package.json <code>name</code>).</td></tr>
+      <tr><td><code>path</code></td><td><code>string</code></td><td>Absolute path to the project root.</td></tr>
+      <tr><td><code>dbName</code></td><td><code>string</code></td><td>Per-project MongoDB database name (sanitized from <code>name</code>).</td></tr>
+      <tr><td><code>settings?</code></td><td><code>Record&lt;string, unknown&gt;</code></td><td>Redacted runtime snapshot (env, ports, paths, db).</td></tr>
+      <tr><td><code>status?</code></td><td><code>'running' | 'stopped'</code></td><td>Whether a backend instance is currently running.</td></tr>
+      <tr><td><code>version?</code></td><td><code>string</code></td><td>App version when last seen running.</td></tr>
+      <tr><td><code>startedAt?</code></td><td><code>string</code></td><td>ISO timestamp the project started.</td></tr>
+      <tr><td><code>updatedAt?</code></td><td><code>string</code></td><td>ISO timestamp the record was last upserted.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="PROJECT_INFO_DB">PROJECT_INFO_DB</h3>
+  <pre><code><span class="kw">const</span> PROJECT_INFO_DB = <span class="str">'nexus_projects'</span></code></pre>
+  <p>Name of the shared database that stores one record per registered project.</p>
+
+  <h3 id="sanitizeDbName">sanitizeDbName(name)</h3>
+  <pre><code><span class="kw">function</span> sanitizeDbName(name: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Derive a MongoDB-safe database name from a project name. Lowercases, replaces non-<code>[a-z0-9_]</code>
+     runs with <code>_</code>, collapses repeated <code>_</code>, trims leading/trailing <code>_</code>,
+     truncates to 63 chars. Falls back to <code>'project'</code> if the result is empty.
+     <code>'sample-project'</code> → <code>'sample_project'</code>.</p>
+
+  <h3 id="resolveProjectInfo">resolveProjectInfo(root)</h3>
+  <pre><code><span class="kw">async function</span> resolveProjectInfo(root: <span class="kw">string</span>): Promise&lt;ProjectInfo&gt;</code></pre>
+  <p>Read <code>&lt;root&gt;/package.json</code> for the <code>name</code> (falls back to the basename of
+     <code>root</code>, then <code>'project'</code>) and return <code>{ name, path: root, dbName: sanitizeDbName(name) }</code>.
+     Never throws on read/parse failure.</p>
+
+  <h3 id="connectProjectInfo">connectProjectInfo(uri, options?)</h3>
+  <pre><code><span class="kw">function</span> connectProjectInfo(uri: <span class="kw">string</span>, options: { autoIndex?: <span class="kw">boolean</span> } = {}): <span class="kw">void</span></code></pre>
+  <p>Open the shared project-info database on a separate connection registered on
+     <code>connectionManager</code> under the name <code>'project-info'</code>, with <code>name</code> =
+     <code>PROJECT_INFO_DB</code>. The main (default) connection keeps pointing at the per-project DB.</p>
+
+  <h3 id="getProjectInfoCollection">getProjectInfoCollection()</h3>
+  <pre><code><span class="kw">function</span> getProjectInfoCollection(): Promise&lt;Collection&lt;ProjectInfo&gt;&gt;</code></pre>
+  <p>Return the <code>projects</code> collection on the project-info connection. Call
+     <code>connectProjectInfo</code> first.</p>
+
+  <h3 id="upsertProjectInfo">upsertProjectInfo(project)</h3>
+  <pre><code><span class="kw">async function</span> upsertProjectInfo(project: ProjectInfo): Promise&lt;ProjectInfo&gt;</code></pre>
+  <p>Ensure the <code>name</code> unique index, then upsert by <code>name</code>. Stamps
+     <code>updatedAt</code> with <code>new Date().toISOString()</code>. Returns the upserted doc.</p>
+
+  <h3 id="listProjectInfo">listProjectInfo()</h3>
+  <pre><code><span class="kw">async function</span> listProjectInfo(): Promise&lt;ProjectInfo[]&gt;</code></pre>
+  <p>Ensure indexes, then return every project record sorted alphabetically by <code>name</code>.</p>
+
+  <h3 id="getProjectInfo">getProjectInfo(name)</h3>
+  <pre><code><span class="kw">async function</span> getProjectInfo(name: <span class="kw">string</span>): Promise&lt;ProjectInfo | <span class="kw">null</span>&gt;</code></pre>
+  <p>Ensure indexes, then return the single record with that <code>name</code> (or <code>null</code>).</p>
+
+  <h3 id="closeProjectInfo">closeProjectInfo()</h3>
+  <pre><code><span class="kw">async function</span> closeProjectInfo(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>If the <code>'project-info'</code> connection is registered on <code>connectionManager</code>,
+     close it. Call during shutdown.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Data API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Data - schema defaults + query chain","apiBase":"http://localhost:4000","js":"function makeSchema(fields) {\n  return {\n    fields,\n    applyDefaults(d) {\n      for (const [k, f] of Object.entries(this.fields))\n        if (d[k] === undefined \u0026\u0026 f.default !== undefined)\n          d[k] = typeof f.default === \"function\" ? f.default() : f.default;\n      return d;\n    },\n    validate(d) {\n      for (const [k, f] of Object.entries(this.fields))\n        if (f.required \u0026\u0026 d[k] === undefined) throw new Error(k + \" required\");\n      return true;\n    }\n  };\n}\nconst userSchema = makeSchema({ email: { required: true }, roles: { default: () =\u003e [\"user\"] }, emailVerified: { default: false } });\nconst doc = userSchema.applyDefaults({ email: \"a@b.com\" });\nconsole.log(\"defaults:\", doc);\ntry { userSchema.validate({}); } catch (e) { console.log(\"error:\", e.message); }","api":{"method":"POST","path":"/graphql","body":{"query":"query { users(limit: 3) { id email } }"}}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

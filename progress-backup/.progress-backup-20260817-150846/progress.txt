@@ -1,0 +1,110 @@
+SESSION PROGRESS — BhooAI Nexus (local master + slave cluster, Windows)
+
+=======================================================================
+Status: Master + slave cluster runs concurrently with auto-allocated
+        ports; admin default moved 3001 -> 3300 (slaves 3301/3302);
+        cluster auth pinned to master (LB self anchor, shared JWT
+        secret). FIXED: backend crash `[TypeError: fetch failed]
+        ECONNREFUSED 127.0.0.1:7575` (unhandled autoscaler rejection).
+
+NO GIT REPO EXISTS in the tree — nothing has been committed.
+
+-----------------------------------------------------------------------
+ENV
+   - Node v24.19.0, npm 11.17.0 (built-in allowScripts gating), Windows.
+   - CLI bin/nexus.js runs TS via tsx (src preferred) -> src edits live.
+   - Slave node_modules/bhooai-nexus + @bhooai/nexus-cluster are JUNCTIONS
+     to C:\server\PACKAGES\bhooai-nexus -> framework edits live in projects.
+   - Projects: master test-app\test-app; slaves test-app-slave-1, -2
+     (each own DB, e.g. test-master). Ports last seen: master backend
+     4000, AI 8000, LB 8080, frontend 3000, admin 3001 (needs dev
+     restart -> 3300), agent 7575.
+
+1) DEP0190 DEPRECATION WARNING (args + shell:true) — FIXED
+   - Windows: pass full command-line STRINGS (no separate args array).
+   - 5 sites: commands/init.ts (installDependencies), supervisor.ts
+     (startService), commands/pysetup.ts (run), util.ts (versionOf),
+     packages/nexus-cluster/src/agent.ts (service spawn).
+
+2) NPM ALLOW-SCRIPTS — APPROVED
+   - esbuild@0.28.1 / esbuild@0.21.5 / mediasoup@3.24.0 in root
+     package.json. init.ts now runs `npm approve-scripts --all
+     --no-allow-scripts-pin` after scaffold install.
+   - node-domexception deprecation: harmless, no action.
+
+3) PORT ALLOCATION / OCCUPANCY
+   - Killed orphaned backend PID 25860 (held 4000).
+   - dev.ts rewritten: runtime nextFreePort() auto-allocation + env
+     overrides NEXUS_SERVER_PORT / NEXUS_FRONTEND_PORT /
+     NEXUS_ADMIN_PORT / NEXUS_CLUSTER_LBPORT / NEXUS_CLUSTER_NODEAGENTPORT,
+     AI via AI_PORT.
+   - Fixed string-port bug ('80001' from '8000'+1) via Number(aiPort(...))
+     and `const base = Number(port)`.
+
+4) ADMIN DEFAULT PORT 3001 -> 3300
+   - nexus-core/src/config/defaults.ts; init.ts (4 spots); templates
+     (nexus.config.ts, apps/admin/vite.config.ts, apps/admin/package.json,
+     Dockerfile, bin/serve-all.mjs, README.md); framework apps/admin +
+     apps/frontend App.tsx display. `nexus sync` run in master; slave-1/
+     slave-2 configs updated. Master needs dev restart to move off 3001.
+
+5) CLUSTER AUTH — MASTER-ONLY (user design)
+   - LB pins /auth/* + /csrf-token to master: lb.ts self anchor
+     { id:'master', baseUrl:'http://127.0.0.1:${server.port}' } +
+     isAuthPath. manager.ts self option; template + framework main.ts /
+     clusterRoutes.ts pass self; master/slave main.ts updated.
+   - Slave "Invalid refresh token" root cause: different JWT secrets +
+     per-process MemorySessionStore + LB round-robin on /auth. Now:
+     slaves verify master access tokens via shared NEXUS_AUTH_JWT_SECRET
+     (verifyAccessToken is pure JWT, no session hit); refresh + CSRF stay
+     on master. MemorySessionStore is per-process (authRoutes.ts:29);
+     localhost cookies are not port-scoped.
+
+6) CURRENT BLOCKER — FIXED: [TypeError: fetch failed] ECONNREFUSED :7575
+   - Backend crashed via triggerUncaughtException: global fetch to node
+     agent 127.0.0.1:7575 ECONNREFUSED, unhandled rejection (fatal in
+     Node 24).
+   - Root cause: master autoscaler tick (every 10s) fires scaleUp/scaleDown
+     -> manager.exec -> NodeClient.exec (client.ts global fetch). When a
+     linked node's agent is down, the rejection escaped tick() with no
+     handler. registry.poll is guarded; admin link/poll routes are guarded;
+     the autoscaler was the unguarded path.
+   - FIX (packages/nexus-cluster/src/autoscaler.ts):
+     * start() loop .catch()es tick failures (dead node can't crash).
+     * scaleUp/scaleDown calls routed through guarded scale() helper that
+       logs `[cluster] autoscaler <dir> failed (<reason>): <err>`.
+   - Live via junctions; tsx watch auto-restarts the backend. Re-run
+     `nexus dev` on master; failure now logs a warning instead of killing
+     the process.
+
+-----------------------------------------------------------------------
+FILES TOUCHED THIS SESSION (in framework C:\server\PACKAGES\bhooai-nexus)
+   packages/nexus-cli/src/commands/dev.ts      (port auto-alloc + Number() fix)
+   packages/nexus-cli/src/commands/init.ts     (approve-scripts + admin 3300)
+   packages/nexus-cli/src/commands/pysetup.ts  (DEP0190)
+   packages/nexus-cli/src/supervisor.ts        (DEP0190)
+   packages/nexus-cli/src/util.ts              (DEP0190)
+   packages/nexus-cluster/src/agent.ts         (DEP0190 + health probe)
+   packages/nexus-cluster/src/lb.ts            (self anchor + auth pinning)
+   packages/nexus-cluster/src/manager.ts       (self option)
+   packages/nexus-cluster/src/autoscaler.ts    (unguarded scale -> guarded)
+   packages/nexus-core/src/config/defaults.ts  (admin 3001->3300)
+   apps/backend/src/modules/admin/clusterRoutes.ts (self passing)
+   apps/backend/src/main.ts, apps/frontend/src/App.tsx, apps/admin/**
+   package.json (allow-scripts approvals)
+
+IN PROJECTS (C:\server\BhooAI\BhooAI-Nexus\test-app\...)
+   test-app (master): main.ts self anchor, admin 3300 sync, .env
+   test-app-slave-1, test-app-slave-2: main.ts self anchor, config 3300,
+   .env NEXUS_AUTH_JWT_SECRET = master's
+
+NEXT STEPS / NOTES
+   - Re-run master `nexus dev`; confirm the 7575 ECONNREFUSED no longer
+     crashes (logs warning). Verify admin moves to 3300; slaves to
+     3301/3302.
+   - Confirm which backend (master or slave) previously crashed and re-test
+     connect-nodes flow end to end (link -> LB -> /auth via master).
+   - tsc: packages/nexus-cluster compiles clean. Repo-wide `tsc -p
+     tsconfig.json` has PRE-EXISTING errors in apps/*, tests/,
+     nexus.config.ts (JwtConfig secret) — none from this session.
+   - No git history — consider `git init` + initial commit.

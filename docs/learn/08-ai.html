@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>08 · AI Server — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 08</div>
+  <h1>AI Server <span class="sub">The Python FastAPI gateway (OpenAI + Ollama) behind a single contract, plus the Node client that calls it. Browser → Node proxy → Python → upstream, with SSE re-emitted end to end.</span></h1>
+
+  <h2>The flow</h2>
+  <pre><code>Browser ──&gt; Node backend (:4000) ──&gt; Python FastAPI (:8000) ──&gt; OpenAI / Ollama
+                  proxy /ai/*              providers/base.py
+                  re-emits SSE</code></pre>
+
+  <h2>File map — apps/ai-server (Python)</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>main.py</code></td><td>FastAPI app: CORS + <code>/health</code> + includes the 5 routers.</td></tr>
+      <tr><td><code>settings.py</code></td><td>Env-driven settings (OpenAI/Ollama base URLs, keys, provider auto-resolve).</td></tr>
+      <tr><td><code>providers/base.py</code></td><td>One <code>Provider</code> class for OpenAI + Ollama (both are OpenAI-compatible).</td></tr>
+      <tr><td><code>routers/chat.py</code></td><td><code>POST /chat/completions</code> — JSON or SSE streaming.</td></tr>
+      <tr><td><code>routers/embeddings.py</code></td><td><code>POST /embeddings</code>.</td></tr>
+      <tr><td><code>routers/models.py</code></td><td><code>GET /models</code>.</td></tr>
+      <tr><td><code>routers/lint.py</code></td><td><code>POST /lint/env</code>, <code>/lint/config</code> — used by the admin console.</td></tr>
+      <tr><td><code>routers/preflight.py</code></td><td><code>POST /preflight</code> — connectivity diagnostics.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>File map — nexus-ai-client (Node)</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/client.ts</code></td><td><code>AiClient</code> — chat/chatStream/embeddings/listModels with retries + timeouts.</td></tr>
+      <tr><td><code>src/sse.ts</code></td><td>SSE stream parser.</td></tr>
+      <tr><td><code>src/types.ts</code></td><td>Types mirroring <code>contracts/ai-openapi.yaml</code>.</td></tr>
+      <tr><td><code>src/errors.ts</code></td><td><code>AiError</code> + retryable classification.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. Python — one provider, two backends</h3>
+  <p>OpenAI and Ollama expose the same API shape, so a single <code>Provider</code> parameterised by base URL
+     + auth handles both. The <code>provider</code> routing field is stripped before forwarding upstream:</p>
+  <pre><code><span class="kw">async def</span> chat(<span class="kw">self</span>, body):
+    <span class="kw">async with</span> httpx.AsyncClient(timeout=<span class="kw">self</span>.timeout) <span class="kw">as</span> client:
+        resp = <span class="kw">await</span> client.post(f<span class="str">"{self.base_url}/chat/completions"</span>, json=<span class="kw">self</span>._clean(body), headers=<span class="kw">self</span>._headers())
+        resp.raise_for_status()
+        data = resp.json()
+        data[<span class="str">"provider"</span>] = <span class="kw">self</span>.name   <span class="com"># tag which backend answered</span>
+        <span class="kw">return</span> data</code></pre>
+
+  <h3>2. Python — SSE streaming</h3>
+  <p><code>chat_stream</code> consumes upstream <code>data:</code> lines, re-injects the <code>provider</code>
+     field, and re-emits them. The FastAPI route wraps it in a <code>StreamingResponse</code>.</p>
+
+  <h3>3. Node client</h3>
+  <p><code>AiClient</code> does fetch + exponential-backoff retries on network errors / 5xx / 429, with an
+     <code>AbortController</code> timeout. <code>chatStream</code> yields parsed chunks from <code>parseSseStream</code>.</p>
+
+  <h3>4. Node proxy</h3>
+  <p><code>apps/backend/src/modules/ai/aiProxy.ts</code> exposes <code>/ai/chat/completions</code> etc. and
+     re-emits the SSE so CSRF + auth stay in Node. The browser never calls Python directly.</p>
+
+  <h3>5. The contract</h3>
+  <p><code>contracts/ai-openapi.yaml</code> is the single source of truth for the Node↔Python boundary —
+     it prevents drift between the two terminals.</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: an SSE parse + provider-select model. Live API: list models or run a chat completion against a
+     running AI server (needs <code>AI_OPENAI_API_KEY</code> or Ollama; otherwise the upstream error is shown).</p>
+
+  <section data-playground='{
+    "title": "AI — provider routing + SSE parse",
+    "apiBase": "http://localhost:4000",
+    "js": "// Model: resolve \"auto\" provider (openai if key set, else ollama)\nfunction resolveProvider(requested, hasKey) {\n  const p = (requested || \"auto\").toLowerCase();\n  if (p === \"auto\") return hasKey ? \"openai\" : \"ollama\";\n  return p;\n}\nconsole.log(\"auto + key    ->\", resolveProvider(\"auto\", true));\nconsole.log(\"auto no key   ->\", resolveProvider(\"auto\", false));\nconsole.log(\"explicit      ->\", resolveProvider(\"ollama\", true));\n\n// Model: SSE parse — split on blank lines, keep data: payloads\nfunction parseSse(raw) {\n  return raw.split(\"\\n\\n\").filter(Boolean).map((ev) => ev.split(\"\\n\").filter((l) => l.startsWith(\"data: \")).map((l) => l.slice(6))).flat();\n}\nconst sample = \"data: {\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"Hello\\\"}}]}\\n\\ndata: {\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\" world\\\"}}]}\\n\\ndata: [DONE]\\n\\n\";\nconsole.log(parseSse(sample));\n\n// Model: streaming chunks joined\nconst chunks = parseSse(sample).filter((c) => c !== \"[DONE]\").map((c) => JSON.parse(c).choices[0].delta.content || \"\");\nconsole.log(\"full stream:\", chunks.join(\"\"));",
+    "api": { "method": "GET", "path": "/ai/models" }
+  }'></section>
+
+  <p class="foot"><a href="07-cache-ads.html">&larr; 07 · Cache · Ads</a> · <a href="index.html">Build Guide</a> · Next: <a href="09-plugins.html">09 · Plugins →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 08 AI Server</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

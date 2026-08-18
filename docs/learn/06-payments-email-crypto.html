@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>06 · Payments · Email · Crypto — BhooAI Nexus Docs</title>
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <div class="eyebrow">LEARN · 06</div>
+  <h1>Payments · Email · Crypto <span class="sub">The commerce layer — a gateway-agnostic <code>PaymentProvider</code>, verified webhooks, SMTP/log email with templates + queue, and a from-scratch crypto toolkit including a hand-rolled CSR encoder.</span></h1>
+
+  <h2>File map — nexus-payments</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/types.ts</code></td><td>Unified <code>PaymentProvider</code> interface + order/refund/webhook types.</td></tr>
+      <tr><td><code>src/index.ts</code></td><td><code>createPayments</code> — activates providers when keys are set.</td></tr>
+      <tr><td><code>src/http.ts</code></td><td>Injectable HTTP transport (tests inject mocks; prod uses fetch).</td></tr>
+      <tr><td><code>src/signature.ts</code></td><td>HMAC + timing-safe compare for webhook signatures.</td></tr>
+      <tr><td><code>src/webhooks.ts</code></td><td><code>WebhookRouter</code> — verifies raw bodies, ACKs verified events.</td></tr>
+      <tr><td><code>src/errors.ts</code></td><td>Payment errors.</td></tr>
+      <tr><td><code>src/providers/*.ts</code></td><td>Razorpay + PayPal (full); PayU, Skrill, Payoneer (happy-path).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>File map — nexus-email / nexus-crypto</h2>
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>email/src/EmailService.ts</code></td><td>Send orchestration (sync or queued, retries).</td></tr>
+      <tr><td><code>email/src/providers.ts</code></td><td><code>SmtpProvider</code> (nodemailer) + <code>LogProvider</code> (dev).</td></tr>
+      <tr><td><code>email/src/TemplateEngine.ts</code></td><td><code>{{name}}</code> template rendering.</td></tr>
+      <tr><td><code>email/src/queue.ts</code></td><td>Redis-backed queue abstraction.</td></tr>
+      <tr><td><code>crypto/src/keypair.ts</code></td><td>RSA/ECDSA keypair generation (node:crypto).</td></tr>
+      <tr><td><code>crypto/src/x509.ts</code></td><td>Self-signed X.509 certificate creation.</td></tr>
+      <tr><td><code>crypto/src/csr.ts</code> + <code>der.ts</code></td><td>Certificate-signing requests via a hand-rolled DER/ASN.1 encoder (~400 lines).</td></tr>
+      <tr><td><code>crypto/src/https.ts</code></td><td>HTTPS/mTLS helpers.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Code walkthrough</h2>
+
+  <h3>1. One interface, five gateways</h3>
+  <p>Every provider implements <code>PaymentProvider</code> — <code>createOrder</code>, <code>capture</code>,
+     <code>refund</code>, <code>getOrderStatus</code>, <code>verifyWebhook</code>. Amounts are in <strong>major
+     units</strong> (e.g. <code>10.50</code>); Razorpay converts to paise internally via <code>toMinor</code>.
+     The <code>HttpTransport</code> is injectable, so tests mock the gateway without live keys.</p>
+
+  <h3>2. Activating providers</h3>
+  <pre><code><span class="kw">const</span> active = (cfg, keys) =&gt; cfg?.enabled ?? keys.every(<span class="kw">(k) =&gt;</span> typeof cfg[k] === <span class="str">'string'</span> &amp;&amp; cfg[k].length &gt; <span class="num">0</span>);
+<span class="kw">if</span> (active(config.razorpay, [<span class="str">'keyId'</span>, <span class="str">'keySecret'</span>])) providers.set(<span class="str">'razorpay'</span>, <span class="kw">new</span> RazorpayProvider(config.razorpay));</code></pre>
+  <p>Adding keys (or setting <code>enabled: true</code>) activates the provider — a user who configures keys
+     without the flag still gets a working gateway.</p>
+
+  <h3>3. Verified webhooks</h3>
+  <p><code>WebhookRouter</code> verifies the <strong>raw body</strong> (kept on <code>ctx.state.__rawBody</code>)
+     against the provider signature, rejects with 401 on mismatch, and ACKs 200 so the gateway doesn't retry:</p>
+  <pre><code><span class="kw">const</span> event = <span class="kw">await</span> provider.verifyWebhook({ rawBody, headers, params: ctx.params });
+<span class="kw">if</span> (!event.verified) { ctx.json({ error: <span class="str">'signature verification failed'</span> }, <span class="num">401</span>); <span class="kw">return</span>; }
+<span class="kw">try</span> { <span class="kw">await this</span>.onEvent(event); } <span class="kw">catch</span> { ctx.json({ ok: <span class="num">false</span> }, <span class="num">200</span>); <span class="kw">return</span>; }
+ctx.json({ ok: <span class="num">true</span> }, <span class="num">200</span>);</code></pre>
+
+  <h3>4. Email</h3>
+  <p><code>createEmail(config)</code> returns an <code>EmailService</code>. <code>provider: 'log'</code> never
+     sends (dev); <code>smtp</code> uses nodemailer. Templates register named bodies and the queue retries.</p>
+
+  <h3>5. Crypto / CSR</h3>
+  <p><code>node:crypto</code> makes keys and certs but <em>not</em> CSRs. <code>csr.ts</code> builds the
+     CertificateSigningRequest structure with a hand-rolled <code>der.ts</code> encoder — no
+     <code>node-forge</code> dependency.</p>
+
+  <h2>Playground</h2>
+  <p>Sandbox: the <code>toMinor</code> amount conversion + webhook verify model. Live API: create a Razorpay
+     order (needs keys in <code>.env</code>; otherwise the error path is informative).</p>
+
+  <section data-playground='{
+    "title": "Payments — currency math + webhook verify",
+    "apiBase": "http://localhost:4000",
+    "js": "// Razorpay expects minor units: paise for INR (factor 100)\nfunction toMinor(amount, currency) {\n  const threeDp = [\"KWD\", \"BHD\", \"JOD\", \"OMR\", \"TND\"];\n  const zeroDp = [\"JPY\", \"KRW\", \"VND\", \"ISK\"];\n  if (threeDp.includes(currency)) return Math.round(amount * 1000);\n  if (zeroDp.includes(currency)) return Math.round(amount);\n  return Math.round(amount * 100);\n}\nconsole.log(\"INR 99.50 ->\", toMinor(99.50, \"INR\"), \"paise\");\nconsole.log(\"JPY 1000 ->\", toMinor(1000, \"JPY\"), \"(zero dp)\");\n\n// Model: timing-safe webhook signature check\nfunction safeEqual(a, b) {\n  if (a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));\n  return diff === 0;\n}\nconsole.log(\"signature ok:\", safeEqual(\"abc123\", \"abc123\"));\nconsole.log(\"signature bad:\", safeEqual(\"abc123\", \"abc124\"));\n\n// Model: provider activation when keys present\nconst active = (cfg, keys) => cfg.enabled || keys.every((k) => typeof cfg[k] === \"string\" && cfg[k].length > 0);\nconsole.log(\"razorpay active:\", active({ keyId: \"rzp_test_1\", keySecret: \"s\" }, [\"keyId\", \"keySecret\"]));\nconsole.log(\"paypal inactive:\", active({ keyId: \"\" }, [\"clientId\", \"clientSecret\"]));",
+    "api": { "method": "POST", "path": "/payments/order", "body": { "provider": "razorpay", "amount": 99, "currency": "INR", "reference": "demo_1", "description": "Demo order" } }
+  }'></section>
+
+  <p class="foot"><a href="05-realtime.html">&larr; 05 · Realtime</a> · <a href="index.html">Build Guide</a> · Next: <a href="07-cache-ads.html">07 · Cache · Ads →</a></p>
+  <div class="foot">BhooAI Nexus · Learn · 06 Payments · Email · Crypto</div>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

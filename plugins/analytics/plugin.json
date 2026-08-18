@@ -1,0 +1,9 @@
+{
+  "name": "analytics",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "mode": "trusted",
+  "capabilities": ["http", "admin", "events"],
+  "hooks": ["install", "start", "stop"],
+  "dependencies": []
+}

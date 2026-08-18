@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Supervisor API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <span class="eyebrow">API Reference</span>
+  <h1>Supervisor API
+    <span class="sub">Localhost-only control API on port <code>7474</code> that the <code>nexus dev</code> supervisor exposes to the admin app.</span></h1>
+
+  <p>The <code>Supervisor</code> from <span class="badge core">@bhooai/nexus-cli</span> owns the four
+     child processes (backend, frontend, AI, admin), streams prefixed colored logs, keeps a per-service
+     ring buffer, and exposes a tiny HTTP control API so the admin shell can drive it without coupling to
+     OS-specific process management.</p>
+
+  <h2>Binding &amp; discovery</h2>
+  <table>
+    <thead><tr><th>Aspect</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Host</td><td><code>127.0.0.1</code> only — never binds a public interface</td></tr>
+      <tr><td>Port</td><td><code>7474</code> by default; auto-increments if already in use</td></tr>
+      <tr><td>Auth</td><td><strong>None</strong>. The loopback binding is the security boundary.</td></tr>
+      <tr><td>CORS</td><td>Permissive — allows the admin app (on <code>:3001</code>) to call it directly</td></tr>
+      <tr><td>Discovery</td><td>The main server writes <code>supervisor.json</code> (control URL/port) the admin app reads at boot</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <span class="label">Loopback only</span>
+    The supervisor never binds <code>0.0.0.0</code>. Anything that can reach <code>127.0.0.1:7474</code>
+    can start/stop your services — do not forward the port, and do not run the supervisor inside a
+    container whose loopback is shared with untrusted tenants.
+  </div>
+
+  <h2 id="types">Types</h2>
+
+  <h3 id="ServiceSpec">ServiceSpec</h3>
+  <p>The input descriptor used to construct a <code>Supervisor</code> — one per supervised service.
+     Exported from <code>@bhooai/nexus-cli</code>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Service identifier (e.g. <code>'backend'</code>, <code>'frontend'</code>, <code>'ai'</code>, <code>'admin'</code>). Used in status, logs, and the <code>?name=</code> query params.</td></tr>
+      <tr><td><code>command</code></td><td><code>string[]</code></td><td>Command + args to run. Index 0 is the executable; the rest are its arguments. An empty/missing command marks the service <code>'errored'</code> and emits a system log.</td></tr>
+      <tr><td><code>cwd</code></td><td><code>string</code></td><td>Working directory, relative to the project <code>root</code> passed to the constructor. Resolved with <code>path.resolve(root, cwd)</code>.</td></tr>
+      <tr><td><code>color</code></td><td><code>string</code></td><td>ANSI escape sequence used to color the log prefix (e.g. <code>'\x1b[36m'</code>). The <code>[name]</code> prefix and reset are applied by the supervisor.</td></tr>
+      <tr><td><code>optional?</code></td><td><code>boolean</code></td><td>When <code>true</code>, a start failure or non-zero exit is logged but the supervisor keeps running. When <code>false</code>/<code>undefined</code>, an exit emits a hint to run <code>nexus dev restart &lt;name&gt;</code> (the supervisor still continues — it does not crash).</td></tr>
+      <tr><td><code>env?</code></td><td><code>Record&lt;string, string&gt;</code></td><td>Extra environment variables merged on top of <code>process.env</code> for this child. The admin service additionally receives <code>VITE_SUPERVISOR_URL</code> pointing at the actually-bound control URL.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ServiceState">ServiceState</h3>
+  <p>The runtime snapshot of one supervised service, returned by <code>status()</code> and the
+     <code>GET /status</code> endpoint.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td><code>string</code></td><td>Service identifier.</td></tr>
+      <tr><td><code>status</code></td><td><code>'stopped' | 'running' | 'errored'</code></td><td>Current lifecycle state. <code>'stopped'</code> is set by an intentional stop or during shutdown; <code>'errored'</code> is set when a running process exits on its own (non-shutdown) or fails to start.</td></tr>
+      <tr><td><code>pid?</code></td><td><code>number</code></td><td>Child process PID — present only while <code>status === 'running'</code>; cleared on exit.</td></tr>
+      <tr><td><code>startedAt?</code></td><td><code>number</code></td><td>Epoch milliseconds of the last successful <code>startService</code>.</td></tr>
+      <tr><td><code>lastExitCode?</code></td><td><code>number | null</code></td><td>Exit code of the most recent run (<code>null</code> if the process was killed by a signal). Absent until the process has exited at least once.</td></tr>
+      <tr><td><code>logTail</code></td><td><code>string[]</code></td><td>Rolling per-service log buffer (capped at <code>MAX_TAIL = 200</code> entries, oldest dropped first).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="LogEntry">LogEntry</h3>
+  <p>Structured log entry returned by <code>GET /logs/all</code>. Each captured stdout/stderr line is
+     classified into a <code>level</code> by <a href="#detectLevel">detectLevel</a> and timestamped.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>service</code></td><td><code>string</code></td><td>Name of the service that produced the line.</td></tr>
+      <tr><td><code>ts</code></td><td><code>number</code></td><td>Epoch milliseconds when the line was captured.</td></tr>
+      <tr><td><code>source</code></td><td><code>'stdout' | 'stderr' | 'system'</code></td><td>Origin stream. <code>'system'</code> is used for supervisor-generated lines (start failures, exit notices, "no command specified").</td></tr>
+      <tr><td><code>level</code></td><td><code>'info' | 'warn' | 'error'</code></td><td>Severity, inferred from the line text (see <a href="#detectLevel">detectLevel</a>).</td></tr>
+      <tr><td><code>line</code></td><td><code>string</code></td><td>The raw log line (prefix and ANSI color are <em>not</em> included).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="class">Supervisor class</h2>
+  <p>The <code>Supervisor</code> class is exported from <span class="badge core">@bhooai/nexus-cli</span>
+     (<code>packages/nexus-cli/src/supervisor.ts</code>). It owns child processes, streams prefixed
+     colored logs, handles graceful shutdown, and exposes a localhost HTTP control API for the admin app.</p>
+
+  <h3>Constructor</h3>
+  <pre><code><span class="kw">new</span> Supervisor(services: ServiceSpec[], root: <span class="kw">string</span>, controlPort = 7474)</code></pre>
+  <table>
+    <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>services</code></td><td><code>ServiceSpec[]</code></td><td>—</td><td>Service descriptors (one per child process). Each is seeded with a <code>'stopped'</code> state and an empty <code>logTail</code>.</td></tr>
+      <tr><td><code>root</code></td><td><code>string</code></td><td>—</td><td>Project root used to resolve each <code>ServiceSpec.cwd</code> and to write <code>supervisor.json</code>.</td></tr>
+      <tr><td><code>controlPort</code></td><td><code>number</code></td><td><code>7474</code></td><td>Requested control API port. The actual bound port may differ — see <a href="#auto-increment">auto-increment</a>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Properties</h3>
+  <table>
+    <thead><tr><th>Member</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>controlEndpointPort</code> <span class="com">(getter)</span></td><td><code>number</code></td><td>The port the control API <strong>actually bound</strong>. <code>0</code> until <code>start()</code> has bound a socket; may be greater than the requested <code>controlPort</code> after auto-incrementing past a busy port. Read this (rather than the constructor argument) when you need the real URL.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Methods</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Signature</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>startService</code></td><td><code>(spec: ServiceSpec): void</code></td><td>Spawn a service's command in <code>spec.cwd</code> (resolved against <code>root</code>), wire up stdout/stderr streaming + exit handling, and flip its state to <code>'running'</code>. No-op if already running. An empty <code>command[0]</code> marks the service <code>'errored'</code> and logs a system message. Prepends the local, project, and framework <code>node_modules/.bin</code> to <code>PATH</code> so <code>tsx</code>/<code>vite</code> resolve even when the supervisor is launched directly (not via <code>npm run dev</code>). On Windows, spawns with <code>shell: true</code>.</td></tr>
+      <tr><td><code>stopService</code></td><td><code>(name: string): void</code></td><td>Stop a running service. Sets state to <code>'stopped'</code> <em>first</em> so the eventual <code>exit</code> handler doesn't relabel it <code>'errored'</code>. Windows: <code>taskkill /PID &lt;pid&gt; /T /F</code> (kills the whole cmd.exe-spawned tree, since <code>proc.kill()</code> only terminates the wrapper). POSIX: signals the process group (<code>process.kill(-pid, 'SIGTERM')</code>) with a fallback to <code>proc.kill('SIGTERM')</code>. No-op if the service isn't running.</td></tr>
+      <tr><td><code>restartService</code></td><td><code>(name: string): void</code></td><td>Stop the service, wait <code>300ms</code>, then start it again. No-op if <code>name</code> is not a known service.</td></tr>
+      <tr><td><code>status</code></td><td><code>(): ServiceState[]</code></td><td>Return a fresh array of every service's <code>ServiceState</code> (in constructor order). Each entry is a shallow copy, so callers can't mutate the supervisor's internal state.</td></tr>
+      <tr><td><code>start</code></td><td><code>(): Promise&lt;void&gt;</code></td><td>Bind the control API (see <a href="#auto-increment">auto-increment</a>), inject <code>VITE_SUPERVISOR_URL</code> into the admin service's env, start every service, and register <code>SIGINT</code>/<code>SIGTERM</code> handlers that call <code>shutdown()</code>. Resolves once the control server is bound and all services have been spawned.</td></tr>
+      <tr><td><code>shutdown</code></td><td><code>(): Promise&lt;void&gt;</code></td><td>Idempotent graceful shutdown. Sets an internal flag, calls <code>stopService</code> on every running process, closes the control HTTP server, waits <code>200ms</code> for processes to exit, then calls <code>process.exit(0)</code>. Safe to call multiple times — the second and later calls return immediately.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="auto-increment">Binding behavior &amp; port auto-increment</h2>
+  <p>The control API binds <code>127.0.0.1</code> only. When the requested <code>controlPort</code>
+     (default <code>7474</code>) is already in use — e.g. another <code>nexus dev</code> is running —
+     the supervisor does <strong>not</strong> fail. It auto-increments:</p>
+  <pre><code><span class="kw">const</span> MAX_ATTEMPTS = 100;
+<span class="kw">for</span> (<span class="kw">let</span> attempt = 0; attempt &lt; MAX_ATTEMPTS; attempt++) {
+  <span class="kw">const</span> port = requested + attempt;     <span class="com">// 7474, 7475, 7476, ...</span>
+  <span class="kw">try</span> { await tryListen(server, port); <span class="kw">break</span>; }
+  <span class="kw">catch</span> (err) {
+    <span class="kw">if</span> (err.code !== <span class="str">'EADDRINUSE'</span>) <span class="kw">break</span>;  <span class="com">// give up on anything else</span>
+  }
+}</code></pre>
+  <ul>
+    <li>On success, <code>controlEndpointPort</code> and the internal <code>controlPort</code> are updated to the actually-bound port, and a note is printed when it differs from the requested one.</li>
+    <li>The scan is capped at <strong>100 attempts</strong> (so at most <code>requested + 99</code>). If no free port is found in that range, the supervisor prints an error and continues <em>without</em> a control API (<code>controlEndpointPort</code> stays <code>0</code>); child services still run.</li>
+    <li>Any non-<code>EADDRINUSE</code> bind error also aborts the scan.</li>
+  </ul>
+  <p>Once bound, the supervisor writes <code>supervisor.json</code> at the project root so the backend
+     and admin app can discover the actual endpoint:</p>
+  <pre><code>{
+  <span class="str">"port"</span>: 7475,
+  <span class="str">"url"</span>: <span class="str">"http://127.0.0.1:7475"</span>,   <span class="com">// omitted (undefined) if nothing bound</span>
+  <span class="str">"writtenAt"</span>: <span class="str">"2026-08-10T09:42:11.000Z"</span>  <span class="com">// ISO timestamp</span>
+}</code></pre>
+  <p>The <code>admin</code> service additionally receives <code>VITE_SUPERVISOR_URL</code> in its env,
+     pointing at the real URL — so the admin app doesn't even need to read the JSON file.</p>
+
+  <h2 id="detectLevel">Log level detection</h2>
+  <p>Every captured line (stdout, stderr, or system) is classified into a <code>level</code> by the
+     <code>detectLevel(line)</code> helper, which lowercases the line and matches word-boundary regexes:</p>
+  <table>
+    <thead><tr><th>Level</th><th>Triggers (case-insensitive, word-boundary)</th></tr></thead>
+    <tbody>
+      <tr><td><code>'error'</code></td><td><code>error</code>, <code>fatal</code>, <code>fail</code> / <code>failed</code> / <code>failure</code>, <code>exception</code></td></tr>
+      <tr><td><code>'warn'</code></td><td><code>warn</code> / <code>warning</code>, <code>unauthorized</code>, <code>forbidden</code></td></tr>
+      <tr><td><code>'info'</code></td><td>Everything else (the default).</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="kw">function</span> detectLevel(line: <span class="kw">string</span>): LogEntry[<span class="str">'level'</span>] {
+  <span class="kw">const</span> lower = line.toLowerCase();
+  <span class="kw">if</span> (/\berror\b/.test(lower) || /\bfatal\b/.test(lower)
+      || /\bfail(ed|ure)?\b/.test(lower) || /\bexception\b/.test(lower)) <span class="kw">return</span> <span class="str">'error'</span>;
+  <span class="kw">if</span> (/\bwarn(ing)?\b/.test(lower) || /\bunauthorized\b/.test(lower)
+      || /\bforbidden\b/.test(lower)) <span class="kw">return</span> <span class="str">'warn'</span>;
+  <span class="kw">return</span> <span class="str">'info'</span>;
+}</code></pre>
+  <div class="callout note">
+    <span class="label">source ≠ level</span>
+    A line on <code>stdout</code> can still be classified <code>'error'</code> (e.g. a Python traceback
+    printed to stdout), and a line on <code>stderr</code> can be <code>'info'</code>. The <code>source</code>
+    field records the stream; <code>level</code> records the inferred severity — they're independent.
+  </div>
+
+  <h2 id="buffers">Log buffers</h2>
+  <p>The supervisor keeps two rolling log buffers, both dropped-from-the-front (FIFO) ring buffers:</p>
+  <table>
+    <thead><tr><th>Constant</th><th>Value</th><th>Scope</th><th>Feeds</th></tr></thead>
+    <tbody>
+      <tr><td><code>MAX_TAIL</code></td><td><code>200</code></td><td>Per service — each <code>ServiceState.logTail</code></td><td><code>GET /logs?name=</code></td></tr>
+      <tr><td><code>MAX_ALL_LOGS</code></td><td><code>2000</code></td><td>Aggregate — the single internal <code>allLogs: LogEntry[]</code></td><td><code>GET /logs/all</code></td></tr>
+    </tbody>
+  </table>
+  <p>Both are exported as module constants from <code>@bhooai/nexus-cli</code>. Every captured line is
+     pushed to <em>both</em> buffers: the per-service <code>logTail</code> stores the raw <code>line</code>,
+     while <code>allLogs</code> stores the full structured <code>LogEntry</code> (with <code>ts</code>,
+     <code>source</code>, and inferred <code>level</code>).</p>
+
+  <h2>Endpoints</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Response</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/status</code></td><td><code>{ services: ServiceState[] }</code></td><td>All supervised services and their current state</td></tr>
+      <tr><td><code>POST</code></td><td><code>/start?name=&lt;service&gt;</code></td><td><code>{ ok: boolean }</code></td><td>Start a service</td></tr>
+      <tr><td><code>POST</code></td><td><code>/stop?name=&lt;service&gt;</code></td><td><code>{ ok: boolean }</code></td><td>Stop a service (<code>taskkill /T /F</code> on Windows, process-group kill on Unix)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/restart?name=&lt;service&gt;</code></td><td><code>{ ok: boolean }</code></td><td>Restart — stop, wait 300ms, then start</td></tr>
+      <tr><td><code>GET</code></td><td><code>/logs?name=&lt;service&gt;</code></td><td><code>{ logs: string[] }</code></td><td>Per-service log tail (last 200 lines)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/logs/all?service=&amp;level=&amp;q=</code></td><td><code>{ logs: LogEntry[] }</code></td><td>Aggregated structured logs (last 2000 entries) with optional filtering</td></tr>
+      <tr><td><code>POST</code></td><td><code>/logs/clear</code></td><td><code>{ ok: true }</code></td><td>Clear all log buffers</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="logs-all-filter"><code>GET /logs/all</code> filters</h3>
+  <p>All three query params are optional and combine with AND semantics. Empty/absent means "no filter
+     on that dimension".</p>
+  <table>
+    <thead><tr><th>Param</th><th>Type</th><th>Behavior</th></tr></thead>
+    <tbody>
+      <tr><td><code>service</code></td><td><code>string</code></td><td>Exact match against <code>LogEntry.service</code> (e.g. <code>'ai'</code>).</td></tr>
+      <tr><td><code>level</code></td><td><code>string</code></td><td>Exact match against <code>LogEntry.level</code> — one of <code>'info'</code> / <code>'warn'</code> / <code>'error'</code>.</td></tr>
+      <tr><td><code>q</code></td><td><code>string</code></td><td>Case-insensitive substring search over <code>LogEntry.line</code>.</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="com">// errors from the AI service containing 'traceback'</span>
+<span class="kw">const</span> url = <span class="kw">new</span> URL(<span class="str">'http://127.0.0.1:7474/logs/all'</span>);
+url.searchParams.set(<span class="str">'service'</span>, <span class="str">'ai'</span>);
+url.searchParams.set(<span class="str">'level'</span>, <span class="str">'error'</span>);
+url.searchParams.set(<span class="str">'q'</span>, <span class="str">'traceback'</span>);
+<span class="kw">const</span> { logs } = <span class="kw">await</span> fetch(url).then(r =&gt; r.json());</code></pre>
+
+  <h3 id="logs-clear"><code>POST /logs/clear</code></h3>
+  <p>Empties <strong>both</strong> buffers: every per-service <code>logTail</code> is reset to <code>[]</code>
+     and the aggregate <code>allLogs</code> is reset to <code>[]</code>. Always returns <code>{ ok: true }</code>.
+     The supervised processes themselves are unaffected — only the in-memory history is dropped.</p>
+
+  <h2>Response shapes</h2>
+
+  <h3>ServiceState</h3>
+  <pre><code>{
+  name: <span class="str">'backend'</span>,                       <span class="com">// service identifier</span>
+  status: <span class="str">'running'</span> | <span class="str">'stopped'</span> | <span class="str">'errored'</span>,
+  pid: <span class="num">42871</span>?,                         <span class="com">// present when running</span>
+  startedAt: <span class="num">1715000000000</span>?,               <span class="com">// epoch ms when last started</span>
+  lastExitCode: <span class="num">0</span>?,                    <span class="com">// exit code of the last run (null if signal-killed)</span>
+  logTail: [<span class="str">'[backend] listening on :4000'</span>, ...]  <span class="com">// last few lines</span>
+}</code></pre>
+
+  <h3>LogEntry</h3>
+  <pre><code>{
+  service: <span class="str">'frontend'</span>,
+  ts: <span class="num">1715000000123</span>,                       <span class="com">// epoch ms</span>
+  source: <span class="str">'stdout'</span> | <span class="str">'stderr'</span> | <span class="str">'system'</span>,
+  level: <span class="str">'info'</span> | <span class="str">'warn'</span> | <span class="str">'error'</span>,
+  line: <span class="str">'VITE v5.3.1 ready in 412 ms'</span>
+}</code></pre>
+
+  <h2>Usage</h2>
+  <pre><code><span class="com">// from the admin app (same machine)</span>
+<span class="kw">const</span> base = <span class="str">'http://127.0.0.1:7474'</span>;
+
+<span class="kw">await</span> fetch(`${base}/restart?name=backend`, { method: <span class="str">'POST'</span> });
+
+<span class="kw">const</span> status = <span class="kw">await</span> fetch(`${base}/status`).then(r =&gt; r.json());
+console.log(status.services);
+
+<span class="com">// aggregated structured logs, filtered</span>
+<span class="kw">const</span> url = <span class="kw">new</span> URL(`${base}/logs/all`);
+url.searchParams.set(<span class="str">'service'</span>, <span class="str">'ai'</span>);
+url.searchParams.set(<span class="str">'level'</span>, <span class="str">'error'</span>);
+url.searchParams.set(<span class="str">'q'</span>, <span class="str">'traceback'</span>);
+<span class="kw">const</span> { logs } = <span class="kw">await</span> fetch(url).then(r =&gt; r.json());</code></pre>
+
+  <h2>Constructing a Supervisor directly</h2>
+  <pre><code><span class="kw">import</span> { Supervisor } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cli'</span>;
+
+<span class="kw">const</span> supervisor = <span class="kw">new</span> Supervisor(
+  [
+    { name: <span class="str">'backend'</span>,  command: [<span class="str">'tsx'</span>, <span class="str">'apps/backend/src/main.ts'</span>], cwd: <span class="str">'.'</span>, color: <span class="str">'\x1b[35m'</span> },
+    { name: <span class="str">'frontend'</span>, command: [<span class="str">'vite'</span>, <span class="str">'--port'</span>, <span class="str">'3000'</span>],         cwd: <span class="str">'apps/frontend'</span>, color: <span class="str">'\x1b[36m'</span> },
+    { name: <span class="str">'ai'</span>,       command: [<span class="str">'uvicorn'</span>, <span class="str">'main:app'</span>],            cwd: <span class="str">'ai'</span>, color: <span class="str">'\x1b[33m'</span>, optional: <span class="kw">true</span> },
+    { name: <span class="str">'admin'</span>,    command: [<span class="str">'vite'</span>, <span class="str">'--port'</span>, <span class="str">'3001'</span>],         cwd: <span class="str">'apps/admin'</span>,    color: <span class="str">'\x1b[34m'</span> },
+  ],
+  process.cwd(),   <span class="com">// root — used to resolve cwd and write supervisor.json</span>
+  7474,            <span class="com">// controlPort (optional, defaults to 7474)</span>
+);
+
+<span class="kw">await</span> supervisor.start();
+console.log(<span class="str">'control API on port'</span>, supervisor.controlEndpointPort);  <span class="com">// may be &gt; 7474</span>
+
+<span class="com">// ...later</span>
+supervisor.restartService(<span class="str">'backend'</span>);
+console.log(supervisor.status());
+
+process.on(<span class="str">'SIGINT'</span>, () =&gt; supervisor.shutdown());  <span class="com">// start() also wires this for you</span>
+</code></pre>
+
+  <div class="callout note">
+    <span class="label">Admin proxy</span>
+    The main backend exposes <code>GET /admin/supervisor</code> (JWT + admin) which returns the
+    control URL/port from <code>supervisor.json</code>. The admin app talks to the supervisor
+    directly over loopback — the backend never proxies the control calls.
+  </div>
+
+  <h2>Allow-listed commands</h2>
+  <p>The supervisor itself does not parse or restrict the <code>command</code> it spawns — it runs
+     exactly what the <code>ServiceSpec</code> declares. The allow-listing happens one layer up: the
+     <code>nexus dev</code> launcher in <code>@bhooai/nexus-cli</code> builds the <code>ServiceSpec[]</code>
+     from a fixed set of known service definitions (backend, frontend, AI, admin), so the only commands
+     ever spawned are the framework's own <code>tsx</code>/<code>vite</code>/<code>uvicorn</code> launches.
+     The HTTP control API can only <em>start/stop/restart</em> services that were passed to the
+     constructor — it cannot spawn arbitrary commands.</p>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Supervisor API &nbsp;·&nbsp; <a href="websockets.html">← WebSockets</a> &nbsp; <a href="node-agent.html">Node Agent API →</a></div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Supervisor - restart gap + log filter","apiBase":"http://localhost:4000","js":"const services = [\n  { name: \"backend\", status: \"running\", pid: 42871, startedAt: 1, lastExitCode: 0 },\n  { name: \"frontend\", status: \"stopped\", lastExitCode: 130 },\n  { name: \"ai\", status: \"errored\", lastExitCode: 1 },\n];\nconsole.log(services.map(s =\u003e s.name + \":\" + s.status).join(\", \"));\n\nconst restartGapMs = 300;\nconsole.log(\"restart waits\", restartGapMs, \"ms between stop and start\");\n\nconst logs = [\n  { service: \"ai\", level: \"info\", line: \"uvicorn ready\" },\n  { service: \"ai\", level: \"error\", line: \"traceback: ImportError\" },\n  { service: \"frontend\", level: \"info\", line: \"vite ready\" },\n];\nconst f = logs.filter(l =\u003e l.service === \"ai\" \u0026\u0026 l.level === \"error\");\nconsole.log(\"filtered:\", f.map(l =\u003e l.line).join(\"; \"));\nconsole.log(\"buffer cap:\", 200, \"per service /\", 2000, \"aggregated\");","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

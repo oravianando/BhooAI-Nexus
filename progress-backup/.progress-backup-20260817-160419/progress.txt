@@ -1,0 +1,283 @@
+SESSION PROGRESS — BhooAI Nexus (local master + slave cluster, Windows)
+
+=======================================================================
+Status: Master + slave cluster runs concurrently with auto-allocated
+        ports; admin default moved 3001 -> 3300 (slaves 3301/3302);
+        cluster auth pinned to master (LB self anchor, shared JWT
+        secret). FIXED: backend crash `[TypeError: fetch failed]
+        ECONNREFUSED 127.0.0.1:7575` (unhandled autoscaler rejection).
+
+NO GIT REPO EXISTS in the tree — nothing has been committed.
+
+-----------------------------------------------------------------------
+ENV
+   - Node v24.19.0, npm 11.17.0 (built-in allowScripts gating), Windows.
+   - CLI bin/nexus.js runs TS via tsx (src preferred) -> src edits live.
+   - Slave node_modules/bhooai-nexus + @bhooai/nexus-cluster are JUNCTIONS
+     to C:\server\PACKAGES\bhooai-nexus -> framework edits live in projects.
+   - Projects: master test-app\test-app; slaves test-app-slave-1, -2
+     (each own DB, e.g. test-master). Ports last seen: master backend
+     4000, AI 8000, LB 8080, frontend 3000, admin 3001 (needs dev
+     restart -> 3300), agent 7575.
+
+1) DEP0190 DEPRECATION WARNING (args + shell:true) — FIXED
+   - Windows: pass full command-line STRINGS (no separate args array).
+   - 5 sites: commands/init.ts (installDependencies), supervisor.ts
+     (startService), commands/pysetup.ts (run), util.ts (versionOf),
+     packages/nexus-cluster/src/agent.ts (service spawn).
+
+2) NPM ALLOW-SCRIPTS — APPROVED
+   - esbuild@0.28.1 / esbuild@0.21.5 / mediasoup@3.24.0 in root
+     package.json. init.ts now runs `npm approve-scripts --all
+     --no-allow-scripts-pin` after scaffold install.
+   - node-domexception deprecation: harmless, no action.
+
+3) PORT ALLOCATION / OCCUPANCY
+   - Killed orphaned backend PID 25860 (held 4000).
+   - dev.ts rewritten: runtime nextFreePort() auto-allocation + env
+     overrides NEXUS_SERVER_PORT / NEXUS_FRONTEND_PORT /
+     NEXUS_ADMIN_PORT / NEXUS_CLUSTER_LBPORT / NEXUS_CLUSTER_NODEAGENTPORT,
+     AI via AI_PORT.
+   - Fixed string-port bug ('80001' from '8000'+1) via Number(aiPort(...))
+     and `const base = Number(port)`.
+
+4) ADMIN DEFAULT PORT 3001 -> 3300
+   - nexus-core/src/config/defaults.ts; init.ts (4 spots); templates
+     (nexus.config.ts, apps/admin/vite.config.ts, apps/admin/package.json,
+     Dockerfile, bin/serve-all.mjs, README.md); framework apps/admin +
+     apps/frontend App.tsx display. `nexus sync` run in master; slave-1/
+     slave-2 configs updated. Master needs dev restart to move off 3001.
+
+5) CLUSTER AUTH — MASTER-ONLY (user design)
+   - LB pins /auth/* + /csrf-token to master: lb.ts self anchor
+     { id:'master', baseUrl:'http://127.0.0.1:${server.port}' } +
+     isAuthPath. manager.ts self option; template + framework main.ts /
+     clusterRoutes.ts pass self; master/slave main.ts updated.
+   - Slave "Invalid refresh token" root cause: different JWT secrets +
+     per-process MemorySessionStore + LB round-robin on /auth. Now:
+     slaves verify master access tokens via shared NEXUS_AUTH_JWT_SECRET
+     (verifyAccessToken is pure JWT, no session hit); refresh + CSRF stay
+     on master. MemorySessionStore is per-process (authRoutes.ts:29);
+     localhost cookies are not port-scoped.
+
+6) CURRENT BLOCKER — FIXED: [TypeError: fetch failed] ECONNREFUSED :7575
+   - Backend crashed via triggerUncaughtException: global fetch to node
+     agent 127.0.0.1:7575 ECONNREFUSED, unhandled rejection (fatal in
+     Node 24).
+   - Root cause: master autoscaler tick (every 10s) fires scaleUp/scaleDown
+     -> manager.exec -> NodeClient.exec (client.ts global fetch). When a
+     linked node's agent is down, the rejection escaped tick() with no
+     handler. registry.poll is guarded; admin link/poll routes are guarded;
+     the autoscaler was the unguarded path.
+   - FIX (packages/nexus-cluster/src/autoscaler.ts):
+     * start() loop .catch()es tick failures (dead node can't crash).
+     * scaleUp/scaleDown calls routed through guarded scale() helper that
+       logs `[cluster] autoscaler <dir> failed (<reason>): <err>`.
+   - Live via junctions; tsx watch auto-restarts the backend. Re-run
+     `nexus dev` on master; failure now logs a warning instead of killing
+     the process.
+
+-----------------------------------------------------------------------
+FILES TOUCHED THIS SESSION (in framework C:\server\PACKAGES\bhooai-nexus)
+   packages/nexus-cli/src/commands/dev.ts      (port auto-alloc + Number() fix)
+   packages/nexus-cli/src/commands/init.ts     (approve-scripts + admin 3300)
+   packages/nexus-cli/src/commands/pysetup.ts  (DEP0190)
+   packages/nexus-cli/src/supervisor.ts        (DEP0190)
+   packages/nexus-cli/src/util.ts              (DEP0190)
+   packages/nexus-cluster/src/agent.ts         (DEP0190 + health probe)
+   packages/nexus-cluster/src/lb.ts            (self anchor + auth pinning)
+   packages/nexus-cluster/src/manager.ts       (self option)
+   packages/nexus-cluster/src/autoscaler.ts    (unguarded scale -> guarded)
+   packages/nexus-core/src/config/defaults.ts  (admin 3001->3300)
+   apps/backend/src/modules/admin/clusterRoutes.ts (self passing)
+   apps/backend/src/main.ts, apps/frontend/src/App.tsx, apps/admin/**
+   package.json (allow-scripts approvals)
+
+IN PROJECTS (C:\server\BhooAI\BhooAI-Nexus\test-app\...)
+   test-app (master): main.ts self anchor, admin 3300 sync, .env
+   test-app-slave-1, test-app-slave-2: main.ts self anchor, config 3300,
+   .env NEXUS_AUTH_JWT_SECRET = master's
+
+NEXT STEPS / NOTES
+   - Re-run master `nexus dev`; confirm the 7575 ECONNREFUSED no longer
+     crashes (logs warning). Verify admin moves to 3300; slaves to
+     3301/3302.
+   - Confirm which backend (master or slave) previously crashed and re-test
+     connect-nodes flow end to end (link -> LB -> /auth via master).
+   - tsc: packages/nexus-cluster compiles clean. Repo-wide `tsc -p
+     tsconfig.json` has PRE-EXISTING errors in apps/*, tests/,
+     nexus.config.ts (JwtConfig secret) — none from this session.
+   - No git history — consider `git init` + initial commit.
+
+=======================================================================
+UPDATE 2 — admin cluster redesign + slave auto-agent (2026-08-17)
+=======================================================================
+
+A) ADMIN "CONNECTED SLAVES" REDESIGN
+   - Replaced the node <table> with per-node glass-cards + an aggregate
+     header. packages/nexus-admin/src/App.tsx (Cluster()).
+   - Aggregate header: node count + ready count + total rps + a stacked
+     alloc-split bar (each ready node's share of LB traffic). "live
+     metrics" checkbox (polls every 5s) + "poll now" button.
+   - Per-node card: status dot, id/role/tier chips, STALE badge (metrics
+     older than 30s), enable/standby toggle switch, REQUESTS HANDLED
+     allocation % bar (node.rps / totalRps * 100, colored per node), CPU +
+     MEM load bars, per-service health grid (backend/files/database/ai
+     dots from health.services), meta (version, serviceUrl, lastSeen),
+     controls: test / start / restart / kill / unlink.
+   - Caption notes % excludes /auth (pinned to master); idle-but-healthy
+     reads 0%.
+   - New CSS classes in packages/nexus-admin/src/index.css: .node-card,
+     .alloc-split[/-seg], .alloc-bar[/-fill], .load-bar[/-fill], .svc-dot
+     (is-ok/bad/unknown), .freshness-badge/-stale, .toggle-switch/-knob.
+   - Typecheck clean (packages/nexus-admin + apps/backend; only the same
+     pre-existing repo-wide errors remain, none in edited files).
+
+B) NEW BACKEND ENDPOINTS (cluster routes)
+   - POST /admin/cluster/test {id} — live-probe a node's agent
+     (/health + /info), returns {ok, latencyMs, health, identity} or
+     {ok:false, error, latencyMs}. One-shot, no registry mutation.
+   - POST /admin/cluster/enable {id, enabled} — toggle one node's enabled
+     flag; now PERSISTS to the registry file (new NodeRegistry.setEnabled
+     that save()s) so it survives restarts.
+   - Added to the FRAMEWORK clusterRoutes.ts AND to the master + both
+     slave project copies (the running master uses its own scaffolded
+     copy — that's why /admin/cluster/test first 404'd).
+
+C) SLAVE AUTO-AGENT ON `npm run dev`
+   - GOAL: a project init'd as --as=node should auto-start its node agent
+     when you run `npm run dev`, so the master can link it immediately
+     (no separate `nexus node serve` terminal needed).
+   - New config field: cluster.role ('backend'|'files'|'database'|'ai',
+     optional). Set on nodes, undefined on root. Added to
+     ClusterConfig (nexus-core types/schema), written by init's
+     applyClusterConfig (patches role into nexus.config.ts for nodes).
+   - `nexus node serve --no-service` (new flag): agent-only mode — runs the
+     control API but does NOT spawn a role service. Advertises
+     cfg.server.port (honours NEXUS_SERVER_PORT env = the dev backend's
+     auto-allocated port) as its role service, so master health checks
+     hit the dev supervisor's backend (no duplicate backend / port clash).
+   - dev.ts: when cfg.cluster.role is set, adds a `node-agent` supervised
+     service running `node node_modules/bhooai-nexus/bin/nexus.js node
+     serve --role=<role> --port=<agentPort> --no-service` with
+     NEXUS_SERVER_PORT + NEXUS_CLUSTER_NODEAGENTPORT env. Prints the
+     agent URL in the Visit banner. Invoked via `node` + the
+     bhooai-nexus/bin/nexus.js path (the `nexus` bin shim isn't linked in
+     the slave's node_modules/.bin).
+   - Updated both existing slave configs (test-app-slave-1/-2
+     nexus.config.ts) to add role: 'backend'.
+
+FILES TOUCHED (UPDATE 2)
+   packages/nexus-admin/src/App.tsx         (cluster cards + handlers)
+   packages/nexus-admin/src/api.ts         (clusterTest + clusterEnable)
+   packages/nexus-admin/src/index.css       (node-card classes)
+   apps/backend/src/modules/admin/clusterRoutes.ts  (test + enable routes)
+   packages/nexus-cluster/src/manager.ts   (setEnabled -> registry)
+   packages/nexus-cluster/src/registry.ts   (public setEnabled + save)
+   packages/nexus-cli/src/commands/dev.ts   (node-agent supervised service)
+   packages/nexus-cli/src/commands/node.ts  (--no-service flag)
+   packages/nexus-cli/src/commands/init.ts (applyClusterConfig role)
+   packages/nexus-core/src/config/types.ts (ClusterConfig.role?)
+   packages/nexus-core/src/config/schema.ts (cluster.role zod)
+   IN PROJECTS: test-app + slave-1 + slave-2 clusterRoutes.ts (test/enable)
+                slave-1/-2 nexus.config.ts (role: 'backend')
+
+NEXT STEPS (UPDATE 2)
+   - Re-run a slave `npm run dev`; confirm the `node-agent` service starts
+     and the agent URL prints. From the master admin Cluster tab, Link
+     node -> paste the slave agent URL + token -> should link and show in
+     the new cards with allocation %, test button, etc.
+   - Re-run `nexus init . --as=node --role=backend` somewhere fresh to
+     confirm applyClusterConfig writes `role: 'backend'` into the
+     scaffolded nexus.config.ts.
+
+=======================================================================
+UPDATE 3 — role chooser + upload-path allocation (2026-08-17)
+=======================================================================
+
+PROBLEM: init let you pick role=files (uploads), but the slave admin panel
+only ever showed "backend" and had no role selector. Root cause: the
+backend routes hardcoded `--role=backend` in 3 places (setup.self.serve,
+node/status role, node/start spawn) and ignored config.cluster.role. The
+slave panel was a static info card with no chooser.
+
+A) ROLE CHOOSER (slave panel) — choose + persist + restart
+   - Backend now reads config.cluster.role ?? 'backend' everywhere:
+     setup.self (added .role + role-aware serve), node/status (role +
+     nodeIdFor(role)), node/start (spawns --role=<role>).
+   - NEW POST /admin/cluster/node/role {role}: validates role in
+     {backend,files,database,ai}, writes cluster.role to
+     nexus.runtime.json (mergeRuntime/writeRuntime), mutates in-memory
+     config, kills the running nodeAgentProcess, respawns it with the new
+     role, returns {ok, role, nodeId, agentUrl, note}.
+   - api.ts: clusterNodeRole(role) + ClusterNodeAgentStatus.role typed
+     enum + ClusterSetup.self.role.
+   - App.tsx slave panel REDESIGNED: 4 role-picker cards (backend/files/
+     database/ai with icon+label+desc; active = nodeStatus.role). Clicking
+     one -> applyRole -> clusterNodeRole -> refresh status+setup. Agent
+     status banner (running/stopped dot + pid + Start/Stop). Identity +
+     agent URL block (node id now role-derived, copyable). Pairing token
+     block (kept). Quick-start commands block (role-aware serve/link from
+     setup.self, copy buttons). Note: "Changing role rewrites the node
+     id - re-link on the master if already linked."
+   - index.css: .role-card (+is-active), .role-card-icon/-label/-desc.
+
+B) UPLOAD-PATH ALLOCATION (master-only, fail-closed 503)
+   - GOAL: assign URL path prefixes to specific nodes so /upload/users ->
+     slave-1 and /upload/files -> slave-2 (split file traffic across
+     file-role nodes), instead of round-robining everything.
+   - NEW config field: ClusterConfig.pathPins? = Array<{prefix, nodeId,
+     role?}>. Added to nexus-core types + zod schema.
+   - LB (lb.ts): pathPinFor(url) longest-prefix match (pins pre-sorted by
+     descending prefix length). In handle(), before the auth anchor: if a
+     pin matches, resolve registry.get(nodeId); if missing OR not ready
+     OR role mismatch -> 503 {code:'pinned_node_down'} (FAIL-CLOSED, no
+     round-robin fallback). Else route to that node's services[role] ||
+     baseUrl. Auth paths (/auth/*, /csrf-token) are never path-pinned
+     (auth anchor wins). setPathPins(pins) updates routing live.
+   - manager.ts: passes config.cluster.pathPins into the LB; setPathPins()
+     exposed so the admin can update without an LB restart.
+   - POST /admin/cluster/setup EXTENDED: accepts pathPins, validates +
+     normalises (drops empty prefix/nodeId, coerces role enum), persists
+     to nexus.runtime.json, applies live via manager.setPathPins().
+   - GET /admin/cluster/overview now returns pathPins.
+   - App.tsx master panel: NEW "PATH ROUTING" section under the node
+     cards. Table of pins: prefix (input) -> nodeId (dropdown of linked
+     node ids) + role (optional dropdown) + "node down" badge if the
+     pinned node isn't ready. Add/remove rows, "Save routing" ->
+     saveClusterSetup({}, pathPins). Empty state: "No path pins - all
+     traffic round-robins across ready backend nodes."
+   - api.ts: ClusterPathPin type, saveClusterSetup(master, pathPins?),
+     ClusterOverview.pathPins.
+   - index.css: .path-pin-row, .path-pin-prefix/-arrow/-node/-role/-del.
+
+C) PROJECT COPIES SYNCED
+   - The running master uses its own scaffolded clusterRoutes.ts (NOT the
+     framework's). Copied the framework's fully-updated clusterRoutes.ts
+     (now includes: self anchor, test, enable, role-awareness, node/role,
+     pathPins) over all 3 project copies (test-app + slave-1 + slave-2).
+     Verified byte-identical to the framework.
+
+FILES TOUCHED (UPDATE 3)
+   packages/nexus-cluster/src/lb.ts            (pathPins + fail-closed routing)
+   packages/nexus-cluster/src/manager.ts        (setPathPins + thread pathPins)
+   packages/nexus-core/src/config/types.ts     (ClusterConfig.pathPins)
+   packages/nexus-core/src/config/schema.ts    (pathPins zod)
+   apps/backend/src/modules/admin/clusterRoutes.ts (role-aware + node/role + pathPins setup/overview)
+   packages/nexus-admin/src/api.ts             (clusterNodeRole + pathPins types)
+   packages/nexus-admin/src/App.tsx             (slave role picker + master path-routing editor)
+   packages/nexus-admin/src/index.css          (role-card + path-pin-row classes)
+   IN PROJECTS: copied clusterRoutes.ts over test-app + slave-1 + slave-2
+
+NEXT STEPS (UPDATE 3)
+   - Re-run a slave `npm run dev`, open admin Cluster -> Slave mode: click a
+     role card (e.g. files), confirm the agent restarts + node id changes +
+     serve command shows --role=files.
+   - On the master: link the slave, then Cluster -> Path routing -> add a
+     pin /upload/users -> <slave id>, Save. Hit the LB port with a request
+     to /upload/users, confirm x-bhooai-node = slave id. Kill the slave,
+     confirm 503 pinned_node_down.
+   - Typecheck clean for all edited files (admin SPA + backend + cluster).
+     Only the same pre-existing repo-wide tsc errors remain (adminRoutes,
+     preflightProxy, aiProxy, userGraph, userModel, loadPlugins, tests,
+     nexus.config.ts JwtConfig.secret) - none from this session.

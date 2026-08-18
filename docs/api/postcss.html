@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PostCSS Preset API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-postcss</span> PostCSS Preset API
+    <span class="sub">Opinionated PostCSS pipeline — Tailwind, nesting, future CSS, autoprefixing, and minification in one curated preset.</span></h1>
+
+  <p>A single, framework-owned PostCSS preset that every Nexus frontend and admin app
+     consumes. Scaffolded projects get it automatically via <code>nexus init</code>; existing
+     apps add it with one line in <code>postcss.config.js</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Why a preset?</span>
+    Nexus follows a "from-scratch where it matters" philosophy. The preset packages the
+    entire CSS build chain — Tailwind, nesting, autoprefixing, minification — behind one
+    versioned, curated entry point so scaffolded projects don't hand-maintain a plugin list.
+  </div>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>factory</td><td><code>createPreset</code></td></tr>
+      <tr><td>types</td><td><code>NexusPostcssOptions</code></td></tr>
+      <tr><td>stylesheet</td><td><code>@bhooai/nexus-postcss/theme.css</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Plugin chain (in order)</h2>
+  <table>
+    <thead><tr><th>#</th><th>Plugin</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>postcss-import</code></td><td>Resolves <code>@import</code> statements — enables <code>@import '@bhooai/nexus-postcss/theme.css'</code></td></tr>
+      <tr><td>2</td><td><code>postcss-nested</code></td><td>Native CSS nesting (<code>&amp; .child { }</code>) before Tailwind processes <code>@apply</code></td></tr>
+      <tr><td>3</td><td><code>tailwindcss</code></td><td>Injects <code>@tailwind base/components/utilities</code> + scans <code>content</code> paths for utility classes</td></tr>
+      <tr><td>4</td><td><code>postcss-preset-env</code></td><td>Future CSS features today (stage 2 by default) — <code>color-mix()</code>, <code>@custom-media</code>, etc.</td></tr>
+      <tr><td>5</td><td><code>autoprefixer</code></td><td>Vendor prefixes based on <code>browserslist</code></td></tr>
+      <tr><td>6</td><td><code>cssnano</code></td><td>Minification — <strong>only when <code>NODE_ENV=production</code></strong> or <code>minify:true</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Plugin resolution</span>
+    All plugins are <strong>imported and instantiated inside the preset package</strong>, not
+    resolved from the consumer's <code>node_modules</code>. This means scaffolded projects
+    don't need to install <code>postcss-import</code>, <code>postcss-nested</code>, etc.
+    directly — they're transitive deps of <code>@bhooai/nexus-postcss</code>.
+  </div>
+
+  <h2><code>createPreset(options)</code></h2>
+  <p>Returns <code>{ plugins: PostCSSPlugin[] }</code> — an array of instantiated PostCSS
+     plugins ready for <code>postcss.config.js</code>.</p>
+
+  <h3>Options</h3>
+  <table>
+    <thead><tr><th>Option</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>content</code></td><td><code>string[]</code></td><td><code>['./index.html', './src/**/*.{ts,tsx}']</code></td><td>Tailwind content scan paths</td></tr>
+      <tr><td><code>extraContent</code></td><td><code>string[]</code></td><td><code>[]</code></td><td>Additional content paths merged into <code>content</code></td></tr>
+      <tr><td><code>theme</code></td><td><code>object</code></td><td><code>{}</code></td><td>Tailwind theme extensions</td></tr>
+      <tr><td><code>tailwindPlugins</code></td><td><code>array</code></td><td><code>[]</code></td><td>Tailwind plugins (e.g. <code>@tailwindcss/forms</code>)</td></tr>
+      <tr><td><code>import</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Enable <code>postcss-import</code></td></tr>
+      <tr><td><code>nested</code></td><td><code>boolean</code></td><td><code>true</code></td><td>Enable <code>postcss-nested</code></td></tr>
+      <tr><td><code>presetEnv</code></td><td><code>boolean | 'stage2' | 'stage3' | 'stage4'</code></td><td><code>true</code> (stage2)</td><td>Enable <code>postcss-preset-env</code> with the given stage</td></tr>
+      <tr><td><code>autoprefixer</code></td><td><code>boolean | object</code></td><td><code>true</code></td><td>Enable autoprefixer (or pass options like <code>{ overrideBrowserslist }</code>)</td></tr>
+      <tr><td><code>minify</code></td><td><code>boolean</code></td><td><code>NODE_ENV === 'production'</code></td><td>Enable <code>cssnano</code> minification</td></tr>
+      <tr><td><code>plugins</code></td><td><code>Array&lt;string | [string, object]&gt;</code></td><td><code>[]</code></td><td>Custom PostCSS plugins to append after the preset chain</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+
+  <h3>Default (scaffolded projects)</h3>
+  <pre><code><span class="com">// postcss.config.js</span>
+<span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+
+<span class="kw">export default</span> createPreset();</code></pre>
+
+  <h3>With framework admin content scanning</h3>
+  <pre><code><span class="com">// postcss.config.js (admin app)</span>
+<span class="kw">import</span> { createPreset } <span class="kw">from</span> <span class="str">'@bhooai/nexus-postcss'</span>;
+
+<span class="kw">export default</span> createPreset({
+  extraContent: [<span class="str">'../../packages/nexus-admin/src/**/*.{ts,tsx}'</span>],
+});</code></pre>
+
+  <h3>With Tailwind theme extensions</h3>
+  <pre><code><span class="kw">export default</span> createPreset({
+  theme: {
+    colors: {
+      brand: <span class="str">'#67e8f9'</span>,
+    },
+  },
+  tailwindPlugins: [require(<span class="str">'@tailwindcss/forms'</span>)],
+});</code></pre>
+
+  <h3>Disabling specific plugins</h3>
+  <pre><code><span class="kw">export default</span> createPreset({
+  import: <span class="kw">false</span>,
+  nested: <span class="kw">false</span>,
+  presetEnv: <span class="kw">false</span>,
+  autoprefixer: <span class="kw">false</span>,
+});</code></pre>
+
+  <h3>Always minify (even in dev)</h3>
+  <pre><code><span class="kw">export default</span> createPreset({ minify: <span class="kw">true</span> });</code></pre>
+
+  <h3>Appending custom PostCSS plugins</h3>
+  <pre><code><span class="kw">export default</span> createPreset({
+  plugins: [
+    [<span class="str">'my-postcss-plugin'</span>, { foo: <span class="num">1</span> }],
+    <span class="str">'another-plugin'</span>,
+  ],
+});</code></pre>
+
+  <h2>Tailwind config</h2>
+  <p>Each app keeps its own <code>tailwind.config.js</code>. The preset only injects
+     <code>content</code> paths and the plugin chain — theme extensions and Tailwind
+     plugins stay in your <code>tailwind.config.js</code>.</p>
+  <pre><code><span class="com">// tailwind.config.js (default scaffolded)</span>
+<span class="kw">export default</span> {
+  content: [<span class="str">'./index.html'</span>, <span class="str">'./src/**/*.{ts,tsx}'</span>],
+  theme: { extend: {} },
+  plugins: [],
+};</code></pre>
+
+  <h2>theme.css — Design tokens</h2>
+  <p>Import the framework-wide design tokens with a single <code>@import</code> at the top
+     of your <code>index.css</code>:</p>
+  <pre><code><span class="com">/* src/index.css */</span>
+@<span class="kw">import</span> <span class="str">'@bhooai/nexus-postcss/theme.css'</span>;
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;</code></pre>
+
+  <h3>Nexus tokens (<code>--nexus-*</code>)</h3>
+  <table>
+    <thead><tr><th>Token</th><th>Default</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td><code>--nexus-bg</code></td><td><code>#050817</code></td><td>App background</td></tr>
+      <tr><td><code>--nexus-bg-alt</code></td><td><code>#0b0d1a</code></td><td>Alternate surface</td></tr>
+      <tr><td><code>--nexus-ink</code></td><td><code>#eef6ff</code></td><td>Primary text</td></tr>
+      <tr><td><code>--nexus-muted</code></td><td><code>#8496ad</code></td><td>Secondary text</td></tr>
+      <tr><td><code>--nexus-surface</code></td><td><code>rgba(10,24,45,.78)</code></td><td>Glass surface background</td></tr>
+      <tr><td><code>--nexus-surface-strong</code></td><td><code>rgba(8,25,48,.68)</code></td><td>Stronger surface</td></tr>
+      <tr><td><code>--nexus-border</code></td><td><code>rgba(125,174,235,.2)</code></td><td>Default border</td></tr>
+      <tr><td><code>--nexus-border-bright</code></td><td><code>rgba(112,168,228,.17)</code></td><td>Brighter border</td></tr>
+      <tr><td><code>--nexus-accent</code></td><td><code>#67e8f9</code></td><td>Accent color (links, highlights)</td></tr>
+      <tr><td><code>--nexus-accent-soft</code></td><td><code>rgba(103,232,249,.08)</code></td><td>Soft accent background</td></tr>
+      <tr><td><code>--nexus-blue</code></td><td><code>rgba(38,130,225,.55)</code></td><td>Blue gradient stop</td></tr>
+      <tr><td><code>--nexus-violet</code></td><td><code>rgba(90,67,183,.45)</code></td><td>Violet gradient stop</td></tr>
+      <tr><td><code>--nexus-pink</code></td><td><code>#f43f5e</code></td><td>Danger / error accent</td></tr>
+      <tr><td><code>--nexus-emerald</code></td><td><code>#34d399</code></td><td>Success / online indicator</td></tr>
+      <tr><td><code>--nexus-radius</code></td><td><code>0.7rem</code></td><td>Default border radius</td></tr>
+      <tr><td><code>--nexus-radius-lg</code></td><td><code>1rem</code></td><td>Large border radius</td></tr>
+      <tr><td><code>--nexus-shell-width</code></td><td><code>1280px</code></td><td>Max content width</td></tr>
+      <tr><td><code>--nexus-mesh</code></td><td>3× <code>radial-gradient(...)</code></td><td>Ambient mesh background</td></tr>
+      <tr><td><code>--nexus-mesh-opacity</code></td><td><code>0.27</code></td><td>Mesh overlay opacity</td></tr>
+      <tr><td><code>--nexus-selection</code></td><td><code>rgba(129,140,248,.35)</code></td><td>Text selection color</td></tr>
+      <tr><td><code>--nexus-scrollbar</code></td><td><code>rgba(255,255,255,.18)</code></td><td>Scrollbar track</td></tr>
+      <tr><td><code>--nexus-scrollbar-thumb</code></td><td><code>rgba(255,255,255,.14)</code></td><td>Scrollbar thumb</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Admin aliases (<code>--admin-*</code>)</h3>
+  <p>For backwards compatibility, all 15 <code>--admin-*</code> tokens are aliased to their
+     <code>--nexus-*</code> equivalents. Existing admin CSS using <code>var(--admin-bg)</code>
+     works without changes.</p>
+  <table>
+    <thead><tr><th>Admin token</th><th>Maps to</th></tr></thead>
+    <tbody>
+      <tr><td><code>--admin-bg</code></td><td><code>var(--nexus-bg)</code></td></tr>
+      <tr><td><code>--admin-ink</code></td><td><code>var(--nexus-ink)</code></td></tr>
+      <tr><td><code>--admin-muted</code></td><td><code>var(--nexus-muted)</code></td></tr>
+      <tr><td><code>--admin-surface</code></td><td><code>var(--nexus-surface)</code></td></tr>
+      <tr><td><code>--admin-surface-strong</code></td><td><code>var(--nexus-surface-strong)</code></td></tr>
+      <tr><td><code>--admin-border</code></td><td><code>var(--nexus-border)</code></td></tr>
+      <tr><td><code>--admin-border-bright</code></td><td><code>var(--nexus-border-bright)</code></td></tr>
+      <tr><td><code>--admin-blue</code></td><td><code>var(--nexus-blue)</code></td></tr>
+      <tr><td><code>--admin-violet</code></td><td><code>var(--nexus-violet)</code></td></tr>
+      <tr><td><code>--admin-pink</code></td><td><code>var(--nexus-pink)</code></td></tr>
+      <tr><td><code>--admin-radius</code></td><td><code>var(--nexus-radius)</code></td></tr>
+      <tr><td><code>--admin-shell-width</code></td><td><code>var(--nexus-shell-width)</code></td></tr>
+      <tr><td><code>--admin-mesh</code></td><td><code>var(--nexus-mesh)</code></td></tr>
+      <tr><td><code>--admin-mesh-opacity</code></td><td><code>var(--nexus-mesh-opacity)</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Retheming</h3>
+  <p>Override any token in your own <code>:root</code> block:</p>
+  <pre><code><span class="com">/* src/index.css */</span>
+@<span class="kw">import</span> <span class="str">'@bhooai/nexus-postcss/theme.css'</span>;
+
+:root {
+  --nexus-accent: <span class="str">#ff6b6b</span>;  <span class="com">/* retheme the accent color */</span>
+  --nexus-bg: <span class="str">#1a1a2e</span>;     <span class="com">/* change the background */</span>
+}</code></pre>
+
+  <h2>Example CSS classes</h2>
+  <p>The scaffolded <code>index.css</code> ships with three example classes built from
+     Nexus tokens:</p>
+  <pre><code><span class="com">/* Frosted-glass card */</span>
+.nexus-card {
+  background: <span class="kw">var</span>(--nexus-surface);
+  border: <span class="num">1</span>px solid <span class="kw">var</span>(--nexus-border);
+  border-radius: <span class="kw">var</span>(--nexus-radius);
+  color: <span class="kw">var</span>(--nexus-ink);
+  padding: <span class="num">1.5</span>rem;
+  backdrop-filter: blur(<span class="num">20</span>px);
+}
+
+<span class="com">/* Ambient mesh background */</span>
+.nexus-mesh-bg {
+  background: <span class="kw">var</span>(--nexus-mesh), <span class="kw">var</span>(--nexus-bg);
+  background-attachment: fixed;
+  min-height: <span class="num">100</span>vh;
+}
+
+<span class="com">/* Accent-colored link */</span>
+.nexus-link {
+  color: <span class="kw">var</span>(--nexus-accent);
+  text-decoration: none;
+}</code></pre>
+
+  <h2>License</h2>
+  <p>All preset dependencies are MIT-licensed: <code>tailwindcss</code>,
+     <code>postcss</code>, <code>autoprefixer</code>, <code>cssnano</code>,
+     <code>postcss-import</code>, <code>postcss-nested</code>, <code>postcss-preset-env</code>.</p>
+</main>
+<script src="../assets/docs.js"></script>
+</body>
+</html>

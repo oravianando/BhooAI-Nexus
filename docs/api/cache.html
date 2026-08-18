@@ -1,0 +1,331 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cache API — BhooAI Nexus Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main id="content">
+  <h1><span class="badge core">@bhooai/nexus-cache</span> Cache API
+    <span class="sub">Redis wrapper, cache-aside, pub/sub, rate-limit backend.</span></h1>
+
+  <p>A thin Redis-backed layer used across the framework for caching, rate limiting, and pub/sub.
+     Built on the <code>redis</code> (node-redis v4) client. Redis is <strong>required</strong> —
+     clients connect lazily on first use, and connection errors propagate to the caller.</p>
+
+  <h2>Exports</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Exports</th></tr></thead>
+    <tbody>
+      <tr><td>classes</td><td><code>Cache</code>, <code>RateLimiter</code>, <code>PubSub</code></td></tr>
+      <tr><td>types</td><td><code>CacheOptions</code>, <code>CacheEntry</code>, <code>RateLimitResult</code>, <code>RateLimitRule</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="Cache">Cache</h2>
+  <pre><code><span class="kw">class</span> Cache {
+  constructor(opts: CacheOptions = {});
+  ensureConnected(): Promise&lt;<span class="kw">void</span>&gt;;
+  key(name: <span class="kw">string</span>): <span class="kw">string</span>;
+  get&lt;T&gt;(name: <span class="kw">string</span>): Promise&lt;T | <span class="kw">undefined</span>&gt;;
+  set&lt;T&gt;(name: <span class="kw">string</span>, value: T, ttlSeconds?: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  del(name: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  incr(name: <span class="kw">string</span>, ttlSeconds?: <span class="kw">number</span>): Promise&lt;<span class="kw">number</span>&gt;;
+  exists(name: <span class="kw">string</span>): Promise&lt;<span class="kw">boolean</span>&gt;;
+  expire(name: <span class="kw">string</span>, ttlSeconds: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  ttl(name: <span class="kw">string</span>): Promise&lt;<span class="kw">number</span>&gt;;
+  flushPattern(pattern: <span class="kw">string</span>): Promise&lt;<span class="kw">number</span>&gt;;
+  cacheAside&lt;T&gt;(name: <span class="kw">string</span>, ttlSeconds: <span class="kw">number</span>, loader: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>A Redis-backed cache wrapper. Lazily creates and connects a <code>node-redis</code> v4 client on
+     first use via <code>ensureConnected()</code>. All keys pass through <code>key()</code> to apply
+     an optional namespace/prefix. Values are JSON-encoded on write and JSON-parsed on read, so pass
+     plain JSON-serializable values (no <code>Map</code>, <code>Date</code> is serialized to a string,
+     etc.).</p>
+  <pre><code><span class="kw">import</span> { Cache } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cache'</span>;
+
+<span class="kw">const</span> cache = <span class="kw">new</span> Cache({ url: <span class="str">'redis://localhost:6379'</span>, keyPrefix: <span class="str">'app:'</span> });
+
+<span class="com">// TTL is a number of seconds — not an options object.</span>
+<span class="kw">await</span> cache.set(<span class="str">'k'</span>, <span class="str">'v'</span>, <span class="num">60</span>);
+<span class="kw">const</span> v = <span class="kw">await</span> cache.get&lt;<span class="kw">string</span>&gt;(<span class="str">'k'</span>);   <span class="com">// 'v'</span>
+<span class="kw">await</span> cache.del(<span class="str">'k'</span>);
+
+<span class="com">// INCR a counter; the TTL is set on the first hit of a fresh window.</span>
+<span class="kw">const</span> hits = <span class="kw">await</span> cache.incr(<span class="str">'hits'</span>, <span class="num">60</span>);   <span class="com">// → 1, key expires in 60s</span>
+
+<span class="com">// cache-aside: (name, ttlSeconds, loader) — read-through with a TTL.</span>
+<span class="kw">const</span> user = <span class="kw">await</span> cache.cacheAside(<span class="str">`user:${id}`</span>, <span class="num">60</span>, <span class="kw">async</span> () =&gt; User.findById(id).lean());
+
+<span class="com">// bulk-delete keys by glob (non-blocking SCAN + DEL).</span>
+<span class="kw">const</span> removed = <span class="kw">await</span> cache.flushPattern(<span class="str">'session:*'</span>);
+
+<span class="kw">await</span> cache.close();</code></pre>
+  <div class="callout warn">
+    <span class="label">Redis required</span>
+     The cache does <strong>not</strong> degrade to misses when the URL is unreachable.
+     <code>ensureConnected()</code> rethrows connection errors on every call until a connection
+     succeeds, so a misconfigured or down Redis propagates errors to the caller.
+  </div>
+
+  <h3 id="Cache-ctor">constructor(opts?)</h3>
+  <pre><code><span class="kw">new</span> Cache(opts: CacheOptions = {})</code></pre>
+  <p>Creates the wrapper and the underlying <code>node-redis</code> client (not yet connected —
+     connection is lazy). Options shape:</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>url?</code></td><td><code>string</code></td><td>Redis connection URL (e.g. <code>'redis://localhost:6379'</code>). If omitted, the client uses its library default.</td></tr>
+      <tr><td><code>namespace?</code></td><td><code>string</code></td><td>Logical namespace applied to all keys as a <code>${namespace}:</code> prefix.</td></tr>
+      <tr><td><code>keyPrefix?</code></td><td><code>string</code></td><td>Explicit key prefix; overrides <code>namespace</code> when provided.</td></tr>
+      <tr><td><code>connectTimeout?</code></td><td><code>number</code></td><td>Connection timeout in milliseconds, passed to the redis client's socket options.</td></tr>
+    </tbody>
+  </table>
+  <p>The effective prefix is <code>opts.keyPrefix ?? (opts.namespace ? `${opts.namespace}:` : '')</code>.</p>
+
+  <h3 id="ensureConnected">ensureConnected()</h3>
+  <pre><code><span class="kw">async</span> ensureConnected(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Connect the underlying client if not already connected. Idempotent — concurrent callers share
+     the same in-flight connect promise. On failure the promise is reset so a later call can retry,
+     and the error is rethrown. Called automatically by every method below; call it directly only if
+     you want to fail fast at boot.</p>
+
+  <h3 id="key">key(name)</h3>
+  <pre><code><span class="kw">function</span> key(name: <span class="kw">string</span>): <span class="kw">string</span></code></pre>
+  <p>Build the fully-prefixed Redis key for a logical name (<code>${keyPrefix}${name}</code>).
+     <code>flushPattern</code> applies the prefix to the pattern the same way.</p>
+
+  <h3 id="get">get(name)</h3>
+  <pre><code><span class="kw">async</span> get&lt;T&gt;(name: <span class="kw">string</span>): Promise&lt;T | <span class="kw">undefined</span>&gt;</code></pre>
+  <p>Returns the JSON-decoded value, or <code>undefined</code> on a miss or a Redis <code>NULL</code>.
+     A JSON parse failure throws (the stored value is expected to be valid JSON written by
+     <code>set</code>).</p>
+
+  <h3 id="set">set(name, value, ttlSeconds?)</h3>
+  <pre><code><span class="kw">async</span> set&lt;T&gt;(name: <span class="kw">string</span>, value: T, ttlSeconds?: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Set a JSON-encoded value. The optional third argument is a <strong>number of seconds</strong>
+     for the TTL (passed to Redis as <code>EX</code>); omit it for a key with no expiry.</p>
+  <pre><code><span class="kw">await</span> cache.set(<span class="str">'k'</span>, <span class="str">'v'</span>, <span class="num">60</span>);   <span class="com">// expires in 60s</span>
+<span class="kw">await</span> cache.set(<span class="str">'k'</span>, <span class="str">'v'</span>);        <span class="com">// no expiry</span></code></pre>
+  <div class="callout warn">
+    <span class="label">TTL is a number</span>
+    The third argument is a <strong>number of seconds</strong>, not an options object. Pass
+     <code>60</code>, not <code>{ ttl: 60 }</code>.
+  </div>
+
+  <h3 id="del">del(name)</h3>
+  <pre><code><span class="kw">async</span> del(name: <span class="kw">string</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Delete a key. No-op (to the caller) if the key does not exist.</p>
+
+  <h3 id="incr">incr(name, ttlSeconds?)</h3>
+  <pre><code><span class="kw">async</span> incr(name: <span class="kw">string</span>, ttlSeconds?: <span class="kw">number</span>): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Atomically INCR a key. When <code>ttlSeconds</code> is supplied and the result becomes <code>1</code>
+     (the first hit in a fresh window), the key is expired after <code>ttlSeconds</code> seconds —
+     this is the fixed-window primitive <code>RateLimiter</code> is built on. Returns the
+     post-increment integer.</p>
+  <pre><code><span class="kw">const</span> n = <span class="kw">await</span> cache.incr(<span class="str">'reqs:ip:1.2.3.4'</span>, <span class="num">60</span>);
+<span class="com">// n === 1 on the first call → key expires in 60s; subsequent calls return 2, 3, ...</span></code></pre>
+
+  <h3 id="exists">exists(name)</h3>
+  <pre><code><span class="kw">async</span> exists(name: <span class="kw">string</span>): Promise&lt;<span class="kw">boolean</span>&gt;</code></pre>
+  <p>True if the key exists in Redis.</p>
+
+  <h3 id="expire">expire(name, ttlSeconds)</h3>
+  <pre><code><span class="kw">async</span> expire(name: <span class="kw">string</span>, ttlSeconds: <span class="kw">number</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Set an expiry (in seconds) on an existing key. No-op if the key is missing.</p>
+
+  <h3 id="ttl">ttl(name)</h3>
+  <pre><code><span class="kw">async</span> ttl(name: <span class="kw">string</span>): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Remaining TTL in seconds. Returns <code>-1</code> if the key has no expiry, <code>-2</code> if
+     the key is missing (matching Redis semantics).</p>
+
+  <h3 id="flushPattern">flushPattern(pattern)</h3>
+  <pre><code><span class="kw">async</span> flushPattern(pattern: <span class="kw">string</span>): Promise&lt;<span class="kw">number</span>&gt;</code></pre>
+  <p>Delete all keys matching a glob <code>pattern</code> using non-blocking <code>SCAN</code> +
+     <code>DEL</code> in batches of 100. The configured <code>keyPrefix</code> is prepended to the
+     pattern (so <code>'session:*'</code> becomes <code>'app:session:*'</code>). Returns the number of
+     keys removed. Safe to run in production — it does not block the Redis server.</p>
+
+  <h3 id="cacheAside">cacheAside(name, ttlSeconds, loader)</h3>
+  <pre><code><span class="kw">async</span> cacheAside&lt;T&gt;(name: <span class="kw">string</span>, ttlSeconds: <span class="kw">number</span>, loader: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;</code></pre>
+  <p>Cache-aside / read-through helper. Returns the cached value if present; otherwise invokes
+     <code>loader</code>, stores its result with <code>ttlSeconds</code>, and returns it. The second
+     argument is the TTL in seconds; the third is the loader function.</p>
+  <pre><code><span class="kw">const</span> user = <span class="kw">await</span> cache.cacheAside(<span class="str">`user:${id}`</span>, <span class="num">60</span>, <span class="kw">async</span> () =&gt; User.findById(id).lean());</code></pre>
+  <div class="callout warn">
+    <span class="label">No negative caching</span>
+    There is no negative caching in v1 — a loader that throws propagates the error to the caller and
+     nothing is stored. Wire your own try/catch around <code>cacheAside</code> if you need to cache
+     misses.
+  </div>
+
+  <h3 id="close">close()</h3>
+  <pre><code><span class="kw">async</span> close(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Disconnect the underlying client (<code>QUIT</code>) if open, and clear the cached connect
+     promise so a later use reconnects. Safe to call multiple times.</p>
+
+  <h2 id="RateLimiter">RateLimiter</h2>
+  <pre><code><span class="kw">class</span> RateLimiter {
+  constructor(cache: Cache);
+  check(key: <span class="kw">string</span>, rule: RateLimitRule): Promise&lt;RateLimitResult&gt;;
+  consume(key: <span class="kw">string</span>, rule: RateLimitRule): Promise&lt;RateLimitResult&gt;;
+}</code></pre>
+  <p>A fixed-window counter rate limiter backed by Redis <code>INCR</code> through a
+     <code>Cache</code>. Each call to <code>check</code> atomically increments a per-key counter and,
+     on the first hit of a window, sets the window expiry. The counter is consumed regardless of
+     whether the request is allowed — matching in-memory store semantics.</p>
+  <pre><code><span class="kw">import</span> { Cache, RateLimiter } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cache'</span>;
+
+<span class="kw">const</span> cache = <span class="kw">new</span> Cache({ url: process.env.NEXUS_REDIS_URL });
+<span class="kw">const</span> limiter = <span class="kw">new</span> RateLimiter(cache);   <span class="com">// takes a Cache, not options</span>
+
+<span class="kw">const</span> rule = { windowSeconds: <span class="num">60</span>, max: <span class="num">100</span> };
+<span class="kw">const</span> r = <span class="kw">await</span> limiter.check(req.ip, rule);
+<span class="kw">if</span> (!r.allowed) {
+  ctx.status(<span class="num">429</span>);
+  ctx.setHeader(<span class="str">'retry-after'</span>, String(r.retryAfter));
+  ctx.json({ error: { code: <span class="str">'RATE_LIMITED'</span>, ...r } });
+  <span class="kw">return</span>;
+}
+<span class="com">// r.limit, r.remaining, r.resetAt also available</span></code></pre>
+  <div class="callout warn">
+    <span class="label">Constructor takes a Cache</span>
+    <code>new RateLimiter(cache)</code> takes a <code>Cache</code> instance, not a config object.
+     The limiter shares the cache's Redis connection.
+  </div>
+
+  <h3 id="rl-check">check(key, rule)</h3>
+  <pre><code><span class="kw">async</span> check(key: <span class="kw">string</span>, rule: RateLimitRule): Promise&lt;RateLimitResult&gt;</code></pre>
+  <p>Check (and consume) one unit against <code>rule</code> for <code>key</code>. Two arguments — the
+     key and the rule. The Redis counter key is <code>${key}:rate</code>. Uses the live TTL of the
+     counter to compute <code>resetAt</code> (falling back to <code>now + windowSeconds</code> if the
+     TTL is missing). Returns a <a href="#RateLimitResult"><code>RateLimitResult</code></a>; the
+     counter is already consumed by <code>INCR</code>, so an over-limit call still decrements the
+     remaining quota.</p>
+
+  <h3 id="rl-consume">consume(key, rule)</h3>
+  <pre><code><span class="kw">async</span> consume(key: <span class="kw">string</span>, rule: RateLimitRule): Promise&lt;RateLimitResult&gt;</code></pre>
+  <p>Alias of <a href="#rl-check"><code>check</code></a>; the counter is already consumed by
+     <code>INCR</code>, so there is no separate "consume" step.</p>
+
+  <h2 id="PubSub">PubSub</h2>
+  <pre><code><span class="kw">class</span> PubSub {
+  constructor(cache: Cache);
+  publish(channel: <span class="kw">string</span>, message: <span class="kw">unknown</span>): Promise&lt;<span class="kw">void</span>&gt;;
+  subscribe(channel: <span class="kw">string</span>, handler: (msg: <span class="kw">unknown</span>) =&gt; <span class="kw">void</span>): Promise&lt;() =&gt; Promise&lt;<span class="kw">void</span>&gt;&gt;;
+  close(): Promise&lt;<span class="kw">void</span>&gt;;
+}</code></pre>
+  <p>A Redis pub/sub helper. Uses the <code>Cache</code>'s client for publishing and a separate,
+     dedicated subscriber client (required by <code>redis</code> v4 — a client cannot publish and
+     subscribe on the same connection) for subscriptions. Both clients are connected lazily. The
+     subscriber is created with the same <code>url</code> / <code>connectTimeout</code> as the
+     cache's publisher client.</p>
+  <pre><code><span class="kw">import</span> { Cache, PubSub } <span class="kw">from</span> <span class="str">'@bhooai/nexus-cache'</span>;
+
+<span class="kw">const</span> cache = <span class="kw">new</span> Cache({ url: process.env.NEXUS_REDIS_URL });
+<span class="kw">const</span> pubsub = <span class="kw">new</span> PubSub(cache);
+
+<span class="kw">const</span> unsub = <span class="kw">await</span> pubsub.subscribe(<span class="str">'events'</span>, (msg) =&gt; {
+  console.log(<span class="str">'got'</span>, msg);   <span class="com">// JSON-parsed payload</span>
+});
+<span class="kw">await</span> pubsub.publish(<span class="str">'events'</span>, { hello: <span class="str">'world'</span> });
+<span class="kw">await</span> unsub();   <span class="com">// removes the handler; unsubscribes when the last one is gone</span>
+
+<span class="kw">await</span> pubsub.close();</code></pre>
+
+  <h3 id="ps-ctor">constructor(cache)</h3>
+  <pre><code><span class="kw">new</span> PubSub(cache: Cache)</code></pre>
+  <p>Construct the helper around an existing <code>Cache</code>. The publisher is the cache's own
+     client; a separate subscriber client is created (but not connected) here, reusing the cache's
+     <code>url</code> / <code>connectTimeout</code>.</p>
+
+  <h3 id="publish">publish(channel, message)</h3>
+  <pre><code><span class="kw">async</span> publish(channel: <span class="kw">string</span>, message: <span class="kw">unknown</span>): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Publish a JSON-encoded <code>message</code> to <code>channel</code>. Ensures the cache
+     (publisher) client is connected first. <code>message</code> is <code>JSON.stringify</code>'d.</p>
+
+  <h3 id="subscribe">subscribe(channel, handler)</h3>
+  <pre><code><span class="kw">async</span> subscribe(
+  channel: <span class="kw">string</span>,
+  handler: (msg: <span class="kw">unknown</span>) =&gt; <span class="kw">void</span>
+): Promise&lt;() =&gt; Promise&lt;<span class="kw">void</span>&gt;&gt;</code></pre>
+  <p>Subscribe to <code>channel</code>; <code>handler</code> is invoked with the JSON-parsed payload
+     for each message. Multiple handlers per channel are supported. Returns an <strong>unsubscribe
+     function</strong> that removes the handler and, when no handlers remain for the channel,
+     unsubscribes from Redis. The payload is JSON-parsed; if parsing fails the raw message string is
+     passed to the handler instead.</p>
+
+  <h3 id="ps-close">close()</h3>
+  <pre><code><span class="kw">async</span> close(): Promise&lt;<span class="kw">void</span>&gt;</code></pre>
+  <p>Close the dedicated subscriber client (<code>QUIT</code>) if open, and clear its cached connect
+     promise. The publisher (cache) client is not touched — close the <code>Cache</code> separately.</p>
+
+  <h2 id="types">Types</h2>
+
+  <h3 id="CacheOptions">CacheOptions</h3>
+  <p>Constructor options for <a href="#Cache"><code>Cache</code></a> (and reused by
+     <a href="#PubSub"><code>PubSub</code></a> for its subscriber client).</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>url?</code></td><td><code>string</code></td><td>Redis connection URL (e.g. <code>'redis://localhost:6379'</code>).</td></tr>
+      <tr><td><code>namespace?</code></td><td><code>string</code></td><td>Logical namespace applied to all keys as a <code>${namespace}:</code> prefix.</td></tr>
+      <tr><td><code>keyPrefix?</code></td><td><code>string</code></td><td>Explicit key prefix; overrides <code>namespace</code> when provided.</td></tr>
+      <tr><td><code>connectTimeout?</code></td><td><code>number</code></td><td>Connection timeout in milliseconds, passed to the redis client's socket options.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="CacheEntry">CacheEntry&lt;T&gt;</h3>
+  <p>A cached value entry. Kept for symmetry; values are JSON-stringified as-is by
+     <a href="#set"><code>set</code></a> and a <code>CacheEntry</code> wrapper is not actually written
+     to Redis.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>value</code></td><td><code>T</code></td><td>The cached value.</td></tr>
+      <tr><td><code>expiresAt?</code></td><td><code>number</code></td><td>Optional epoch expiry (informational).</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RateLimitResult">RateLimitResult</h3>
+  <p>Result of a <a href="#rl-check"><code>RateLimiter.check</code></a> / <code>consume</code> call.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>allowed</code></td><td><code>boolean</code></td><td>Whether the request is allowed under the current window.</td></tr>
+      <tr><td><code>limit</code></td><td><code>number</code></td><td>Maximum requests permitted in the window.</td></tr>
+      <tr><td><code>remaining</code></td><td><code>number</code></td><td>Remaining requests in the current window (<code>&gt;= 0</code>).</td></tr>
+      <tr><td><code>resetAt</code></td><td><code>number</code></td><td>Epoch ms when the current window resets.</td></tr>
+      <tr><td><code>retryAfter?</code></td><td><code>number</code></td><td>Seconds until the next request would be allowed. Present only when <code>allowed</code> is <code>false</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="RateLimitRule">RateLimitRule</h3>
+  <p>A fixed-window rate-limit rule, passed to <a href="#rl-check"><code>RateLimiter.check</code></a>.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>windowSeconds</code></td><td><code>number</code></td><td>Window length in <strong>seconds</strong> (not milliseconds).</td></tr>
+      <tr><td><code>max</code></td><td><code>number</code></td><td>Maximum requests permitted per window.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <span class="label">windowSeconds, not windowMs</span>
+    The rule uses <code>windowSeconds</code> (seconds). The <code>incr</code> TTL and the
+     <code>retryAfter</code> field are also in seconds. Don't pass <code>windowMs</code> — it does
+     not exist on this type.
+  </div>
+
+  <div class="foot"><a href="../index.html">← Overview</a> · Cache API</div>
+  <h2>Try it live</h2>
+  <section data-playground='{"title":"Cache - TTL + cache-aside","apiBase":"http://localhost:4000","js":"// In-memory stand-in for the Redis-backed Cache.\n// set(k, v, ttlSeconds?) and cacheAside(name, ttlSeconds, loader) mirror the real API.\nfunction makeCache() {\n  const store = new Map();\n  const api = {\n    set(k, v, ttlSec) { store.set(k, { v, exp: ttlSec != null ? Date.now() + ttlSec * 1000 : null }); },\n    get(k) { const e = store.get(k); if (!e) return undefined; if (e.exp != null && e.exp < Date.now()) { store.delete(k); return undefined; } return e.v; },\n    async cacheAside(name, ttlSec, loader) { const hit = api.get(name); if (hit !== undefined) return hit; const fresh = await loader(); api.set(name, fresh, ttlSec); return fresh; },\n  };\n  return api;\n}\nconst cache = makeCache();\n\n// set(k, v, ttlSeconds) — third arg is a NUMBER of seconds.\ncache.set(\"theme\", { name: \"void\" }, 10);\nconsole.log(\"hit:\", cache.get(\"theme\"));\ncache.set(\"expired\", 1, -1);\nconsole.log(\"expired miss:\", cache.get(\"expired\"));\n\n// cacheAside(name, ttlSeconds, loader).\nlet dbCalls = 0;\nawait cache.cacheAside(\"user:42\", 60, async () => { dbCalls++; return { id: 42 }; });\nawait cache.cacheAside(\"user:42\", 60, async () => { dbCalls++; return { id: 42 }; });\nconsole.log(\"user:\", cache.get(\"user:42\"), \"loader calls:\", dbCalls); // 1 — second call hits cache\n\n// Fixed-window rate limiter over the same store.\nfunction makeLimiter(c) {\n  return {\n    check(key, rule) {\n      const k = key + \":rate\";\n      return c.incr ? null : null; // (stand-in kept simple)\n    },\n  };\n}\n// RateLimiter uses incr(name, ttlSeconds). Here we model the window inline:\nfunction limiterCheck(c, key, rule) {\n  const k = key + \":rate\";\n  let n = c.get(k) || 0;\n  n += 1;\n  c.set(k, n, rule.windowSeconds);\n  const allowed = n <= rule.max;\n  return { allowed, limit: rule.max, remaining: Math.max(0, rule.max - n), resetAt: Date.now() + rule.windowSeconds * 1000, retryAfter: allowed ? undefined : rule.windowSeconds };\n}\nconst rule = { windowSeconds: 60, max: 3 };\nconsole.log(\"r1:\", limiterCheck(cache, \"ip:1.2.3.4\", rule).allowed);\nconsole.log(\"r2:\", limiterCheck(cache, \"ip:1.2.3.4\", rule).allowed);\nconsole.log(\"r3:\", limiterCheck(cache, \"ip:1.2.3.4\", rule).allowed);\nconsole.log(\"r4 (denied):\", limiterCheck(cache, \"ip:1.2.3.4\", rule));","api":{"method":"GET","path":"/health"}}'></section>
+</main>
+<script src="../assets/playground.js"></script>
+<script src="../assets/docs.js"></script>
+</body>
+</html>
